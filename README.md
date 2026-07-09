@@ -96,7 +96,11 @@ and persistent register writes wear the pump's flash. The app therefore ships
 # iOS framework compile check (requires Xcode for linking; klib compile works without)
 ./gradlew :core:compileKotlinIosArm64
 
-# Full iOS app: open iosApp/iosApp.xcodeproj in Xcode and run
+# Full iOS app: open iosApp/iosApp.xcodeproj in Xcode and run.
+# From the CLI the arch must be pinned — Gradle declares only iosSimulatorArm64
+# (MQTTastic publishes no iosX64), so a generic simulator destination fails:
+xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp \
+  -sdk iphonesimulator -configuration Debug ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build
 ```
 
 ## Live verification checklist
