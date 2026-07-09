@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Deliberate choice: all backend services speak plain HTTP inside the LAN,
+  and away from home the UniFi VPN puts the phone on that same LAN. The LAN
+  is the security boundary (none of the services authenticate). A blanket
+  cleartext allowance keeps the in-app server-host override working;
+  tighten to explicit domains if that ever changes.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

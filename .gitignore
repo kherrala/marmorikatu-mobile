@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+build/
+*/build/
+local.properties
+.idea/
+.DS_Store
+captures/
+*.iml
+xcuserdata/
+iosApp/Pods/
+iosApp/iosApp.xcworkspace/
+kotlin-js-store/
