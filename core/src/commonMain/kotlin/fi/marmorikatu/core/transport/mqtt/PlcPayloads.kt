@@ -6,6 +6,7 @@ import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.PlcStatus
 import fi.marmorikatu.core.model.RoomTemperature
+import fi.marmorikatu.core.model.Rooms
 import fi.marmorikatu.core.model.Ventilation
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -27,34 +28,13 @@ object PlcPayloads {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     /**
-     * Room key → (Finnish name, floor). Mirrors the PLC publisher's
-     * `ROOM_TEMP_MAP`; extra keys on the topic (supply duct, cooling
-     * battery) are exposed via [parseExtraTemperatures].
+     * Room identity lives in [Rooms] — the MQTT keys and the legacy InfluxDB
+     * field names disagree, so both parsers must route through the same table.
+     * Extra keys on the temperatures topic (supply duct, cooling battery) are
+     * exposed via [parseExtraTemperatures].
      */
-    private val ROOMS = mapOf(
-        "yk_aula" to ("Yläkerta aula" to Floor.YLAKERTA),
-        "yk_aatu" to ("Aatun huone" to Floor.YLAKERTA),
-        "yk_onni" to ("Onnin huone" to Floor.YLAKERTA),
-        "yk_essi" to ("Essin huone" to Floor.YLAKERTA),
-        "keittio" to ("Keittiö" to Floor.ALAKERTA),
-        "mh_ak" to ("Makuuhuone alakerta" to Floor.ALAKERTA),
-        "eteinen" to ("Eteinen" to Floor.ALAKERTA),
-        "kellari_eteinen" to ("Kellarin eteinen" to Floor.KELLARI),
-        "kellari" to ("Kellari" to Floor.KELLARI),
-    )
-
-    /** Heating PID keys → display name (subset of room names, PLC uses short keys). */
-    private val HEATING_NAMES = mapOf(
-        "essi" to "Essin huone",
-        "aatu" to "Aatun huone",
-        "onni" to "Onnin huone",
-        "yk_aula" to "Yläkerta aula",
-        "keittio" to "Keittiö",
-        "mh_ak" to "Makuuhuone alakerta",
-        "eteinen" to "Eteinen",
-        "kellari_eteinen" to "Kellarin eteinen",
-        "kellari" to "Kellari",
-    )
+    private val ROOMS = Rooms.byMqttKey
+    private val HEATING_NAMES = Rooms.byHeatingKey
 
     /**
      * `marmorikatu/lights` and `marmorikatu/outlets` values may be bool,
@@ -93,7 +73,7 @@ object PlcPayloads {
         forEachEntry(payload) { key, value ->
             val room = ROOMS[key] ?: return@forEachEntry
             val celsius = (value as? JsonPrimitive)?.doubleOrNull ?: return@forEachEntry
-            add(RoomTemperature(key, room.first, room.second, celsius))
+            add(RoomTemperature(key, room.displayName, room.floor, celsius))
         }
     }
 
@@ -108,7 +88,8 @@ object PlcPayloads {
     fun parseHeating(payload: String): List<HeatingDemand> = buildList {
         forEachEntry(payload) { key, value ->
             val percent = (value as? JsonPrimitive)?.doubleOrNull ?: return@forEachEntry
-            add(HeatingDemand(key, HEATING_NAMES[key] ?: key, percent.toInt().coerceIn(0, 100)))
+            val name = HEATING_NAMES[key]?.displayName ?: key
+            add(HeatingDemand(key, name, percent.toInt().coerceIn(0, 100)))
         }
     }
 

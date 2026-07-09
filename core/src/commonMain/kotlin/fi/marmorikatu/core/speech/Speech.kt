@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Voice I/O is pluggable: native platform engines and the server pipeline
@@ -73,7 +74,9 @@ class ServerStt(
         }
         recorder.start()
         val recorded = try {
-            signal.await() // push-to-talk release
+            // The mic must never stay open indefinitely if the stop signal is
+            // lost (screen off, engine switched, a dropped callback).
+            withTimeoutOrNull(MAX_RECORDING_MS) { signal.await() }
             recorder.stop()
         } catch (e: CancellationException) {
             // The press was aborted (new press, screen left): free the mic.
@@ -97,6 +100,11 @@ class ServerStt(
             val signal = stopSignal
             if (signal != null) signal.complete(Unit) else stopPending = true
         }
+    }
+
+    private companion object {
+        /** Whisper handles long clips, but a person does not talk for a minute. */
+        const val MAX_RECORDING_MS = 30_000L
     }
 }
 

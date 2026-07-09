@@ -2,7 +2,8 @@ package fi.marmorikatu.core.fakes
 
 import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.LightInfo
-import fi.marmorikatu.core.model.SpotPrice
+import fi.marmorikatu.core.model.AirQuality
+import fi.marmorikatu.core.model.ElectricityPrices
 import fi.marmorikatu.core.model.WeatherForecast
 import fi.marmorikatu.core.transport.mcp.McpApi
 import fi.marmorikatu.core.transport.mcp.McpState
@@ -51,7 +52,8 @@ class FakeMcpApi : McpApi {
     override suspend fun getThermiaStatus(): JsonObject = buildJsonObject {}
     override suspend fun getRoomTemperatures(): JsonObject = buildJsonObject {}
     override suspend fun getSaunaStatus(): SaunaStatus = SaunaStatus(null, "idle", false)
-    override suspend fun getElectricityPrices(): List<SpotPrice> = emptyList()
+    override suspend fun getElectricityPrices(): ElectricityPrices = ElectricityPrices()
+    override suspend fun getAirQuality(): AirQuality = AirQuality()
     override suspend fun getEnergyConsumption(hours: Int): JsonObject = buildJsonObject {}
     override suspend fun getWeatherForecast(): WeatherForecast = WeatherForecast()
     override suspend fun getNewsHeadlines(count: Int): JsonElement = JsonNull

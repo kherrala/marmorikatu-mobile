@@ -54,6 +54,20 @@ class DefaultAnnouncementsRepository(
     override fun start() {
         if (job?.isActive == true) return
         job = scope.launch {
+            // Without a Last-Event-ID the bridge replays its whole ring buffer
+            // (~200 events). Anchor on the newest known id so the stream only
+            // delivers what happened after the app opened — otherwise every
+            // historical event looks like breaking news.
+            if (lastEventId == null) {
+                runCatching { bridge.announcementHistory(limit = 1) }
+                    .getOrNull()
+                    ?.maxByOrNull { it.id }
+                    ?.let { newest ->
+                        lastEventId = newest.id
+                        _recent.value = listOf(newest)
+                    }
+            }
+
             var backoffMs = 1_000L
             while (isActive) {
                 try {

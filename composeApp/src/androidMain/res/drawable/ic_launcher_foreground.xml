@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The brand mark: the voice orb's teal "M" on the app background. Drawn inside
+  the adaptive-icon safe zone (the inner 72dp of the 108dp canvas).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Signature glow behind the mark -->
+    <path
+        android:pathData="M54,54m-30,0a30,30 0,1 1,60 0a30,30 0,1 1,-60 0"
+        android:fillColor="#35E0C8"
+        android:fillAlpha="0.14" />
+
+    <!-- Orb -->
+    <path
+        android:pathData="M54,54m-22,0a22,22 0,1 1,44 0a22,22 0,1 1,-44 0"
+        android:fillColor="#35E0C8" />
+
+    <!-- "M" — geometric grotesk strokes, drawn as filled bars -->
+    <path
+        android:pathData="M43.2,64.5 L43.2,43.5 L47.6,43.5 L54,55.2 L60.4,43.5 L64.8,43.5 L64.8,64.5 L60.6,64.5 L60.6,51.4 L55.6,60.5 L52.4,60.5 L47.4,51.4 L47.4,64.5 Z"
+        android:fillColor="#07130F" />
+</vector>

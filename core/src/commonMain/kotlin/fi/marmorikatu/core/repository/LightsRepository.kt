@@ -12,6 +12,7 @@ import fi.marmorikatu.core.transport.mqtt.PlcPayloads
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -100,6 +101,14 @@ class DefaultLightsRepository(
             }
         }
         scope.launch { stateLock.withLock { publishLocked() } }
+
+        // Single consumer: commands leave the device one at a time, spaced.
+        scope.launch {
+            for ((id, on) in commands) {
+                deliver(id, on)
+                delay(COMMAND_SPACING_MS)
+            }
+        }
     }
 
     override suspend fun refreshCatalog() {
@@ -115,11 +124,25 @@ class DefaultLightsRepository(
         }
     }
 
+    /**
+     * Commands are queued and paced rather than fired in a burst.
+     *
+     * The PLC drops commands that arrive faster than its scan cycle — a
+     * measured burst of eight publishes landed as seven, with no error
+     * anywhere. The backend's own batch helper paces at 100 ms for the same
+     * reason; this mirrors it, with a little more headroom.
+     */
+    private val commands = Channel<Pair<Int, Boolean>>(Channel.UNLIMITED)
+
     override suspend fun setLight(id: Int, on: Boolean) {
         stateLock.withLock {
             reconciler.commandSent(id, on)
             publishLocked()
         }
+        commands.send(id to on)
+    }
+
+    private suspend fun deliver(id: Int, on: Boolean) {
         try {
             if (mqtt.connectionState.value is MqttConnectionState.Connected) {
                 mqtt.publish(MqttTopics.lightSet(id), MqttTopics.lightSetPayload(on), qos = 1)
@@ -129,12 +152,13 @@ class DefaultLightsRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            log.w(e) { "light $id command failed" }
             // The command never left the device: drop the optimistic state.
             stateLock.withLock {
                 reconciler.cancel(id)
                 publishLocked()
             }
-            throw e
+            _controlFailures.tryEmit(id)
         }
     }
 
@@ -214,5 +238,8 @@ class DefaultLightsRepository(
 
     private companion object {
         const val KEY_CATALOG = "lights.catalog"
+
+        /** The PLC drops commands that arrive faster than its scan cycle. */
+        const val COMMAND_SPACING_MS = 150L
     }
 }

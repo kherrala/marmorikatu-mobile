@@ -5,9 +5,9 @@ Kotlin Multiplatform app (Android + iOS, Compose Multiplatform) for the
 phones get vital diagnostics plus control of lights, HVAC status, and the TV;
 the same app will later run on the shelf tablet as the kiosk replacement.
 
-The UI design system arrives from a separate design session — the current
-`DebugScreen` is a temporary developer screen that exercises every capability
-below the UI.
+The UI implements the design system from the Claude Design session (see below).
+A developer diagnostics screen still lives behind a long-press on the
+"Marmorikatu" kicker, and under Asetukset → Diagnostiikka.
 
 ## Architecture
 
@@ -15,8 +15,8 @@ Two Gradle modules plus the Xcode wrapper:
 
 - **`core`** — everything below the UI: config, transports, repositories,
   voice plumbing. Pure Kotlin, no Compose.
-- **`composeApp`** — Compose Multiplatform UI (currently the debug screen)
-  and app entry points. Builds the iOS framework (`ComposeApp`).
+- **`composeApp`** — Compose Multiplatform UI: theme, icons, the component
+  library, six screens, and the three surfaces. Builds the iOS framework.
 - **`iosApp`** — Xcode project embedding the framework.
 
 ### Transports (hybrid by design)
@@ -38,6 +38,16 @@ Indices present in `marmorikatu/lights` but unnamed in
 array and are deliberately never rendered or controllable — the backend
 skips them too.
 
+**Light commands are paced.** The PLC silently drops commands that arrive faster
+than its scan cycle: a measured burst of eight publishes landed as seven, with no
+error anywhere. `DefaultLightsRepository` therefore queues commands and spaces
+them 150 ms apart (the backend's own batch helper uses 100 ms). `LightsPacingTest`
+locks this in.
+
+**Room identity lives in `Rooms`.** The PLC's MQTT keys and the legacy InfluxDB
+field names disagree — `yk_aatu` is stored as `MH_Seela` — so labelling a chart
+from an Influx field name would show the wrong child's bedroom.
+
 ### Networking model
 
 Plain HTTP everywhere. On the LAN it just works; away from home the UniFi
@@ -47,7 +57,11 @@ no authentication by design). Android allows cleartext via
 `network_security_config.xml`; iOS via ATS local-networking exceptions.
 
 If `freenas.kherrala.fi` doesn't resolve over the VPN, override the MQTT host
-with the NAS LAN IP in the debug screen's settings.
+with the NAS LAN IP in the diagnostics screen.
+
+Announcements can keep arriving while the app is closed: **Asetukset → Kuuntele
+taustalla** starts an Android foreground service that posts a notification per
+event. Priority-0 alerts always vibrate, regardless of the haptics preference.
 
 ### Voice
 
@@ -60,7 +74,8 @@ Pluggable engines behind `SpeechToText` / `SpeechOutput`:
 - **Native**: Android `SpeechRecognizer`/`TextToSpeech`; iOS
   `AVSpeechSynthesizer` (TTS works; native iOS STT deliberately stubbed until
   the AVAudioEngine capture path is built). Runtime capability checks decide
-  the fallback; both are A/B-switchable on the debug screen.
+  the fallback. Native engines are the default; both are switchable in Asetukset.
+  Listening times out after 12 s, and recording is capped at 30 s.
 
 ### Heat pump: read-only on purpose
 
@@ -124,6 +139,25 @@ App acceptance (emulator → simulator → physical → cellular+VPN):
 4. Optional: publish weather/news/calendar ports if richer widget data than
    the MCP tools provide is ever needed.
 
+## Design system
+
+The UI implements the Claude Design project *Mobile app design system integration*
+(`MarmorikatuApp.dc.html` + six screens). Tokens, type and motion come from that
+project's `_ds/` sources:
+
+- `theme/` — colour tokens (dark + daylight), the three families (Space Grotesk,
+  Hanken Grotesk, IBM Plex Mono, instanced from variable fonts and bundled), the
+  4px spacing grid, radii, and the signature glow/breathe/pulse motion.
+- `icons/MkIcons.kt` — 69 Phosphor glyphs generated from upstream SVG paths (no
+  Compose Phosphor library exists). Regenerate with `scratchpad/gen_icons.py`.
+- `components/` — the 33-component library (Card, StatTile, AreaLightCard,
+  ClimateCard, VoiceDock, NavRail, LineChart, PriceBars, …).
+- `screens/` + `shell/` — the six screens and the phone / kid / tablet surfaces.
+
+Every measured value is a mono, tabular readout; UPPERCASE is reserved for mono
+micro-labels. **The design's sample values are placeholders** — the app renders
+repository data or an honest "Ei tietoa".
+
 ## Known gaps
 
 - **iOS native STT is stubbed.** `PlatformStt` on iOS reports a clear error so
@@ -136,8 +170,15 @@ App acceptance (emulator → simulator → physical → cellular+VPN):
   Android against the live system.
 - **`AVAudioSession.recordPermission` is deprecated** on iOS 17+ in favour of
   `AVAudioApplication`; still functional, worth migrating when Xcode is set up.
-- **No history charts yet** — InfluxDB Flux client is deferred until the design
-  session needs them.
+- **Heat pump feed is dead.** The ThermIQ collector last wrote to InfluxDB on
+  2026-06-26, so COP, hot water and the indoor setpoint have no live source. The
+  app shows "Ei tietoa" and a read-only "—" target rather than a stale number.
+  Compressor state still works: it is derived from the pump's own energy meter.
+- **iOS background mode is impossible** without server push. Android keeps the
+  announcements stream alive in a foreground service; iOS suspends sockets. The
+  settings sheet says so rather than offering a dead switch.
+- **Camera stills only arrive inside announcements.** There is no camera API, so
+  a card shows an image only when the announcer attached one.
 
 ## Test fixtures
 

@@ -35,6 +35,13 @@ actual class PlatformStt actual constructor() : SpeechToText {
     }
 
     override fun listen(): Flow<SttEvent> = callbackFlow {
+        if (!SpeechRecognizer.isRecognitionAvailable(AndroidContext.app)) {
+            // Usually a missing <queries> entry or a device with no recogniser.
+            trySend(SttEvent.Error("puheentunnistus ei ole käytettävissä"))
+            close()
+            return@callbackFlow
+        }
+
         val rec = SpeechRecognizer.createSpeechRecognizer(AndroidContext.app)
         recognizer = rec
         rec.setRecognitionListener(object : RecognitionListener {
@@ -49,7 +56,8 @@ actual class PlatformStt actual constructor() : SpeechToText {
             }
 
             override fun onError(error: Int) {
-                trySend(SttEvent.Error("SpeechRecognizer error $error"))
+                log.w { "SpeechRecognizer error $error" }
+                trySend(SttEvent.Error(errorText(error)))
                 close()
             }
 
@@ -63,7 +71,15 @@ actual class PlatformStt actual constructor() : SpeechToText {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fi-FI")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "fi-FI")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            // Some recognisers reject the request without a calling package.
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, AndroidContext.app.packageName)
+            // Stop on silence rather than waiting for the engine's own default.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1_500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1_500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1_000L)
         }
         rec.startListening(intent)
         awaitClose {
@@ -71,6 +87,17 @@ actual class PlatformStt actual constructor() : SpeechToText {
             recognizer = null
         }
     }.flowOn(Dispatchers.Main)
+
+    private fun errorText(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_NO_MATCH -> "puhetta ei tunnistettu"
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "en kuullut mitään"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "mikrofonilupa puuttuu"
+        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "verkkovirhe"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "tunnistin on varattu"
+        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "suomea ei tueta laitteella"
+        else -> "puheentunnistus epäonnistui ($error)"
+    }
 
     override suspend fun stopListening() = withContext(Dispatchers.Main) {
         recognizer?.stopListening() ?: Unit

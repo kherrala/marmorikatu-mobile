@@ -3,6 +3,8 @@ package fi.marmorikatu.core.di
 import fi.marmorikatu.core.audio.AudioPlayer
 import fi.marmorikatu.core.audio.AudioRecorder
 import fi.marmorikatu.core.audio.MicPermission
+import fi.marmorikatu.core.background.BackgroundMode
+import fi.marmorikatu.core.haptics.Haptics
 import fi.marmorikatu.core.config.ConfigStore
 import fi.marmorikatu.core.lifecycle.AppForeground
 import fi.marmorikatu.core.lifecycle.ConnectionManager
@@ -30,6 +32,7 @@ import fi.marmorikatu.core.speech.SpeechOutput
 import fi.marmorikatu.core.speech.SpeechToText
 import fi.marmorikatu.core.transport.bridge.BridgeApi
 import fi.marmorikatu.core.transport.http.createHttpClient
+import fi.marmorikatu.core.transport.influx.FluxClient
 import fi.marmorikatu.core.transport.mcp.DefaultMcpApi
 import fi.marmorikatu.core.transport.mcp.McpApi
 import fi.marmorikatu.core.transport.mcp.McpConnection
@@ -56,9 +59,10 @@ val coreModule: Module = module {
     single<McpApi> { DefaultMcpApi(get()) }
     single { BridgeApi(get(), get()) }
     single { BusApi(get(), get()) }
+    single { FluxClient(get(), get()) }
 
     single<LightsRepository> { DefaultLightsRepository(get(), get(), get()) }
-    single<ClimateRepository> { DefaultClimateRepository(get(), get(), get()) }
+    single<ClimateRepository> { DefaultClimateRepository(get(), get(), get(), get()) }
     single<EnergyRepository> { DefaultEnergyRepository(get(), get(), get()) }
     single<SaunaRepository> { DefaultSaunaRepository(get()) }
     single<TvRepository> { DefaultTvRepository(get()) }
@@ -74,6 +78,9 @@ val coreModule: Module = module {
             platformName = platformName,
         )
     }
+
+    single { Haptics() }
+    single { BackgroundMode() }
 
     single { AudioRecorder() }
     single { AudioPlayer() }

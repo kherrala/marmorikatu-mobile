@@ -1,5 +1,8 @@
 package fi.marmorikatu.core.transport.mcp
 
+import fi.marmorikatu.core.model.AirQuality
+import fi.marmorikatu.core.model.AirReading
+import fi.marmorikatu.core.model.ElectricityPrices
 import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.LightInfo
 import fi.marmorikatu.core.model.SpotPrice
@@ -38,7 +41,8 @@ interface McpApi {
     suspend fun getThermiaStatus(): JsonObject
     suspend fun getRoomTemperatures(): JsonObject
     suspend fun getSaunaStatus(): SaunaStatus
-    suspend fun getElectricityPrices(): List<SpotPrice>
+    suspend fun getElectricityPrices(): ElectricityPrices
+    suspend fun getAirQuality(): AirQuality
     suspend fun getEnergyConsumption(hours: Int = 24): JsonObject
 
     suspend fun getWeatherForecast(): WeatherForecast
@@ -131,23 +135,48 @@ class DefaultMcpApi(private val connection: McpConnection) : McpApi {
         )
     }
 
-    override suspend fun getElectricityPrices(): List<SpotPrice> {
-        val result = connection.callToolJson("get_electricity_prices")
-        val entries = when (result) {
-            is JsonArray -> result
-            is JsonObject -> result["prices"]?.jsonArray ?: JsonArray(emptyList())
-            else -> JsonArray(emptyList())
+    /**
+     * `get_electricity_prices` answers `{current_price_c_kwh, today:{…},
+     * today_prices:[{time, price_c_kwh}]}` — today at 15-minute resolution.
+     */
+    override suspend fun getElectricityPrices(): ElectricityPrices {
+        val obj = connection.callToolJson("get_electricity_prices").jsonObject
+        val today = obj["today"] as? JsonObject
+        return ElectricityPrices(
+            currentCentsPerKwh = obj["current_price_c_kwh"]?.jsonPrimitive?.doubleOrNull,
+            currentHour = obj["current_hour"]?.jsonPrimitive?.contentOrNull,
+            minCentsPerKwh = today?.get("min_c_kwh")?.jsonPrimitive?.doubleOrNull,
+            maxCentsPerKwh = today?.get("max_c_kwh")?.jsonPrimitive?.doubleOrNull,
+            avgCentsPerKwh = today?.get("avg_c_kwh")?.jsonPrimitive?.doubleOrNull,
+            today = obj["today_prices"]?.jsonArray.orEmpty().mapNotNull { entry ->
+                val e = entry as? JsonObject ?: return@mapNotNull null
+                val time = e["time"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val price = e["price_c_kwh"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+                SpotPrice(time, price)
+            },
+        )
+    }
+
+    override suspend fun getAirQuality(): AirQuality {
+        val obj = connection.callToolJson("get_air_quality").jsonObject
+        fun reading(key: String): AirReading? {
+            val r = obj[key] as? JsonObject ?: return null
+            val value = r["value"]?.jsonPrimitive?.doubleOrNull ?: return null
+            return AirReading(
+                value = value,
+                unit = r["unit"]?.jsonPrimitive?.contentOrNull ?: "",
+                status = r["status"]?.jsonPrimitive?.contentOrNull,
+            )
         }
-        return entries.mapNotNull { entry ->
-            val obj = entry as? JsonObject ?: return@mapNotNull null
-            val time = obj["time"]?.jsonPrimitive?.contentOrNull
-                ?: obj["timestamp"]?.jsonPrimitive?.contentOrNull
-                ?: return@mapNotNull null
-            val price = obj["price"]?.jsonPrimitive?.doubleOrNull
-                ?: obj["cents_per_kwh"]?.jsonPrimitive?.doubleOrNull
-                ?: return@mapNotNull null
-            SpotPrice(time, price)
-        }
+        return AirQuality(
+            co2 = reading("co2"),
+            pm25 = reading("pm2_5"),
+            voc = reading("voc"),
+            nox = reading("nox"),
+            humidity = reading("humidity"),
+            temperature = reading("temperature"),
+            location = obj["location"]?.jsonPrimitive?.contentOrNull ?: "",
+        )
     }
 
     override suspend fun getEnergyConsumption(hours: Int): JsonObject =

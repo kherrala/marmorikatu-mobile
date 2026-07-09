@@ -2,7 +2,7 @@ package fi.marmorikatu.core.repository
 
 import fi.marmorikatu.core.model.BusDepartures
 import fi.marmorikatu.core.model.EnergyReading
-import fi.marmorikatu.core.model.SpotPrice
+import fi.marmorikatu.core.model.ElectricityPrices
 import fi.marmorikatu.core.model.WeatherForecast
 import fi.marmorikatu.core.transport.mcp.McpApi
 import fi.marmorikatu.core.transport.mcp.SaunaStatus
@@ -24,7 +24,7 @@ interface EnergyRepository {
     /** Live meter readings keyed by meter name (`heatpump`, `extra`). */
     val liveEnergy: StateFlow<Map<String, EnergyReading>>
 
-    suspend fun electricityPrices(): List<SpotPrice>
+    suspend fun electricityPrices(): ElectricityPrices
     suspend fun energyConsumption(hours: Int = 24): JsonObject
 }
 
@@ -51,7 +51,7 @@ class DefaultEnergyRepository(
         }
     }
 
-    override suspend fun electricityPrices(): List<SpotPrice> = mcp.getElectricityPrices()
+    override suspend fun electricityPrices(): ElectricityPrices = mcp.getElectricityPrices()
     override suspend fun energyConsumption(hours: Int): JsonObject = mcp.getEnergyConsumption(hours)
 }
 

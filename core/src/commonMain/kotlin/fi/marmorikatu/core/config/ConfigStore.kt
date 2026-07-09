@@ -20,6 +20,12 @@ class ConfigStore(private val settings: Settings = Settings()) {
         settings.putString(KEY_SERVER_HOST, new.serverHost)
         settings.putString(KEY_MQTT_HOST, new.mqttHost)
         settings.putInt(KEY_MQTT_PORT, new.mqttPort)
+        settings.putBoolean(KEY_DARK_THEME, new.darkTheme)
+        settings.putBoolean(KEY_KID_MODE, new.kidMode)
+        settings.putBoolean(KEY_NATIVE_STT, new.useNativeStt)
+        settings.putBoolean(KEY_NATIVE_TTS, new.useNativeTts)
+        settings.putBoolean(KEY_HAPTICS, new.hapticsEnabled)
+        settings.putBoolean(KEY_BACKGROUND, new.backgroundEnabled)
         _config.value = new
     }
 
@@ -27,11 +33,23 @@ class ConfigStore(private val settings: Settings = Settings()) {
         serverHost = settings.getString(KEY_SERVER_HOST, AppConfig.DEFAULT_SERVER_HOST),
         mqttHost = settings.getString(KEY_MQTT_HOST, AppConfig.DEFAULT_MQTT_HOST),
         mqttPort = settings.getInt(KEY_MQTT_PORT, AppConfig.DEFAULT_MQTT_PORT),
+        darkTheme = settings.getBoolean(KEY_DARK_THEME, false),
+        kidMode = settings.getBoolean(KEY_KID_MODE, false),
+        useNativeStt = settings.getBoolean(KEY_NATIVE_STT, true),
+        useNativeTts = settings.getBoolean(KEY_NATIVE_TTS, true),
+        hapticsEnabled = settings.getBoolean(KEY_HAPTICS, true),
+        backgroundEnabled = settings.getBoolean(KEY_BACKGROUND, false),
     )
 
     private companion object {
         const val KEY_SERVER_HOST = "config.serverHost"
         const val KEY_MQTT_HOST = "config.mqttHost"
         const val KEY_MQTT_PORT = "config.mqttPort"
+        const val KEY_DARK_THEME = "ui.darkTheme"
+        const val KEY_KID_MODE = "ui.kidMode"
+        const val KEY_NATIVE_STT = "ui.nativeStt"
+        const val KEY_NATIVE_TTS = "ui.nativeTts"
+        const val KEY_HAPTICS = "ui.haptics"
+        const val KEY_BACKGROUND = "ui.background"
     }
 }
