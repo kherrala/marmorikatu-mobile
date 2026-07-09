@@ -71,11 +71,11 @@ Pluggable engines behind `SpeechToText` / `SpeechOutput`:
   (faster-whisper on the GPU box) → `POST /chat/stream` → per-sentence Piper
   WAV clips played through `AudioPlayer`. Same Finnish "house voice" as the
   kiosk.
-- **Native**: Android `SpeechRecognizer`/`TextToSpeech`; iOS
-  `AVSpeechSynthesizer` (TTS works; native iOS STT deliberately stubbed until
-  the AVAudioEngine capture path is built). Runtime capability checks decide
-  the fallback. Native engines are the default; both are switchable in Asetukset.
-  Listening times out after 12 s, and recording is capped at 30 s.
+- **Native**: Android `SpeechRecognizer`/`TextToSpeech`; iOS `SFSpeechRecognizer`
+  streaming AVAudioEngine buffers, plus `AVSpeechSynthesizer`. Runtime capability
+  checks decide the fallback (Finnish STT is not guaranteed on every iOS device).
+  Native engines are the default; both are switchable in Asetukset. Listening
+  times out after 12 s, and recording is capped at 30 s.
 
 ### Heat pump: read-only on purpose
 
@@ -164,16 +164,16 @@ repository data or an honest "Ei tietoa".
 
 ## Known gaps
 
-- **iOS native STT is stubbed.** `PlatformStt` on iOS reports a clear error so
-  the engine switcher falls back to server Whisper; live capture needs
-  `AVAudioEngine` + `SFSpeechAudioBufferRecognitionRequest`. Native TTS
-  (`AVSpeechSynthesizer`, fi-FI) is implemented.
-- **iOS was compiled, not run.** No Xcode on the current dev machine, so the
-  iOS framework compiles for `iosArm64`/`iosSimulatorArm64` but the app has
-  not been launched on a simulator/device. Checklist items 1–8 are verified on
-  Android against the live system.
+- **iOS runs, but only on the simulator.** Launched on an iPhone 17 Pro
+  simulator (iOS 26.5) against the live house: MQTT, MCP, the announcements SSE
+  feed, fonts and icons all work. Not yet run on a physical iPhone, where the
+  Local Network prompt and the microphone are the things to watch.
+- **iOS native STT is unverified.** The `SFSpeechRecognizer` + `AVAudioEngine`
+  path compiles and links, but the simulator has no usable microphone, so it has
+  never transcribed anything. If Finnish is unsupported on the device it falls
+  back to server Whisper automatically.
 - **`AVAudioSession.recordPermission` is deprecated** on iOS 17+ in favour of
-  `AVAudioApplication`; still functional, worth migrating when Xcode is set up.
+  `AVAudioApplication`; still functional, worth migrating.
 - **Heat pump feed is dead.** The ThermIQ collector last wrote to InfluxDB on
   2026-06-26, so COP, hot water and the indoor setpoint have no live source. The
   app shows "Ei tietoa" and a read-only "—" target rather than a stale number.

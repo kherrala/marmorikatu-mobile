@@ -1,30 +1,42 @@
 package fi.marmorikatu.core.speech
 
 import fi.marmorikatu.core.log.logger
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.AVFAudio.AVAudioEngine
+import platform.AVFAudio.AVAudioPCMBuffer
+import platform.AVFAudio.AVAudioSession
+import platform.AVFAudio.AVAudioSessionCategoryOptionDefaultToSpeaker
+import platform.AVFAudio.AVAudioSessionCategoryPlayAndRecord
+import platform.AVFAudio.AVAudioSessionModeMeasurement
 import platform.AVFAudio.AVSpeechBoundary
 import platform.AVFAudio.AVSpeechSynthesisVoice
 import platform.AVFAudio.AVSpeechSynthesizer
 import platform.AVFAudio.AVSpeechSynthesizerDelegateProtocol
 import platform.AVFAudio.AVSpeechUtterance
+import platform.AVFAudio.setActive
 import platform.Foundation.NSLocale
+import platform.Speech.SFSpeechAudioBufferRecognitionRequest
+import platform.Speech.SFSpeechRecognitionResult
+import platform.Speech.SFSpeechRecognitionTask
 import platform.Speech.SFSpeechRecognizer
+import platform.Speech.SFSpeechRecognizerAuthorizationStatus
 import platform.darwin.NSObject
 import kotlin.coroutines.resume
 
 /**
- * Native STT via the Speech framework. Finnish support depends on the iOS
- * version and device — [isAvailable] checks at runtime; when unavailable,
- * callers fall back to the server Whisper engine.
+ * Native STT via the Speech framework, streaming microphone buffers from
+ * AVAudioEngine into a live recognition request.
  *
- * Live audio capture via AVAudioEngine + SFSpeechAudioBufferRecognitionRequest
- * is a Phase-4+ enhancement; v1 reports unavailable unless the recognizer
- * exists AND is available, and the debug screen surfaces which engine ran.
+ * Finnish support is not guaranteed on every iOS version or device, so
+ * [isAvailable] checks the recogniser at runtime; when it says no, the caller
+ * falls back to the server Whisper pipeline.
  */
+@OptIn(ExperimentalForeignApi::class)
 actual class PlatformStt actual constructor() : SpeechToText {
     private val log = logger("stt-native")
     override val name = "ios-speech"
@@ -32,19 +44,94 @@ actual class PlatformStt actual constructor() : SpeechToText {
     private val recognizer: SFSpeechRecognizer? =
         SFSpeechRecognizer(locale = NSLocale(localeIdentifier = "fi_FI"))
 
-    override suspend fun isAvailable(): Boolean =
-        recognizer?.isAvailable() == true
+    private val audioEngine = AVAudioEngine()
+    private var request: SFSpeechAudioBufferRecognitionRequest? = null
+    private var task: SFSpeechRecognitionTask? = null
 
-    override fun listen(): Flow<SttEvent> = callbackFlow {
-        // Buffer-based live recognition needs AVAudioEngine plumbing that is
-        // deliberately deferred; emit a clear error so the engine switcher
-        // falls back to server STT instead of silently hanging.
-        trySend(SttEvent.Error("iOS-natiivi puheentunnistus ei ole vielä käytössä"))
-        close()
-        awaitClose { }
+    override suspend fun isAvailable(): Boolean {
+        val recognizer = recognizer ?: return false
+        if (!recognizer.isAvailable()) return false
+        return requestAuthorization()
     }
 
-    override suspend fun stopListening() {}
+    private suspend fun requestAuthorization(): Boolean =
+        suspendCancellableCoroutine { cont ->
+            SFSpeechRecognizer.requestAuthorization { status ->
+                cont.resume(status == SFSpeechRecognizerAuthorizationStatus.SFSpeechRecognizerAuthorizationStatusAuthorized)
+            }
+        }
+
+    override fun listen(): Flow<SttEvent> = callbackFlow {
+        val recognizer = recognizer
+        if (recognizer == null || !recognizer.isAvailable()) {
+            trySend(SttEvent.Error("puheentunnistus ei ole käytettävissä"))
+            close()
+            return@callbackFlow
+        }
+
+        // Measurement mode keeps iOS from applying its own processing to the
+        // signal we are about to transcribe.
+        val session = AVAudioSession.sharedInstance()
+        session.setCategory(
+            AVAudioSessionCategoryPlayAndRecord,
+            mode = AVAudioSessionModeMeasurement,
+            options = AVAudioSessionCategoryOptionDefaultToSpeaker,
+            error = null,
+        )
+        session.setActive(true, error = null)
+
+        val recognitionRequest = SFSpeechAudioBufferRecognitionRequest().apply {
+            shouldReportPartialResults = true
+        }
+        request = recognitionRequest
+
+        task = recognizer.recognitionTaskWithRequest(recognitionRequest) { result, error ->
+            val recognition = result as? SFSpeechRecognitionResult
+            if (recognition != null) {
+                val text = recognition.bestTranscription.formattedString
+                if (recognition.isFinal()) {
+                    trySend(if (text.isBlank()) SttEvent.Error("puhetta ei tunnistettu") else SttEvent.Final(text))
+                    close()
+                } else if (text.isNotBlank()) {
+                    trySend(SttEvent.Partial(text))
+                }
+            }
+            if (error != null) {
+                log.w { "recognition failed: ${error.localizedDescription}" }
+                trySend(SttEvent.Error("puheentunnistus epäonnistui"))
+                close()
+            }
+        }
+
+        val input = audioEngine.inputNode
+        val format = input.outputFormatForBus(0u)
+        input.installTapOnBus(bus = 0u, bufferSize = 1024u, format = format) { buffer, _ ->
+            (buffer as? AVAudioPCMBuffer)?.let(recognitionRequest::appendAudioPCMBuffer)
+        }
+        audioEngine.prepare()
+        runCatching { audioEngine.startAndReturnError(null) }
+            .onFailure {
+                trySend(SttEvent.Error("mikrofonia ei voitu avata"))
+                close()
+            }
+
+        awaitClose { teardown() }
+    }
+
+    override suspend fun stopListening() {
+        // End the audio, but let the task deliver its final transcription.
+        if (audioEngine.running) audioEngine.stop()
+        audioEngine.inputNode.removeTapOnBus(0u)
+        request?.endAudio()
+    }
+
+    private fun teardown() {
+        if (audioEngine.running) audioEngine.stop()
+        runCatching { audioEngine.inputNode.removeTapOnBus(0u) }
+        task?.cancel()
+        task = null
+        request = null
+    }
 }
 
 /** Native TTS via AVSpeechSynthesizer with the Finnish system voice. */
