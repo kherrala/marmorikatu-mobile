@@ -3,19 +3,27 @@ package fi.marmorikatu.app.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -27,11 +35,13 @@ import fi.marmorikatu.app.components.MkButton
 import fi.marmorikatu.app.components.MkButtonSize
 import fi.marmorikatu.app.components.MkButtonVariant
 import fi.marmorikatu.app.components.MkFreshness
+import fi.marmorikatu.app.components.MkIconButton
 import fi.marmorikatu.app.components.MkLight
 import fi.marmorikatu.app.components.MkLightMode
 import fi.marmorikatu.app.components.MkLightRow
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.icons.MkIcons
+import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.core.model.Light
@@ -52,6 +62,9 @@ fun ValotScreen(
     val refreshing by viewModel.refreshing.collectAsState()
     val updatedAt by viewModel.updatedAt.collectAsState()
     val colors = MkTheme.colors
+
+    // Show one floor at a time (design: paged by floor with a selector).
+    var floorIndex by remember { mutableStateOf(0) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
 
@@ -115,13 +128,16 @@ fun ValotScreen(
                 }
             }
 
-            state.floors.forEach { section ->
-                item(key = "floor:${section.label}") {
-                    Text(
-                        text = section.label,
-                        style = MkTheme.type.readout(11).copy(letterSpacing = 0.14.em),
-                        color = colors.inkLo,
-                        modifier = Modifier.padding(start = 2.dp, top = 5.dp),
+            if (state.floors.isNotEmpty()) {
+                val idx = floorIndex.coerceIn(0, state.floors.size - 1)
+                val section = state.floors[idx]
+                item(key = "floor-nav") {
+                    FloorSelector(
+                        label = section.label,
+                        onCount = section.areas.count { it.isOn() },
+                        index = idx,
+                        count = state.floors.size,
+                        onSelect = { floorIndex = it },
                     )
                 }
                 items(section.areas, key = { it.key }) { area ->
@@ -130,6 +146,55 @@ fun ValotScreen(
                         is AreaUi.SingleLight -> SingleLightRow(area.light, viewModel)
                     }
                 }
+            }
+        }
+    }
+}
+
+/** Floor pager header: prev/next arrows, the floor name + how many areas are on, and page dots. */
+@Composable
+private fun FloorSelector(label: String, onCount: Int, index: Int, count: Int, onSelect: (Int) -> Unit) {
+    val c = MkTheme.colors
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            MkIconButton(
+                icon = MkIcons.CaretLeft,
+                label = "Edellinen kerros",
+                onClick = { onSelect((index - 1 + count) % count) },
+                enabled = count > 1,
+            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(label, style = MkTheme.type.heading, color = c.inkHi, maxLines = 1)
+                Text(
+                    text = if (onCount > 0) "$onCount aluetta päällä" else "Kaikki pois",
+                    style = MkTheme.type.readout(11),
+                    color = if (onCount > 0) c.accent else c.inkLo,
+                )
+            }
+            MkIconButton(
+                icon = MkIcons.CaretRight,
+                label = "Seuraava kerros",
+                onClick = { onSelect((index + 1) % count) },
+                enabled = count > 1,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            repeat(count) { i ->
+                Box(
+                    modifier = Modifier
+                        .height(6.dp)
+                        .defaultMinSize(minWidth = if (i == index) 16.dp else 6.dp)
+                        .clip(RoundedCornerShape(MkRadius.round))
+                        .background(if (i == index) c.accent else c.track),
+                )
             }
         }
     }

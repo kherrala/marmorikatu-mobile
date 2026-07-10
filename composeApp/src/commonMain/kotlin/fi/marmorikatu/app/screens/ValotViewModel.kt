@@ -29,6 +29,12 @@ data class ValotUiState(
 /** One floor's section: a header label and the areas under it. */
 data class FloorSection(val label: String, val areas: List<AreaUi>)
 
+/** Whether an area has any light on — a scene above Off, or a lit single fixture. */
+internal fun AreaUi.isOn(): Boolean = when (this) {
+    is AreaUi.SceneArea -> level != LightLevel.Off
+    is AreaUi.SingleLight -> light.displayedOn
+}
+
 /** An area is either a multi-light scene card or a lone light row. */
 sealed interface AreaUi {
     val key: String
@@ -178,11 +184,6 @@ class ValotViewModel(
             }
             FloorSection(label = floor.label, areas = items)
         }
-
-    private fun AreaUi.isOn(): Boolean = when (this) {
-        is AreaUi.SceneArea -> level != LightLevel.Off
-        is AreaUi.SingleLight -> light.displayedOn
-    }
 
     private companion object {
         fun ceilHalf(size: Int): Int = (size + 1) / 2
