@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -78,12 +79,14 @@ fun MkLineChart(
     height: Dp = 180.dp,
     grid: Int = 4,
     showLegend: Boolean = true,
+    showYAxis: Boolean = true,
 ) {
     val colors = MkTheme.colors
     val allValues = series.flatMap { it.values }
     val lo = min ?: (allValues.minOrNull() ?: 0f)
     val hiRaw = max ?: (allValues.maxOrNull() ?: 1f)
     val span = (hiRaw - lo).let { if (it == 0f) 1f else it }
+    val yAxisWidth = 34.dp
 
     Column(modifier = modifier.fillMaxWidth()) {
         if (showLegend && series.any { it.name != null }) {
@@ -114,11 +117,15 @@ fun MkLineChart(
             }
         }
 
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(height),
-        ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            if (showYAxis) {
+                YAxisLabels(lo = lo, hi = hiRaw, ticks = grid + 1, height = height, width = yAxisWidth)
+            }
+            Canvas(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(height),
+            ) {
             val w = size.width
             val h = size.height
 
@@ -177,22 +184,52 @@ fun MkLineChart(
                     ),
                 )
             }
+            }
         }
 
         if (labels.isNotEmpty()) {
-            AxisLabels(labels)
+            AxisLabels(labels, startPadding = if (showYAxis) yAxisWidth else 0.dp)
+        }
+    }
+}
+
+/**
+ * Value axis down the left edge: [ticks] labels from [hi] (top) to [lo] (bottom),
+ * spaced to line up with the chart's horizontal gridlines.
+ */
+@Composable
+private fun YAxisLabels(lo: Float, hi: Float, ticks: Int, height: Dp, width: Dp) {
+    val colors = MkTheme.colors
+    val span = hi - lo
+    val decimals = if (kotlin.math.abs(span) >= 20f || kotlin.math.abs(hi) >= 100f) 0 else 1
+    Column(
+        modifier = Modifier
+            .width(width)
+            .height(height)
+            .padding(end = 6.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+        horizontalAlignment = Alignment.End,
+    ) {
+        for (i in 0 until ticks) {
+            val v = hi - i.toFloat() / (ticks - 1).coerceAtLeast(1) * span
+            Text(
+                text = formatDecimals(v, decimals),
+                style = MkTheme.type.readout(9),
+                color = colors.vizAxis,
+                maxLines = 1,
+            )
         }
     }
 }
 
 /** Shared `mk-chart-axis` row: space-between mono 10sp axis labels. */
 @Composable
-private fun AxisLabels(labels: List<String>) {
+private fun AxisLabels(labels: List<String>, startPadding: Dp = 0.dp) {
     val colors = MkTheme.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 4.dp),
+            .padding(start = startPadding, top = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         labels.forEach {
@@ -388,13 +425,14 @@ fun MkMetricDetail(
     label: String,
     value: String,
     unit: String,
-    range: TimeRangeOption,
-    onRangeChange: (TimeRangeOption) -> Unit,
     series: List<MkSeries>,
     labels: List<String>,
     stats: List<MkStat>,
     modifier: Modifier = Modifier,
     status: String = "accent",
+    // Optional: only a metric with real range-dependent history shows the picker.
+    range: TimeRangeOption? = null,
+    onRangeChange: ((TimeRangeOption) -> Unit)? = null,
 ) {
     val colors = MkTheme.colors
     // Note: MetricDetail alarm is the ink variant, unlike Gauge's --status-alarm.
@@ -446,7 +484,16 @@ fun MkMetricDetail(
                     )
                 }
             }
-            MkTimeRange(value = range, onChange = onRangeChange)
+        }
+
+        // Only when the metric actually has multiple windows to switch between;
+        // full-width on its own row so it never crushes the title.
+        if (range != null && onRangeChange != null) {
+            MkTimeRange(
+                value = range,
+                onChange = onRangeChange,
+                modifier = Modifier.padding(bottom = 12.dp),
+            )
         }
 
         MkLineChart(

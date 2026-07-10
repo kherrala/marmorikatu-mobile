@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,7 +38,6 @@ import fi.marmorikatu.app.components.MkMetricDetail
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.components.MkSeries
 import fi.marmorikatu.app.components.MkStatTile
-import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkSpacing
@@ -48,6 +49,7 @@ import org.koin.compose.viewmodel.koinViewModel
  * and a 2-column KPI grid. Tapping a KPI swaps the page for its [MkMetricDetail]
  * with a "Takaisin" affordance.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     val state by viewModel.uiState.collectAsState()
@@ -58,10 +60,12 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     LaunchedEffect(Unit) { viewModel.refresh() }
 
     var selKey by remember { mutableStateOf<String?>(null) }
-    var range by remember { mutableStateOf(TimeRangeOption.H24) }
     var roomIndex by remember { mutableStateOf(0) }
     var doorDismissed by remember { mutableStateOf(false) }
     var cameraOpen by remember { mutableStateOf(false) }
+
+    // System back leaves the KPI detail for the grid instead of quitting.
+    BackHandler(enabled = selKey != null) { selKey = null }
 
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
         Column(
@@ -106,8 +110,6 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     label = selected.label,
                     value = selected.value,
                     unit = selected.unit ?: selected.detailUnit,
-                    range = range,
-                    onRangeChange = { range = it },
                     series = series,
                     labels = selected.labels,
                     stats = selected.stats,

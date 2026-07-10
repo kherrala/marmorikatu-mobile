@@ -1,5 +1,7 @@
 package fi.marmorikatu.app.shell
 
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -60,6 +62,7 @@ import org.koin.compose.viewmodel.koinViewModel
  * layout, the shelf tablet gets the nav rail. Kid mode stays an explicit
  * choice a parent makes, not a size class.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun MarmorikatuApp(
     widthDp: Int,
@@ -78,12 +81,14 @@ fun MarmorikatuApp(
     // layer directly. Long-press the brand kicker to reach it.
     var showDebug by remember { mutableStateOf(false) }
     if (showDebug) {
+        BackHandler { showDebug = false }
         DebugOverlay(onClose = { showDebug = false })
         return
     }
 
     var showSettings by remember { mutableStateOf(false) }
     if (showSettings) {
+        BackHandler { showSettings = false }
         SettingsSheet(
             viewModel = viewModel,
             onDismiss = { showSettings = false },
@@ -93,6 +98,12 @@ fun MarmorikatuApp(
             },
         )
     }
+
+    // System back returns to Koti from any other tab instead of quitting the
+    // app. On Koti, deeper handlers (e.g. a KPI detail) take precedence, and
+    // with nothing open the OS default (exit) applies.
+    val tab by viewModel.tab.collectAsState()
+    BackHandler(enabled = tab != Tab.Koti) { viewModel.setTab(Tab.Koti) }
 
     val openDebug = { showDebug = true }
     val openSettings = { showSettings = true }
