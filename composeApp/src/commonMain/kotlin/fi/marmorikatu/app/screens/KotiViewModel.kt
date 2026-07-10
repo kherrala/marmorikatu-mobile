@@ -245,10 +245,14 @@ class KotiViewModel(
         return targets.filter { (l, on) -> l.displayedOn != on }.map { (l, on) -> l.id to on }
     }
 
-    /** Read the top headline + summary aloud with the device voice (the card's "Lue"). */
+    /** Read the news aloud with the device voice — every headline and its summary. */
     fun readNews() {
-        val headline = _news.value.firstOrNull() ?: return
-        viewModelScope.launch { runCatching { tts.speak(headline.fullText) } }
+        val items = _news.value
+        if (items.isEmpty()) return
+        val digest = items.joinToString(". ") { h ->
+            if (h.description.isBlank()) h.title else "${h.title}. ${h.description}"
+        }
+        viewModelScope.launch { runCatching { tts.speak(digest) } }
     }
 
     private fun loadNews() {

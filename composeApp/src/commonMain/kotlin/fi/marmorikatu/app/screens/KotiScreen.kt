@@ -169,7 +169,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
             }
 
             news.firstOrNull()?.let { top ->
-                NewsCard(top, onOpen = { newsOpen = true })
+                NewsCard(top, onOpen = { newsOpen = true }, onRead = viewModel::readNews)
                 if (newsOpen) {
                     MkArticleViewer(
                         title = "Uutiset",
@@ -216,47 +216,67 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     }
 }
 
-/** Top news headline; tapping opens the full text. Per the design's news card. */
+/** Top news headline: the left opens the full list, the speaker reads it aloud. */
 @Composable
-private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit) {
+private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit, onRead: () -> Unit) {
     val c = MkTheme.colors
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.lg)
+    val pill = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.round)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(c.surfaceCard)
             .border(1.dp, c.borderSubtle, shape)
-            .clickable(onClick = onOpen)
-            .padding(horizontal = 13.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 13.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
+        // Left: icon + headline — tapping opens the full news list.
+        Row(
             modifier = Modifier
-                .size(38.dp)
+                .weight(1f)
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.md))
-                .background(c.accentDim),
-            contentAlignment = Alignment.Center,
+                .clickable(onClick = onOpen)
+                .padding(vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            androidx.compose.material3.Icon(MkIcons.Info, null, tint = c.accent, modifier = Modifier.size(19.dp))
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.md))
+                    .background(c.accentDim),
+                contentAlignment = Alignment.Center,
+            ) {
+                androidx.compose.material3.Icon(MkIcons.Info, null, tint = c.accent, modifier = Modifier.size(19.dp))
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Uutiset" + news.published.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                    style = MkTheme.type.readout(10).copy(letterSpacing = 0.1.em),
+                    color = c.inkLo,
+                )
+                Text(
+                    text = news.title,
+                    style = MkTheme.type.heading,
+                    color = c.inkHi,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
         }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Uutiset" + news.published.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
-                style = MkTheme.type.readout(10).copy(letterSpacing = 0.1.em),
-                color = c.inkLo,
-            )
-            Text(
-                text = news.title,
-                style = MkTheme.type.heading,
-                color = c.inkHi,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            )
-        }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            androidx.compose.material3.Icon(MkIcons.SpeakerHigh, null, tint = c.accent, modifier = Modifier.size(17.dp))
+        // Right: the speaker reads every headline aloud.
+        Row(
+            modifier = Modifier
+                .clip(pill)
+                .background(c.accentDim)
+                .clickable(onClick = onRead)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            androidx.compose.material3.Icon(MkIcons.SpeakerHigh, "Lue uutiset", tint = c.accent, modifier = Modifier.size(18.dp))
             Text("Lue", style = MkTheme.type.readout(10).copy(letterSpacing = 0.06.em), color = c.accent)
         }
     }

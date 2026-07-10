@@ -191,10 +191,11 @@ class ValotViewModel(
             val windows = floorLights.filter { it.isWindow() }
             val rest = floorLights.filterNot { it.isWindow() }
 
+            // The sauna only merges the bathroom on the floor it actually lives on.
+            val saunaFloor = rest.any { it.name.contains("sauna", ignoreCase = true) }
             val areas = LinkedHashMap<String, MutableList<Light>>()
             rest.forEach { light ->
-                val area = light.name.trim().substringBefore(' ').ifBlank { light.name }
-                areas.getOrPut(area) { mutableListOf() }.add(light)
+                areas.getOrPut(areaNameFor(light, saunaFloor)) { mutableListOf() }.add(light)
             }
 
             val items = mutableListOf<AreaUi>()
@@ -226,11 +227,32 @@ class ValotViewModel(
         fun Light.isWindow(): Boolean =
             name.contains("ikkuna", ignoreCase = true)
 
+        /**
+         * The area a fixture belongs to. Beyond the first-word default this
+         * folds the entry hall together (foyer + vestibule + storage → Eteinen),
+         * puts the dining lights under the kitchen, and merges the bathroom into
+         * the sauna on the floor the sauna is on.
+         */
+        fun areaNameFor(light: Light, saunaFloor: Boolean): String {
+            val n = light.name
+            val first = n.trim().substringBefore(' ').ifBlank { n }
+            return when {
+                n.contains("Eteinen", ignoreCase = true) ||
+                    n.contains("Tuulikaappi", ignoreCase = true) ||
+                    (first.equals("Varasto", ignoreCase = true) && !n.contains("ulko", ignoreCase = true)) -> "Eteinen"
+                n.contains("Ruokailu", ignoreCase = true) -> "Keittiö"
+                first.equals("Sauna", ignoreCase = true) || first.equals("Saunan", ignoreCase = true) -> "Sauna"
+                saunaFloor && (first.startsWith("Kylpy", ignoreCase = true) || first.startsWith("Kylpu", ignoreCase = true)) -> "Sauna"
+                else -> first
+            }
+        }
+
         /** Utility rooms get plain on/off switches, never a dimmer ladder. */
         fun isPlainGroup(area: String): Boolean {
             val a = area.lowercase()
             return a.startsWith("wc") || a.startsWith("kylpy") || a.startsWith("kylpu") ||
-                a.startsWith("mh") || a.startsWith("sauna") || a.startsWith("tekninen")
+                a.startsWith("mh") || a.startsWith("sauna") || a.startsWith("tekninen") ||
+                a.startsWith("kodinhoito")
         }
 
         /** Render order within a floor: dimmers → on/off groups → singles → windows. */
