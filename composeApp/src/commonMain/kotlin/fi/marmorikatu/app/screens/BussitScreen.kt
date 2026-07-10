@@ -25,8 +25,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import fi.marmorikatu.app.components.MkCard
 import fi.marmorikatu.app.components.MkCardPadding
+import fi.marmorikatu.app.components.MkCardStatus
 import fi.marmorikatu.app.components.MkFreshness
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.components.MkTag
@@ -98,7 +100,20 @@ fun BussitScreen(viewModel: BussitViewModel = koinViewModel()) {
                 }
 
                 else -> {
-                    items(state.departures, key = { it.lineRef + it.departureTimeMs }) { d ->
+                    val featured = state.departures.first()
+                    val rest = state.departures.drop(1)
+                    item(key = "featured") { FeaturedDepartureCard(featured) }
+                    if (rest.isNotEmpty()) {
+                        item(key = "rest-head") {
+                            Text(
+                                text = "Seuraavat lähdöt",
+                                style = MkTheme.type.heading,
+                                color = c.inkMid,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                    items(rest, key = { it.lineRef + it.departureTimeMs }) { d ->
                         DepartureCard(d)
                     }
                     item {
@@ -124,6 +139,101 @@ fun BussitScreen(viewModel: BussitViewModel = koinViewModel()) {
                 }
             }
         }
+    }
+}
+
+/** The soonest departure, promoted to a large card: line, leave/arrive times, leave-by. */
+@Composable
+private fun FeaturedDepartureCard(d: BusDeparture) {
+    val c = MkTheme.colors
+    val minutes = Fmt.minutesUntil(d.departureTimeMs)
+    val leaveIn = d.leaveByMs?.let { Fmt.minutesUntil(it) }
+    val walk = d.leaveByMs?.let { ((d.departureTimeMs - it) / 60_000L).toInt() }?.takeIf { it > 0 }
+    val status = when {
+        leaveIn != null && leaveIn <= 0 -> MkCardStatus.Warn
+        minutes < 3 -> MkCardStatus.Accent
+        else -> MkCardStatus.None
+    }
+
+    MkCard(status = status, interactive = false) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 46.dp)
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(MkRadius.sm))
+                    .background(c.accent)
+                    .padding(horizontal = 12.dp),
+            ) {
+                Text(d.lineRef, style = MkTheme.type.readout(20, FontWeight.SemiBold), color = c.inkOnAccent, maxLines = 1)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = d.destinationName,
+                    style = MkTheme.type.heading,
+                    color = c.inkHi,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val sub = listOfNotNull(
+                    d.stopName.takeIf { it.isNotBlank() },
+                    walk?.let { "$it min kävelyä" },
+                ).joinToString(" · ")
+                if (sub.isNotBlank()) {
+                    Text(sub, style = MkTheme.type.readout(11), color = c.inkLo, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            when {
+                d.vehicleAtStop -> MkTag(text = "PYSÄKILLÄ", status = MkTagStatus.Accent)
+                (d.delaySeconds ?: 0) > 60 -> MkTag(text = "MYÖHÄSSÄ", status = MkTagStatus.Warn)
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            FeaturedMetric("Lähtee", Fmt.clock(d.departureTimeMs / 1000.0), c.inkHi)
+            FeaturedMetric(
+                "Aikaa",
+                if (minutes < 1) "nyt" else "$minutes min",
+                c.accent,
+                align = Alignment.CenterHorizontally,
+            )
+            if (leaveIn != null) {
+                FeaturedMetric(
+                    "Kotoa",
+                    if (leaveIn <= 0) "Lähde nyt" else "$leaveIn min",
+                    if (leaveIn <= 3) c.warm else c.inkHi,
+                    align = Alignment.End,
+                    valueSize = 18,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeaturedMetric(
+    label: String,
+    value: String,
+    valueColor: androidx.compose.ui.graphics.Color,
+    align: Alignment.Horizontal = Alignment.Start,
+    valueSize: Int = 26,
+) {
+    val c = MkTheme.colors
+    Column(horizontalAlignment = align) {
+        Text(
+            text = label.uppercase(),
+            style = MkTheme.type.readout(10).copy(letterSpacing = 0.12.em),
+            color = c.inkLo,
+        )
+        Text(value, style = MkTheme.type.readout(valueSize), color = valueColor, maxLines = 1)
     }
 }
 
