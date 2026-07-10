@@ -14,6 +14,7 @@ import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.core.model.AirQuality
 import fi.marmorikatu.core.model.Announcement
 import fi.marmorikatu.core.model.ElectricityPrices
+import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.HeatPumpStatus
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.HvacSummary
@@ -23,6 +24,7 @@ import fi.marmorikatu.core.model.SpotPrice
 import fi.marmorikatu.core.repository.AnnouncementsRepository
 import fi.marmorikatu.core.repository.ClimateRepository
 import fi.marmorikatu.core.repository.EnergyRepository
+import fi.marmorikatu.core.repository.LightsRepository
 import fi.marmorikatu.core.repository.SaunaRepository
 import fi.marmorikatu.core.transport.mcp.SaunaStatus
 import kotlinx.coroutines.async
@@ -37,6 +39,14 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
+
+/** The home dashboard's one-tap lighting quick-states. */
+enum class KotiLightPreset(val label: String, val icon: ImageVector) {
+    AllOff("Kaikki pois", MkIcons.Moon),
+    Downstairs("Alakerta", MkIcons.HouseFill),
+    Upstairs("Yläkerta", MkIcons.BedFill),
+    AllOn("Kaikki päälle", MkIcons.LightbulbFill),
+}
 
 /** "At the door" banner content, surfaced only for a person announcement. */
 data class DoorInfo(
@@ -90,8 +100,23 @@ class KotiViewModel(
     private val climateRepo: ClimateRepository,
     private val energyRepo: EnergyRepository,
     private val saunaRepo: SaunaRepository,
+    private val lightsRepo: LightsRepository,
     announcementsRepo: AnnouncementsRepository,
 ) : ViewModel() {
+
+    /** Home-dashboard lighting quick-states. Best effort — failures are quiet. */
+    fun runLightPreset(preset: KotiLightPreset) {
+        viewModelScope.launch {
+            runCatching {
+                when (preset) {
+                    KotiLightPreset.AllOff -> lightsRepo.setAll(false)
+                    KotiLightPreset.AllOn -> lightsRepo.setAll(true)
+                    KotiLightPreset.Downstairs -> lightsRepo.setFloor(Floor.ALAKERTA, true)
+                    KotiLightPreset.Upstairs -> lightsRepo.setFloor(Floor.YLAKERTA, true)
+                }
+            }
+        }
+    }
 
     /** On-demand snapshots that back the strip + KPIs. */
     private data class Snapshots(

@@ -16,6 +16,7 @@ val kotiModule = module {
             climateRepo = get(),
             energyRepo = get(),
             saunaRepo = get(),
+            lightsRepo = get(),
             announcementsRepo = get(),
         )
     }

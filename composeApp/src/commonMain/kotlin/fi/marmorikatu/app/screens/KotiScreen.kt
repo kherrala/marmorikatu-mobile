@@ -1,6 +1,8 @@
 package fi.marmorikatu.app.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -159,6 +162,9 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 }
             }
 
+            SectionLabel("Valaistus")
+            LightPresetRow(onPreset = viewModel::runLightPreset)
+
             if (state.rooms.isNotEmpty()) {
                 val safeIndex = roomIndex.coerceIn(0, state.rooms.size - 1)
                 SectionLabel("Lämpötilat")
@@ -178,6 +184,45 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     Text("Ladataan…", style = MkTheme.type.label, color = colors.inkLo)
                 state.error != null ->
                     Text(state.error!!, style = MkTheme.type.label, color = colors.inkLo)
+            }
+        }
+    }
+}
+
+/** Four one-tap lighting quick-states, per the design's "Pikatilat" grid. */
+@Composable
+private fun LightPresetRow(onPreset: (KotiLightPreset) -> Unit) {
+    val c = MkTheme.colors
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.md)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        KotiLightPreset.entries.forEach { p ->
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(shape)
+                    .background(c.surfaceCard)
+                    .border(1.dp, c.borderSubtle, shape)
+                    .clickable { onPreset(p) }
+                    .padding(vertical = 11.dp, horizontal = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                androidx.compose.material3.Icon(
+                    imageVector = p.icon,
+                    contentDescription = null,
+                    tint = c.accent,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = p.label,
+                    style = MkTheme.type.label,
+                    color = c.inkMid,
+                    maxLines = 2,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
             }
         }
     }
