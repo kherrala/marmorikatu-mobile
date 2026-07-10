@@ -29,20 +29,21 @@ data class ValotUiState(
 /** One floor's section: a header label and the areas under it. */
 data class FloorSection(val label: String, val areas: List<AreaUi>)
 
-/** Whether an area has any light on — a scene above Off, or a lit single fixture. */
+/** Whether an area has any light on. */
 internal fun AreaUi.isOn(): Boolean = when (this) {
     is AreaUi.SceneArea -> level != LightLevel.Off
+    is AreaUi.ToggleGroup -> lights.any { it.displayedOn }
     is AreaUi.SingleLight -> light.displayedOn
 }
 
-/** An area is either a multi-light scene card or a lone light row. */
+/** An area is a dimmable scene card, a plain on/off group, or a lone light row. */
 sealed interface AreaUi {
     val key: String
 
     /**
-     * Two or more lights sharing a first word. [level] is derived from how many
-     * are on; [lights] are kept in stable id order so the scene ladder turns on
-     * the first N.
+     * Two or more lights sharing a first word, controlled by a dimmer ladder.
+     * [level] is derived from how many are on; [lights] are kept in stable id
+     * order so the ladder turns on the first N.
      */
     data class SceneArea(
         val floorLabel: String,
@@ -51,6 +52,19 @@ sealed interface AreaUi {
         val lights: List<Light>,
     ) : AreaUi {
         override val key: String get() = "scene:$floorLabel:$name"
+    }
+
+    /**
+     * A group with only plain on/off switches (no dimmer) — utility rooms (WC,
+     * bathrooms, bedrooms) and the decorative window lights, where levels make
+     * no sense. Each fixture toggles independently.
+     */
+    data class ToggleGroup(
+        val floorLabel: String,
+        val name: String,
+        val lights: List<Light>,
+    ) : AreaUi {
+        override val key: String get() = "group:$floorLabel:$name"
     }
 
     /** A single fixture rendered as a plain toggle row. */
@@ -173,25 +187,31 @@ class ValotViewModel(
             val floorLights = list.filter { it.floor == floor }
             if (floorLights.isEmpty()) return@mapNotNull null
 
+            // Decorative window lights are pulled out into their own group.
+            val windows = floorLights.filter { it.isWindow() }
+            val rest = floorLights.filterNot { it.isWindow() }
+
             val areas = LinkedHashMap<String, MutableList<Light>>()
-            floorLights.forEach { light ->
+            rest.forEach { light ->
                 val area = light.name.trim().substringBefore(' ').ifBlank { light.name }
                 areas.getOrPut(area) { mutableListOf() }.add(light)
             }
 
-            val items = areas.map { (areaName, group) ->
-                if (group.size >= 2) {
-                    AreaUi.SceneArea(
-                        floorLabel = floor.label,
-                        name = areaName,
-                        level = levelFor(group),
-                        lights = group.toList(),
-                    )
-                } else {
-                    AreaUi.SingleLight(floor.label, group.first())
+            val items = mutableListOf<AreaUi>()
+            areas.forEach { (areaName, group) ->
+                items += when {
+                    group.size == 1 -> AreaUi.SingleLight(floor.label, group.first())
+                    isPlainGroup(areaName) -> AreaUi.ToggleGroup(floor.label, areaName, group.toList())
+                    else -> AreaUi.SceneArea(floor.label, areaName, levelFor(group), group.toList())
                 }
             }
-            FloorSection(label = floor.label, areas = items)
+            if (windows.isNotEmpty()) {
+                items += AreaUi.ToggleGroup(floor.label, "Ikkunavalot", windows.toList())
+            }
+
+            // Dimmable rooms first for clarity, then plain on/off groups, then
+            // lone fixtures; the decorative window group always sits last.
+            FloorSection(label = floor.label, areas = items.sortedBy { tierOf(it) })
         }
 
     private companion object {
@@ -201,6 +221,24 @@ class ValotViewModel(
         fun ceilHalf(size: Int): Int = (size + 1) / 2
 
         fun Light.isLed(): Boolean = name.contains("ledi", ignoreCase = true)
+
+        /** Decorative window lights — grouped apart from a room's normal lighting. */
+        fun Light.isWindow(): Boolean =
+            name.contains("ikkuna", ignoreCase = true)
+
+        /** Utility rooms get plain on/off switches, never a dimmer ladder. */
+        fun isPlainGroup(area: String): Boolean {
+            val a = area.lowercase()
+            return a.startsWith("wc") || a.startsWith("kylpy") || a.startsWith("kylpu") ||
+                a.startsWith("mh") || a.startsWith("sauna") || a.startsWith("tekninen")
+        }
+
+        /** Render order within a floor: dimmers → on/off groups → singles → windows. */
+        fun tierOf(area: AreaUi): Int = when (area) {
+            is AreaUi.SceneArea -> 0
+            is AreaUi.ToggleGroup -> if (area.name == "Ikkunavalot") 3 else 1
+            is AreaUi.SingleLight -> 2
+        }
 
         /**
          * Which ladder step the area's live state reflects. All on → Full; any

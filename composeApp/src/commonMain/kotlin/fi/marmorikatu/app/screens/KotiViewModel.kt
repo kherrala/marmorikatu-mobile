@@ -215,7 +215,14 @@ class KotiViewModel(
         val common = lights.filterNot { it.name.trim().startsWith("MH", ignoreCase = true) }
         val targets: List<Pair<Light, Boolean>> = when (scene) {
             KotiScene.Portaikko -> common.filter { it.has("Portaikko", "Aula rappuset") }.map { it to true }
-            KotiScene.Olohuone -> common.filter { it.has("Olohuone") }.map { it to true }
+            // Only the ceiling light — the LED strip is too bright for the mood.
+            KotiScene.Olohuone -> common.mapNotNull { l ->
+                when {
+                    l.has("Olohuone") && l.has("katto") -> l to true
+                    l.has("Olohuone") && l.has("ledi") -> l to false
+                    else -> null
+                }
+            }
             KotiScene.Keittio -> common
                 .filter { it.has("Ruokailu") || (it.has("Keittiö") && it.has("atto")) }
                 .map { it to true }

@@ -143,6 +143,7 @@ fun ValotScreen(
                 items(section.areas, key = { it.key }) { area ->
                     when (area) {
                         is AreaUi.SceneArea -> SceneAreaCard(area, viewModel)
+                        is AreaUi.ToggleGroup -> ToggleGroupCard(area, viewModel)
                         is AreaUi.SingleLight -> SingleLightRow(area.light, viewModel)
                     }
                 }
@@ -219,6 +220,29 @@ private fun SceneAreaCard(area: AreaUi.SceneArea, viewModel: ValotViewModel) {
         lights = chips,
         showLights = true,
         // A scene ladder cannot say "just this one light"; tapping a chip can.
+        onLightToggle = { index, on ->
+            area.lights.getOrNull(index)?.let { viewModel.toggle(it.id, on) }
+        },
+    )
+}
+
+@Composable
+private fun ToggleGroupCard(area: AreaUi.ToggleGroup, viewModel: ValotViewModel) {
+    val chips = area.lights.map { light ->
+        MkLight(
+            name = if (light.pendingOn != null) "${light.name}…" else light.name,
+            on = light.displayedOn,
+        )
+    }
+    MkAreaLightCard(
+        name = area.name,
+        modifier = Modifier.fillMaxWidth(),
+        icon = areaIcon(area.name),
+        mode = MkLightMode.Switch,
+        lights = chips,
+        showLights = true,
+        on = area.lights.firstOrNull()?.displayedOn ?: false,
+        onToggle = { on -> area.lights.firstOrNull()?.let { viewModel.toggle(it.id, on) } },
         onLightToggle = { index, on ->
             area.lights.getOrNull(index)?.let { viewModel.toggle(it.id, on) }
         },
