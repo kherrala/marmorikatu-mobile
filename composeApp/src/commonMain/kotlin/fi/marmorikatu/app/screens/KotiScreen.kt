@@ -39,6 +39,7 @@ import fi.marmorikatu.app.components.MkAttentionStrip
 import fi.marmorikatu.app.components.MkButton
 import fi.marmorikatu.app.components.MkButtonSize
 import fi.marmorikatu.app.components.MkButtonVariant
+import fi.marmorikatu.app.components.MkArticleViewer
 import fi.marmorikatu.app.components.MkCameraViewer
 import fi.marmorikatu.app.components.MkClimateCard
 import fi.marmorikatu.app.components.MkDoorAlert
@@ -75,6 +76,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     var roomIndex by remember { mutableStateOf(0) }
     var doorDismissed by remember { mutableStateOf(false) }
     var cameraOpen by remember { mutableStateOf(false) }
+    var newsOpen by remember { mutableStateOf(false) }
 
     // System back leaves the KPI detail for the grid instead of quitting.
     BackHandler(enabled = selKey != null) { selKey = null }
@@ -166,7 +168,19 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 }
             }
 
-            news?.let { NewsCard(it, onRead = viewModel::readNews) }
+            news?.let { headline ->
+                NewsCard(headline, onOpen = { newsOpen = true })
+                if (newsOpen) {
+                    MkArticleViewer(
+                        title = headline.title,
+                        body = headline.description.ifBlank { headline.title },
+                        meta = listOf(headline.source.ifBlank { "Uutiset" }, headline.published)
+                            .filter { it.isNotBlank() }.joinToString(" · "),
+                        onRead = viewModel::readNews,
+                        onDismiss = { newsOpen = false },
+                    )
+                }
+            }
 
             SectionLabel("Valaistus")
             SceneRow(active = activeScenes, onScene = viewModel::toggleScene)
@@ -195,9 +209,9 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     }
 }
 
-/** Top news headline with a read-aloud action, per the design's news card. */
+/** Top news headline; tapping opens the full text. Per the design's news card. */
 @Composable
-private fun NewsCard(news: NewsHeadline, onRead: () -> Unit) {
+private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit) {
     val c = MkTheme.colors
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.lg)
     Row(
@@ -206,7 +220,7 @@ private fun NewsCard(news: NewsHeadline, onRead: () -> Unit) {
             .clip(shape)
             .background(c.surfaceCard)
             .border(1.dp, c.borderSubtle, shape)
-            .clickable(onClick = onRead)
+            .clickable(onClick = onOpen)
             .padding(horizontal = 13.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,

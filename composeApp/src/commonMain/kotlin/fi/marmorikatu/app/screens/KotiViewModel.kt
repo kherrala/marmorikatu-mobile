@@ -52,8 +52,16 @@ import kotlinx.coroutines.launch
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
-/** Top news headline for the home dashboard's news card. */
-data class NewsHeadline(val title: String, val published: String)
+/** Top news headline for the home dashboard's news card, with its summary. */
+data class NewsHeadline(
+    val title: String,
+    val published: String,
+    val description: String = "",
+    val source: String = "",
+) {
+    /** The full read/expand text: headline then its summary. */
+    val fullText: String get() = if (description.isBlank()) title else "$title\n\n$description"
+}
 
 /** One "restore this fixture to `on`" step of a scene's undo snapshot. */
 @Serializable
@@ -230,18 +238,24 @@ class KotiViewModel(
         return targets.filter { (l, on) -> l.displayedOn != on }.map { (l, on) -> l.id to on }
     }
 
-    /** Read the current headline aloud with the device voice (the card's "Lue"). */
+    /** Read the current headline + summary aloud with the device voice (the card's "Lue"). */
     fun readNews() {
         val headline = _news.value ?: return
-        viewModelScope.launch { runCatching { tts.speak(headline.title) } }
+        viewModelScope.launch { runCatching { tts.speak(headline.fullText) } }
     }
 
     private fun loadNews() {
         viewModelScope.launch {
             val el = runCatching { infoRepo.news(5) }.getOrNull() ?: return@launch
             val first = (el as? JsonArray)?.firstOrNull() as? JsonObject ?: return@launch
-            val title = first["title"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return@launch
-            _news.value = NewsHeadline(title, first["published"]?.jsonPrimitive?.contentOrNull.orEmpty())
+            fun str(key: String) = first[key]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val title = str("title").takeIf { it.isNotBlank() } ?: return@launch
+            _news.value = NewsHeadline(
+                title = title,
+                published = str("published"),
+                description = str("description"),
+                source = str("source"),
+            )
         }
     }
 

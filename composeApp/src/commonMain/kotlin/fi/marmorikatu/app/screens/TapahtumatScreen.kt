@@ -60,6 +60,7 @@ fun TapahtumatScreen(viewModel: TapahtumatViewModel = koinViewModel()) {
     LaunchedEffect(Unit) { viewModel.refresh() }
 
     var filter by remember { mutableStateOf(EventFilter.All) }
+    var openEvent by remember { mutableStateOf<fi.marmorikatu.core.model.Announcement?>(null) }
 
     val filtered = remember(state.events, filter) {
         state.events.filter { filter.matches(it) }
@@ -126,11 +127,12 @@ fun TapahtumatScreen(viewModel: TapahtumatViewModel = koinViewModel()) {
                 else -> {
                     val newest = filtered.first()
                     MkEventFeed(
-                        events = filtered.map {
+                        events = filtered.map { ann ->
                             EventEntry(
-                                priority = it.priority,
-                                text = it.text,
-                                time = Fmt.clock(it.ts),
+                                priority = ann.priority,
+                                text = ann.text,
+                                time = Fmt.clock(ann.ts),
+                                onClick = { openEvent = ann },
                             )
                         },
                         live = state.streaming,
@@ -140,5 +142,14 @@ fun TapahtumatScreen(viewModel: TapahtumatViewModel = koinViewModel()) {
                 }
             }
         }
+    }
+
+    openEvent?.let { ann ->
+        fi.marmorikatu.app.components.MkArticleViewer(
+            title = "Tapahtuma",
+            body = ann.text,
+            meta = listOf(Fmt.clock(ann.ts), ann.kind).filter { it.isNotBlank() }.joinToString(" · "),
+            onDismiss = { openEvent = null },
+        )
     }
 }
