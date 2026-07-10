@@ -33,6 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -40,6 +41,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import fi.marmorikatu.app.theme.MkColors
 import fi.marmorikatu.app.theme.MkMotion
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
@@ -47,6 +49,20 @@ import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.app.theme.mkGlow
 import fi.marmorikatu.app.theme.mkPressScale
 import fi.marmorikatu.app.theme.rememberMkInteractionSource
+
+/**
+ * Card elevation per the design's `--shadow-card` token. Dark is the primary
+ * theme and cards are deliberately flat there — the translucent border does the
+ * work — so no shadow is drawn. Light theme gets a soft, diffuse slate shadow,
+ * much subtler than Material's default black drop shadow. [raised] popovers keep
+ * a light shadow on both themes so they lift off the surface.
+ */
+private fun Modifier.mkCardShadow(c: MkColors, shape: Shape, raised: Boolean = false): Modifier {
+    if (c.isDark && !raised) return this
+    val elevation = if (raised) 12.dp else 6.dp
+    val color = if (c.isDark) Color(0x59000000) else Color(0x2814283C)
+    return this.shadow(elevation, shape, clip = false, ambientColor = color, spotColor = color)
+}
 
 // ── Button ────────────────────────────────────────────────────────────────
 
@@ -290,7 +306,7 @@ fun MkCard(
 
     var box = modifier
     if (interactive && onClick != null) box = box.mkPressScale(source, pressed = 0.99f)
-    box = box.shadow(if (raised) 10.dp else 3.dp, shape, clip = false)
+    box = box.mkCardShadow(c, shape, raised = raised)
     if (status == MkCardStatus.Accent) box = box.mkGlow(c.accentGlow)
     box = box.clip(shape)
     box = if (gradient != null) box.background(gradient, shape) else box.background(baseBg, shape)
@@ -479,7 +495,7 @@ fun MkStatTile(
     }
 
     var box = modifier
-        .shadow(3.dp, shape, clip = false)
+        .mkCardShadow(c, shape)
         .clip(shape)
     box = if (gradient != null) box.background(gradient, shape) else box.background(c.surfaceCard, shape)
     box = box.border(1.dp, border, shape)

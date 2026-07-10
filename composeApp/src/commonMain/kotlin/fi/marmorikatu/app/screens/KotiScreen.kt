@@ -3,12 +3,14 @@ package fi.marmorikatu.app.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -26,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import fi.marmorikatu.app.components.Detection
 import fi.marmorikatu.app.components.MkAttentionStrip
 import fi.marmorikatu.app.components.MkButton
@@ -158,6 +161,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
 
             if (state.rooms.isNotEmpty()) {
                 val safeIndex = roomIndex.coerceIn(0, state.rooms.size - 1)
+                SectionLabel("Lämpötilat")
                 MkClimateCard(
                     rooms = state.rooms,
                     index = safeIndex,
@@ -166,6 +170,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 )
             }
 
+            if (state.kpis.isNotEmpty()) SectionLabel("Mittarit")
             KpiGrid(state.kpis) { selKey = it }
 
             when {
@@ -175,6 +180,28 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     Text(state.error!!, style = MkTheme.type.label, color = colors.inkLo)
             }
         }
+    }
+}
+
+/** An uppercase mono section label with a live-data dot, per the design. */
+@Composable
+private fun SectionLabel(text: String) {
+    val colors = MkTheme.colors
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .background(colors.accent, androidx.compose.foundation.shape.CircleShape),
+        )
+        Text(
+            text = text,
+            style = MkTheme.type.readout(11).copy(letterSpacing = 0.12.em),
+            color = colors.inkLo,
+        )
     }
 }
 

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.core.model.AirQuality
+import fi.marmorikatu.core.model.HeatPumpStatus
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.HvacSummary
 import fi.marmorikatu.core.model.RoomTemperature
@@ -42,6 +43,7 @@ class IlmastoViewModel(
     val roomTemperatures: StateFlow<List<RoomTemperature>> = climate.roomTemperatures
     val heatingDemand: StateFlow<List<HeatingDemand>> = climate.heatingDemand
     val ventilation: StateFlow<Ventilation> = climate.ventilation
+    val heatPump: StateFlow<HeatPumpStatus> = climate.heatPump
 
     private val _snapshot = MutableStateFlow(IlmastoSnapshot())
     val snapshot: StateFlow<IlmastoSnapshot> = _snapshot.asStateFlow()
@@ -70,6 +72,8 @@ class IlmastoViewModel(
         viewModelScope.launch {
             _refreshing.value = true
             try {
+                // ThermIQ isn't retained; a refresh pulls fresh heat-pump registers.
+                launch { runCatching { climate.requestHeatPumpRead() } }
                 coroutineScope {
                     launch { loadSummaries() }
                     launch { loadHistory(_snapshot.value.range) }
