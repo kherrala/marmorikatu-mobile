@@ -81,10 +81,13 @@ class DefaultClimateRepository(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val _roomTemperatures = MutableStateFlow<List<RoomTemperature>>(emptyList())
+    // Seed the live flows from the last payloads we saw so the climate widgets
+    // render immediately on launch, before MQTT reconnects and re-delivers the
+    // retained snapshot (a second or two later).
+    private val _roomTemperatures = MutableStateFlow(loadCached(KEY_TEMPS, PlcPayloads::parseTemperatures))
     override val roomTemperatures: StateFlow<List<RoomTemperature>> = _roomTemperatures.asStateFlow()
 
-    private val _heatingDemand = MutableStateFlow<List<HeatingDemand>>(emptyList())
+    private val _heatingDemand = MutableStateFlow(loadCached(KEY_HEATING, PlcPayloads::parseHeating))
     override val heatingDemand: StateFlow<List<HeatingDemand>> = _heatingDemand.asStateFlow()
 
     private val _ventilation = MutableStateFlow(Ventilation())
@@ -103,10 +106,16 @@ class DefaultClimateRepository(
         scope.launch {
             mqtt.messages.collect { msg ->
                 when (msg.topic) {
-                    MqttTopics.TEMPERATURES ->
-                        _roomTemperatures.value = PlcPayloads.parseTemperatures(msg.text())
-                    MqttTopics.HEATING ->
-                        _heatingDemand.value = PlcPayloads.parseHeating(msg.text())
+                    MqttTopics.TEMPERATURES -> {
+                        val text = msg.text()
+                        _roomTemperatures.value = PlcPayloads.parseTemperatures(text)
+                        cache(KEY_TEMPS, text)
+                    }
+                    MqttTopics.HEATING -> {
+                        val text = msg.text()
+                        _heatingDemand.value = PlcPayloads.parseHeating(text)
+                        cache(KEY_HEATING, text)
+                    }
                     MqttTopics.VENTILATION ->
                         _ventilation.value = PlcPayloads.parseVentilation(msg.text())
                     MqttTopics.COOLING ->
@@ -141,6 +150,14 @@ class DefaultClimateRepository(
         runCatching {
             settings.putString(KEY_HEAT_PUMP, json.encodeToString(HeatPumpStatus.serializer(), status))
         }
+    }
+
+    /** Re-parse the last cached raw payload for a live topic; empty if none/bad. */
+    private fun <T> loadCached(key: String, parse: (String) -> List<T>): List<T> =
+        settings.getStringOrNull(key)?.let { runCatching { parse(it) }.getOrNull() } ?: emptyList()
+
+    private fun cache(key: String, payload: String) {
+        runCatching { settings.putString(key, payload) }
     }
 
     override suspend fun heatPumpStatus(): JsonObject = mcp.getThermiaStatus()
@@ -198,5 +215,7 @@ class DefaultClimateRepository(
     private companion object {
         const val FIELD_HEAT_PUMP_POWER = "Lampopumppu_teho"
         const val KEY_HEAT_PUMP = "climate.heatpump"
+        const val KEY_TEMPS = "climate.temperatures"
+        const val KEY_HEATING = "climate.heating"
     }
 }
