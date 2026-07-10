@@ -135,17 +135,27 @@ class ValotViewModel(
     }
 
     /**
-     * Apply a scene level to an area: turn on the first N of [orderedIds], off
-     * the rest, where N = 0 / 1 / ceil(size/2) / size. Only lights whose shown
-     * state differs are commanded.
+     * Apply a scene level to an area. Off clears it, Full lights everything, and
+     * the Dim / Base steps light only the first 1 / ceil(n/2) of the *plain*
+     * fixtures — the LED strips (`… ledi`) are glaring, so they only come on at
+     * Full. Only lights whose shown state differs are commanded.
      */
     fun setAreaLevel(orderedIds: List<Int>, level: LightLevel) {
         viewModelScope.launch {
             val current = lights.lights.value.associateBy { it.id }
-            val n = targetCount(level, orderedIds.size)
-            orderedIds.forEachIndexed { i, id ->
-                val light = current[id] ?: return@forEachIndexed
-                val target = i < n
+            fun isLed(id: Int) = current[id]?.name?.contains("ledi", ignoreCase = true) == true
+            val onIds: Set<Int> = when (level) {
+                LightLevel.Off -> emptySet()
+                LightLevel.Full -> orderedIds.toSet()
+                else -> {
+                    val ladder = orderedIds.filterNot { isLed(it) }
+                    val n = if (level == LightLevel.Dim) minOf(1, ladder.size) else ceilHalf(ladder.size)
+                    ladder.take(n).toSet()
+                }
+            }
+            orderedIds.forEach { id ->
+                val light = current[id] ?: return@forEach
+                val target = id in onIds
                 if (light.displayedOn != target) {
                     runCatching { lights.setLight(id, target) }
                 }
@@ -159,7 +169,7 @@ class ValotViewModel(
     }
 
     private fun buildFloors(list: List<Light>): List<FloorSection> =
-        Floor.entries.mapNotNull { floor ->
+        FLOOR_ORDER.mapNotNull { floor ->
             val floorLights = list.filter { it.floor == floor }
             if (floorLights.isEmpty()) return@mapNotNull null
 
@@ -171,11 +181,10 @@ class ValotViewModel(
 
             val items = areas.map { (areaName, group) ->
                 if (group.size >= 2) {
-                    val onCount = group.count { it.displayedOn }
                     AreaUi.SceneArea(
                         floorLabel = floor.label,
                         name = areaName,
-                        level = levelFor(onCount, group.size),
+                        level = levelFor(group),
                         lights = group.toList(),
                     )
                 } else {
@@ -186,21 +195,30 @@ class ValotViewModel(
         }
 
     private companion object {
+        /** Floor pager order — living floors first, cellar and outdoors after. */
+        val FLOOR_ORDER = listOf(Floor.ALAKERTA, Floor.YLAKERTA, Floor.KELLARI, Floor.ULKO)
+
         fun ceilHalf(size: Int): Int = (size + 1) / 2
 
-        /** 0 → Off, 1 → Dim, ≤ ceil(size/2) → Base, else → Full. */
-        fun levelFor(onCount: Int, size: Int): LightLevel = when {
-            onCount <= 0 -> LightLevel.Off
-            onCount == 1 -> LightLevel.Dim
-            onCount <= ceilHalf(size) -> LightLevel.Base
-            else -> LightLevel.Full
-        }
+        fun Light.isLed(): Boolean = name.contains("ledi", ignoreCase = true)
 
-        fun targetCount(level: LightLevel, size: Int): Int = when (level) {
-            LightLevel.Off -> 0
-            LightLevel.Dim -> 1
-            LightLevel.Base -> ceilHalf(size)
-            LightLevel.Full -> size
+        /**
+         * Which ladder step the area's live state reflects. All on → Full; any
+         * LED on reads as Full (LEDs only light at Full); otherwise gauge by how
+         * many of the plain fixtures are on.
+         */
+        fun levelFor(group: List<Light>): LightLevel {
+            val onCount = group.count { it.displayedOn }
+            if (onCount == 0) return LightLevel.Off
+            if (onCount == group.size) return LightLevel.Full
+            if (group.any { it.displayedOn && it.isLed() }) return LightLevel.Full
+            val nonLed = group.filterNot { it.isLed() }
+            val nonLedOn = nonLed.count { it.displayedOn }
+            return when {
+                nonLedOn <= 1 -> LightLevel.Dim
+                nonLedOn <= ceilHalf(nonLed.size) -> LightLevel.Base
+                else -> LightLevel.Full
+            }
         }
     }
 }
