@@ -168,14 +168,21 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 }
             }
 
-            news?.let { headline ->
-                NewsCard(headline, onOpen = { newsOpen = true })
+            news.firstOrNull()?.let { top ->
+                NewsCard(top, onOpen = { newsOpen = true })
                 if (newsOpen) {
                     MkArticleViewer(
-                        title = headline.title,
-                        body = headline.description.ifBlank { headline.title },
-                        meta = listOf(headline.source.ifBlank { "Uutiset" }, headline.published)
-                            .filter { it.isNotBlank() }.joinToString(" · "),
+                        title = "Uutiset",
+                        body = news.joinToString("\n\n") { h ->
+                            buildString {
+                                append("## ${h.title}")
+                                val m = listOf(h.source.ifBlank { "Uutiset" }, h.published)
+                                    .filter { it.isNotBlank() }.joinToString(" · ")
+                                if (m.isNotBlank()) append("\n*$m*")
+                                if (h.description.isNotBlank()) append("\n${h.description}")
+                            }
+                        },
+                        meta = "${news.size} uutista",
                         onRead = viewModel::readNews,
                         onDismiss = { newsOpen = false },
                     )

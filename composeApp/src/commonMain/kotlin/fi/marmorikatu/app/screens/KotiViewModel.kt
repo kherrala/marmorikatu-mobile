@@ -153,9 +153,9 @@ class KotiViewModel(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val _news = MutableStateFlow<NewsHeadline?>(null)
-    /** The top news headline, or null until loaded / if unavailable. */
-    val news: StateFlow<NewsHeadline?> = _news.asStateFlow()
+    private val _news = MutableStateFlow<List<NewsHeadline>>(emptyList())
+    /** The latest news headlines (top first); empty until loaded / if unavailable. */
+    val news: StateFlow<List<NewsHeadline>> = _news.asStateFlow()
 
     // Each active scene remembers the exact prior state of the fixtures it moved,
     // so toggling it off is a true undo. Persisted so the active set survives a
@@ -238,24 +238,26 @@ class KotiViewModel(
         return targets.filter { (l, on) -> l.displayedOn != on }.map { (l, on) -> l.id to on }
     }
 
-    /** Read the current headline + summary aloud with the device voice (the card's "Lue"). */
+    /** Read the top headline + summary aloud with the device voice (the card's "Lue"). */
     fun readNews() {
-        val headline = _news.value ?: return
+        val headline = _news.value.firstOrNull() ?: return
         viewModelScope.launch { runCatching { tts.speak(headline.fullText) } }
     }
 
     private fun loadNews() {
         viewModelScope.launch {
-            val el = runCatching { infoRepo.news(5) }.getOrNull() ?: return@launch
-            val first = (el as? JsonArray)?.firstOrNull() as? JsonObject ?: return@launch
-            fun str(key: String) = first[key]?.jsonPrimitive?.contentOrNull.orEmpty()
-            val title = str("title").takeIf { it.isNotBlank() } ?: return@launch
-            _news.value = NewsHeadline(
-                title = title,
-                published = str("published"),
-                description = str("description"),
-                source = str("source"),
-            )
+            val el = runCatching { infoRepo.news(8) }.getOrNull() as? JsonArray ?: return@launch
+            _news.value = el.mapNotNull { item ->
+                val obj = item as? JsonObject ?: return@mapNotNull null
+                fun str(key: String) = obj[key]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val title = str("title").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                NewsHeadline(
+                    title = title,
+                    published = str("published"),
+                    description = str("description"),
+                    source = str("source"),
+                )
+            }
         }
     }
 
