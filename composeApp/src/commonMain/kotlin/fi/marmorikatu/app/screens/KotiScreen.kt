@@ -1,6 +1,7 @@
 package fi.marmorikatu.app.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -114,6 +116,17 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     labels = selected.labels,
                     stats = selected.stats,
                     status = selected.detailStatus,
+                    // Swipe the card to the right to go back to the grid.
+                    modifier = Modifier.pointerInput(selKey) {
+                        var dragged = 0f
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                if (dragged > 56.dp.toPx()) selKey = null
+                                dragged = 0f
+                            },
+                            onHorizontalDrag = { _, delta -> dragged += delta },
+                        )
+                    },
                 )
                 return@Column
             }

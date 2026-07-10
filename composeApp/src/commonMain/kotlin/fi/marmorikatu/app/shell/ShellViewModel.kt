@@ -251,28 +251,35 @@ class ShellViewModel(
         val nativeTts = useNativeTts && platformTts.isAvailable()
         var lastSentence: String? = null
 
+        // The bridge delivers each spoken sentence *inside* its `audio` event
+        // (the text alongside the WAV); only older builds send standalone `text`
+        // events. Both must speak — the previous code only spoke `text` events,
+        // so with the current bridge native TTS said nothing at all. Native
+        // speak() suspends until the utterance finishes, which also keeps the
+        // dock in Speaking (and the transcript on screen) until the voice stops,
+        // instead of snapping back to Idle the instant the stream closes.
+        suspend fun sentence(text: String) {
+            if (text == lastSentence) return
+            lastSentence = text
+            _voice.value = VoiceState.Speaking
+            _voiceLine.value = text
+            if (nativeTts) platformTts.speak(text)
+        }
+
         try {
             assistantRepo.chat(history.toList()).collect { event ->
                 when (event) {
                     is ChatEvent.ToolUse -> _voiceHint.value = event.tool
-                    is ChatEvent.Text -> speak(event.text, nativeTts, lastSentence)
-                        .also { lastSentence = event.text }
+                    is ChatEvent.Text -> sentence(event.text)
                     is ChatEvent.Audio -> {
                         if (!nativeTts) audioPlayer.enqueue(event.wav)
-                        event.text?.let {
-                            if (it != lastSentence) {
-                                _voice.value = VoiceState.Speaking
-                                _voiceLine.value = it
-                                lastSentence = it
-                            }
-                        }
+                        event.text?.let { sentence(it) }
                     }
                     is ChatEvent.Screenshot -> Unit
                     is ChatEvent.Done -> {
                         history += ChatMessage.assistant(event.response)
                         if (lastSentence == null && event.response.isNotBlank()) {
-                            _voice.value = VoiceState.Speaking
-                            _voiceLine.value = event.response
+                            sentence(event.response)
                         }
                     }
                 }
@@ -282,13 +289,6 @@ class ShellViewModel(
         }
         _voice.value = VoiceState.Idle
         _voiceHint.value = null
-    }
-
-    private suspend fun speak(text: String, nativeTts: Boolean, last: String?) {
-        if (text == last) return
-        _voice.value = VoiceState.Speaking
-        _voiceLine.value = text
-        if (nativeTts) platformTts.speak(text)
     }
 
     private companion object {

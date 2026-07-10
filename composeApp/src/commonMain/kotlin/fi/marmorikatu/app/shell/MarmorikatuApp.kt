@@ -5,6 +5,8 @@ import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -257,7 +260,28 @@ private fun PhoneSurface(
         // Each screen applies MkSpacing.pagePad itself; padding here too would
         // double it and push the header outside the content edges.
         Box(modifier = Modifier.weight(1f).offset(y = (-14).dp)) {
-            ScreenHost(tab = tab)
+            // Swipe left/right to move between tabs. The climate card's own
+            // room carousel consumes its horizontal drags, so it keeps working
+            // inside the pager; only drags it doesn't take reach the pager.
+            val tabs = remember { Tab.entries.toList() }
+            val pagerState = rememberPagerState(initialPage = tab.ordinal) { tabs.size }
+            LaunchedEffect(tab) {
+                if (pagerState.currentPage != tab.ordinal) {
+                    pagerState.animateScrollToPage(tab.ordinal)
+                }
+            }
+            LaunchedEffect(pagerState) {
+                snapshotFlow { pagerState.settledPage }.collect { page ->
+                    tabs.getOrNull(page)?.let { if (it != tab) viewModel.setTab(it) }
+                }
+            }
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                key = { tabs[it].key },
+            ) { page ->
+                ScreenHost(tab = tabs[page])
+            }
 
             // Idle, the dock is just a mic button: it floats over the content
             // rather than reserving a row it does not need.
