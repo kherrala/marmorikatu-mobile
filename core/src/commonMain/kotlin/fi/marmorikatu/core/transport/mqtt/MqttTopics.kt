@@ -25,6 +25,13 @@ object MqttTopics {
      */
     const val THERMIQ = "ThermIQ/marmorikatu/data"
 
+    /**
+     * Publishing an empty payload here asks the ThermIQ bridge to read all
+     * registers and publish [THERMIQ] immediately — used on pull-to-refresh so
+     * the heat-pump tiles don't wait for the next periodic publish.
+     */
+    const val THERMIQ_READ = "ThermIQ/marmorikatu/read"
+
     /** All state topics the app subscribes to. */
     val STATE_SUBSCRIPTIONS = listOf(
         LIGHTS, LIGHT_NAMES, OUTLETS, TEMPERATURES, HEATING, COOLING,

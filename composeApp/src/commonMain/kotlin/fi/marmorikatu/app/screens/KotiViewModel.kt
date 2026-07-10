@@ -80,10 +80,11 @@ data class KotiUiState(
 )
 
 /**
- * Home screen. Room temperatures / heating demand / announcements are live
- * StateFlows; sauna, prices, HVAC, heat pump and air quality are on-demand
+ * Home screen. Room temperatures / heating demand / announcements / heat pump
+ * are live StateFlows; sauna, prices, HVAC and air quality are on-demand
  * snapshots refreshed via [refresh]. Absent sources render "Ei tietoa" rather
- * than a fabricated number (the ThermIQ feed — COP / hot water — is dead).
+ * than a fabricated number — including the heat-pump tiles when the ThermIQ
+ * register feed goes quiet.
  */
 class KotiViewModel(
     private val climateRepo: ClimateRepository,
@@ -152,6 +153,10 @@ class KotiViewModel(
             _refreshing.value = true
             try {
                 snapshots.update { it.copy(loading = true, error = null) }
+                // Ask ThermIQ to publish now — its topic isn't retained, so a
+                // refresh (incl. pull-to-refresh) is how we pull fresh registers.
+                // Fire-and-forget so it never gates the on-demand snapshot below.
+                viewModelScope.launch { runCatching { climateRepo.requestHeatPumpRead() } }
                 val snap = coroutineScope {
                     val sauna = async { runCatching { saunaRepo.status() }.getOrNull() }
                     val prices = async { runCatching { energyRepo.electricityPrices() }.getOrNull() }

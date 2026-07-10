@@ -89,7 +89,7 @@ fun MkFreshness(
             text = when {
                 refreshing -> "Päivitetään…"
                 age == null -> "Ladataan…"
-                else -> "Päivitetty $age sitten"
+                else -> "Päivitetty $age"
             },
             style = type.readout(11),
             color = colors.inkLo,
@@ -110,22 +110,22 @@ fun MkFreshness(
     }
 }
 
-/** Recomputes the human-readable age while composed, updating only when it changes. */
+/** Recomputes the freshness phrase while composed, updating only when it changes. */
 @Composable
 private fun rememberTickingAge(updatedAtEpochSeconds: Long?): String? {
     if (updatedAtEpochSeconds == null) return null
     val age = remember(updatedAtEpochSeconds) {
-        mutableStateOf(Fmt.since(updatedAtEpochSeconds.toDouble()))
+        mutableStateOf(Fmt.freshness(updatedAtEpochSeconds.toDouble()))
     }
     LaunchedEffect(updatedAtEpochSeconds) {
         while (true) {
             delay(1_000)
-            // Only a *changed* state value invalidates composition. Once the
-            // age reads in minutes this fires once a minute instead of every
-            // second, so the screen stops redrawing when nothing has changed —
-            // which is what was flooding logcat with Android 15's per-frame
-            // setRequestedFrameRate hints.
-            val next = Fmt.since(updatedAtEpochSeconds.toDouble())
+            // Only a *changed* state value invalidates composition. Fmt.freshness
+            // reads "juuri nyt" for the whole first minute, so a live feed that
+            // refreshes every ~13 s never trips this — the screen stops redrawing
+            // (and stops flooding logcat with Android 15's per-frame
+            // setRequestedFrameRate hints) when nothing visibly changed.
+            val next = Fmt.freshness(updatedAtEpochSeconds.toDouble())
             if (next != age.value) age.value = next
         }
     }

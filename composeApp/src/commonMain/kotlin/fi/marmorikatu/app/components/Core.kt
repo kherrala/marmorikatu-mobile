@@ -1,5 +1,7 @@
 package fi.marmorikatu.app.components
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,6 +21,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -26,12 +33,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import fi.marmorikatu.app.theme.MkMotion
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
@@ -440,10 +449,23 @@ fun MkStatTile(
     val source = rememberMkInteractionSource()
     val shape = RoundedCornerShape(MkRadius.md)
 
+    // Fresh-data flash: a brief pulse toward accent whenever the value changes,
+    // so a refresh is noticeable at a glance. It settles back to 0 and is not an
+    // infinite animation, so it adds no idle redraws once the pulse finishes.
+    val flash = remember { Animatable(0f) }
+    var seenValue by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(value) {
+        if (seenValue != null && seenValue != value) {
+            flash.snapTo(1f)
+            flash.animateTo(0f, tween(MkMotion.SLOW, easing = MkMotion.easeOut))
+        }
+        seenValue = value
+    }
+
     val border: Color = when (status) {
         MkStatStatus.Warn -> c.warmBorder
         MkStatStatus.Alarm -> c.statusAlarm
-        MkStatStatus.None -> c.borderSubtle
+        MkStatStatus.None -> lerp(c.borderSubtle, c.accent, flash.value)
     }
     val gradient: Brush? = when (status) {
         MkStatStatus.Warn -> Brush.verticalGradient(listOf(c.warmDim, c.surfaceCard))
@@ -498,7 +520,7 @@ fun MkStatTile(
             Text(
                 text = value,
                 style = MkTheme.type.readout(valueSize),
-                color = c.inkHi,
+                color = lerp(c.inkHi, c.accent, flash.value),
                 modifier = Modifier.alignByBaseline(),
                 maxLines = 1,
             )

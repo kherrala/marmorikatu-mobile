@@ -26,9 +26,13 @@ data class Room(
 object Rooms {
     val ALL = listOf(
         Room("yk_aula", "Ylakerran_aula", heatingKey = "yk_aula", displayName = "Yläkerta aula", floor = Floor.YLAKERTA),
-        Room("yk_aatu", "MH_Seela", heatingKey = "aatu", displayName = "Aatun huone", floor = Floor.YLAKERTA),
-        Room("yk_onni", "MH_Aarni", heatingKey = "onni", displayName = "Onnin huone", floor = Floor.YLAKERTA),
-        Room("yk_essi", "MH_aikuiset", heatingKey = "essi", displayName = "Essin huone", floor = Floor.YLAKERTA),
+        // The PLC/MQTT and heating keys are legacy (named after the original
+        // occupants Aatu/Onni/Essi); the rooms have since changed hands. Display
+        // names follow the current owners, matching the InfluxDB fields the
+        // backend already renamed (MH_Seela, MH_Aarni, MH_aikuiset).
+        Room("yk_aatu", "MH_Seela", heatingKey = "aatu", displayName = "Seelan huone", floor = Floor.YLAKERTA),
+        Room("yk_onni", "MH_Aarni", heatingKey = "onni", displayName = "Aarnin huone", floor = Floor.YLAKERTA),
+        Room("yk_essi", "MH_aikuiset", heatingKey = "essi", displayName = "Aikuisten makuuhuone", floor = Floor.YLAKERTA),
         Room("keittio", "Keittio", heatingKey = "keittio", displayName = "Keittiö", floor = Floor.ALAKERTA),
         Room("mh_ak", "MH_alakerta", heatingKey = "mh_ak", displayName = "Makuuhuone alakerta", floor = Floor.ALAKERTA),
         Room("eteinen", "Eteinen", heatingKey = "eteinen", displayName = "Eteinen", floor = Floor.ALAKERTA),

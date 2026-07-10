@@ -32,7 +32,7 @@ class PlcPayloadsTest {
         val temps = PlcPayloads.parseTemperatures(MqttFixtures.TEMPERATURES)
         assertEquals(9, temps.size)
         val aatu = temps.first { it.key == "yk_aatu" }
-        assertEquals("Aatun huone", aatu.name)
+        assertEquals("Seelan huone", aatu.name)
         assertEquals(Floor.YLAKERTA, aatu.floor)
         assertTrue(aatu.celsius in 5.0..35.0)
     }

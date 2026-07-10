@@ -23,8 +23,8 @@ Two Gradle modules plus the Xcode wrapper:
 
 | Transport | Used for | Endpoint |
 |---|---|---|
-| MQTT (MQTTastic, TCP) | Live state (retained topics, instant snapshot) + single light commands | `freenas.kherrala.fi:1883` |
-| MCP (official Kotlin SDK, streamable HTTP) | Light catalog + batch commands, TV (Harmony), heat pump/sauna/energy/prices reads, weather/news/calendar | `http://192.168.1.160:3001/mcp/` |
+| MQTT (MQTTastic, TCP) | Live state (retained topics, instant snapshot) + single light commands + live ThermIQ heat-pump registers | `freenas.kherrala.fi:1883` |
+| MCP (official Kotlin SDK, streamable HTTP) | Light catalog + batch commands, TV (Harmony), sauna/energy/prices/air reads, weather/news/calendar | `http://192.168.1.160:3001/mcp/` |
 | claude-bridge (Ktor + hand-rolled SSE/NDJSON) | AI chat streaming, Whisper STT, Piper TTS, announcements feed | `http://192.168.1.160:3002` |
 | Direct HTTP | Nysse bus departures | `http://192.168.1.160:3010` |
 
@@ -77,12 +77,21 @@ Pluggable engines behind `SpeechToText` / `SpeechOutput`:
   Native engines are the default; both are switchable in Asetukset. Listening
   times out after 12 s, and recording is capped at 30 s.
 
-### Heat pump: read-only on purpose
+### Heat pump: live but read-only on purpose
 
-The backend `indoor` service republishes `INDR_T` to the Thermia every 60 s,
-and persistent register writes wear the pump's flash. The app therefore ships
-**no HVAC write path** until a safe setpoint/bias knob exists server-side
-(see backend follow-ups below).
+Heat-pump state is decoded live from the `ThermIQ/marmorikatu/data` register
+dump (`PlcPayloads.parseThermiq`): outdoor/indoor/target/supply/return/hot-water
+and brine temperatures, plus the compressor and hot-water-production bits from
+the `d16` bitfield. This drives the Maalämpö and Käyttövesi tiles and the single
+house-wide indoor target shown on every room. Power (kW) is merged in from the
+pump's own energy meter, which the `hvac` measurement carries separately. The
+feed isn't retained, so it can lag a publish cycle after connect; a reading older
+than 30 min falls back to "Ei tietoa" rather than freezing a stale number.
+
+Writes are deliberately absent: the backend `indoor` service republishes
+`INDR_T` to the Thermia every 60 s, and persistent register writes wear the
+pump's flash. The app therefore ships **no HVAC write path** until a safe
+setpoint/bias knob exists server-side (see backend follow-ups below).
 
 ## Building
 
@@ -174,15 +183,14 @@ repository data or an honest "Ei tietoa".
   back to server Whisper automatically.
 - **`AVAudioSession.recordPermission` is deprecated** on iOS 17+ in favour of
   `AVAudioApplication`; still functional, worth migrating.
-- **Heat pump feed is dead.** The ThermIQ collector last wrote to InfluxDB on
-  2026-06-26, so COP, hot water and the indoor setpoint have no live source. The
-  app shows "Ei tietoa" and a read-only "—" target rather than a stale number.
-  Compressor state still works: it is derived from the pump's own energy meter.
 - **iOS background mode is impossible** without server push. Android keeps the
   announcements stream alive in a foreground service; iOS suspends sockets. The
   settings sheet says so rather than offering a dead switch.
 - **Camera stills only arrive inside announcements.** There is no camera API, so
-  a card shows an image only when the announcer attached one.
+  a card shows an image only when the announcer attached one. The bridge sends
+  the snapshot on the *live* SSE event and strips it from the history ring, so an
+  event the app didn't see live (opened after the fact) shows "Ei kuvaa" rather
+  than a picture. The door alert's "Katso" opens a full-screen [MkCameraViewer].
 
 ## Test fixtures
 
@@ -190,3 +198,7 @@ repository data or an honest "Ei tietoa".
 captured verbatim from the live broker (2026-07-09). If the PLC publisher
 schema changes, re-capture with any MQTT client subscribed to
 `marmorikatu/#` and update the constants.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

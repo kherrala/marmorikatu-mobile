@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -23,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
@@ -38,7 +40,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import fi.marmorikatu.app.icons.MkIcons
+import fi.marmorikatu.app.platform.LockLandscapeWhileVisible
 import fi.marmorikatu.app.theme.MkDot
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkTheme
@@ -702,6 +707,97 @@ fun MkDoorAlert(
                     fg = colors.inkMid,
                     onClick = onDismiss,
                     modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Full-bleed snapshot viewer opened by [MkDoorAlert]'s "Katso" action. A dark
+ * scrim over the whole screen; tap anywhere or press "Sulje" to dismiss.
+ *
+ * Shows an honest "Ei kuvaa" when the announcement carried no image: the bridge
+ * only broadcasts the camera still on the *live* event and strips it from the
+ * history ring, so an event the app didn't see live (opened after the fact, or
+ * replayed) legitimately has no picture to show.
+ */
+@Composable
+fun MkCameraViewer(
+    painter: Painter?,
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String = "",
+    time: String = "",
+    camera: String = "ETUPIHA",
+    onDismiss: () -> Unit,
+) {
+    val colors = MkTheme.colors
+    // A wide 16:9 still is a thin strip in portrait; go landscape so it fills.
+    LockLandscapeWhileVisible()
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.94f))
+                .clickable(rememberMkInteractionSource(), indication = null) { onDismiss() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                Modifier.fillMaxSize().padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(title, style = MkTheme.type.heading.copy(color = Color.White))
+                    val caption = listOf(time, subtitle).filter { it.isNotBlank() }.joinToString(" · ")
+                    if (caption.isNotEmpty()) {
+                        Text(
+                            caption,
+                            style = MkTheme.type.readout(11).copy(color = Color.White.copy(alpha = 0.72f)),
+                        )
+                    }
+                }
+
+                // Fill the space between caption and button; ContentScale.Fit keeps
+                // the aspect ratio and centres, so it's as large as the frame allows.
+                Box(
+                    Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (painter != null) {
+                        Image(
+                            painter = painter,
+                            contentDescription = camera,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(MkRadius.lg)),
+                        )
+                    } else {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(MkRadius.lg))
+                                .background(Brush.verticalGradient(listOf(ShotTop, ShotBottom))),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "Ei kuvaa",
+                                style = MkTheme.type.readout(12).copy(color = Color.White.copy(alpha = 0.6f)),
+                            )
+                        }
+                    }
+                }
+
+                DoorAlertButton(
+                    label = "Sulje",
+                    bg = colors.warm,
+                    fg = colors.inkOnWarm,
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }

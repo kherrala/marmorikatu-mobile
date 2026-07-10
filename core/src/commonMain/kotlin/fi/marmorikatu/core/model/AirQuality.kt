@@ -40,7 +40,12 @@ data class AirQuality(
  *
  * [powerKw] and [cop] are not in the register feed — they come from the energy
  * meter / computed history and are merged in by the caller.
+ *
+ * Serializable so the repository can cache the last reading and show it on the
+ * next launch (the ThermIQ topic is not retained); a staleness check downstream
+ * still hides a cached value that has gone too old.
  */
+@Serializable
 data class HeatPumpStatus(
     val available: Boolean,
     val running: Boolean = false,

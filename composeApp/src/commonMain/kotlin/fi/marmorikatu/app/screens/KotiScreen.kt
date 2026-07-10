@@ -27,6 +27,7 @@ import fi.marmorikatu.app.components.MkAttentionStrip
 import fi.marmorikatu.app.components.MkButton
 import fi.marmorikatu.app.components.MkButtonSize
 import fi.marmorikatu.app.components.MkButtonVariant
+import fi.marmorikatu.app.components.MkCameraViewer
 import fi.marmorikatu.app.components.MkClimateCard
 import fi.marmorikatu.app.components.MkDoorAlert
 import fi.marmorikatu.app.components.rememberBase64Painter
@@ -60,6 +61,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     var range by remember { mutableStateOf(TimeRangeOption.H24) }
     var roomIndex by remember { mutableStateOf(0) }
     var doorDismissed by remember { mutableStateOf(false) }
+    var cameraOpen by remember { mutableStateOf(false) }
 
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
         Column(
@@ -118,15 +120,25 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
 
             val door = state.door
             if (door != null && !doorDismissed) {
+                val doorPainter = rememberBase64Painter(door.image)
                 MkDoorAlert(
-                    painter = rememberBase64Painter(door.image),
+                    painter = doorPainter,
                     title = door.title,
                     time = door.time,
                     subtitle = door.subtitle,
                     detection = Detection(),
-                    onView = {},
+                    onView = { cameraOpen = true },
                     onDismiss = { doorDismissed = true },
                 )
+                if (cameraOpen) {
+                    MkCameraViewer(
+                        painter = doorPainter,
+                        title = door.title,
+                        subtitle = door.subtitle,
+                        time = door.time,
+                        onDismiss = { cameraOpen = false },
+                    )
+                }
             }
 
             if (state.rooms.isNotEmpty()) {

@@ -86,6 +86,24 @@ object Fmt {
         else -> "${minutes / 60} t ${minutes % 60} min"
     }
 
+    /**
+     * Freshness phrase for the screen headers: `juuri nyt`, `4 min sitten`,
+     * `2 t sitten`, `3 pv sitten`. Deliberately coarse below a minute — a live
+     * feed refreshes every ~13 s, and a per-second "12 s / 13 s / 14 s" counter
+     * would redraw (and, on Android 15, log a frame-rate hint) every second for
+     * no real information. The freshness dot's flash already signals each update.
+     */
+    @OptIn(ExperimentalTime::class)
+    fun freshness(unixSeconds: Double): String {
+        val seconds = (Clock.System.now().epochSeconds - unixSeconds.toLong()).coerceAtLeast(0)
+        return when {
+            seconds < 60 -> "juuri nyt"
+            seconds < 3600 -> "${seconds / 60} min sitten"
+            seconds < 86_400 -> "${seconds / 3600} t sitten"
+            else -> "${seconds / 86_400} pv sitten"
+        }
+    }
+
     /** How long ago, from unix seconds: `12 s`, `4 min`, `2 t`. */
     @OptIn(ExperimentalTime::class)
     fun since(unixSeconds: Double): String {

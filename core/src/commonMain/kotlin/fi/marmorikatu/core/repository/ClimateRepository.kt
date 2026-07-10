@@ -13,13 +13,16 @@ import fi.marmorikatu.core.transport.influx.FluxClient
 import fi.marmorikatu.core.transport.influx.FluxPoint
 import fi.marmorikatu.core.transport.mcp.McpApi
 import fi.marmorikatu.core.transport.mqtt.MqttClient
+import fi.marmorikatu.core.transport.mqtt.MqttConnectionState
 import fi.marmorikatu.core.transport.mqtt.MqttTopics
 import fi.marmorikatu.core.transport.mqtt.PlcPayloads
+import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -40,10 +43,17 @@ interface ClimateRepository {
 
     /**
      * Live heat-pump view, decoded from the retained-less `ThermIQ/marmorikatu/data`
-     * register feed. Starts unavailable and flips to available once the ThermIQ
-     * bridge publishes; power/COP are merged in by the caller from other sources.
+     * register feed. Seeded on launch from the last cached reading so the tiles
+     * aren't blank while waiting for the first publish; power/COP are merged in
+     * by the caller from other sources.
      */
     val heatPump: StateFlow<HeatPumpStatus>
+
+    /**
+     * Ask the ThermIQ bridge to publish its registers now (pull-to-refresh).
+     * Best effort: does nothing if MQTT isn't connected.
+     */
+    suspend fun requestHeatPumpRead()
 
     /** On-demand raw heat pump snapshot via MCP `get_thermia_status` (debug/history). */
     suspend fun heatPumpStatus(): JsonObject
@@ -62,11 +72,14 @@ interface ClimateRepository {
 }
 
 class DefaultClimateRepository(
-    mqtt: MqttClient,
+    private val mqtt: MqttClient,
     private val mcp: McpApi,
     private val flux: FluxClient,
     scope: CoroutineScope,
+    private val settings: Settings = Settings(),
 ) : ClimateRepository {
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     private val _roomTemperatures = MutableStateFlow<List<RoomTemperature>>(emptyList())
     override val roomTemperatures: StateFlow<List<RoomTemperature>> = _roomTemperatures.asStateFlow()
@@ -83,7 +96,7 @@ class DefaultClimateRepository(
     private val _plcStatus = MutableStateFlow(PlcStatus())
     override val plcStatus: StateFlow<PlcStatus> = _plcStatus.asStateFlow()
 
-    private val _heatPump = MutableStateFlow(HeatPumpStatus(available = false))
+    private val _heatPump = MutableStateFlow(loadPersistedHeatPump())
     override val heatPump: StateFlow<HeatPumpStatus> = _heatPump.asStateFlow()
 
     init {
@@ -101,9 +114,32 @@ class DefaultClimateRepository(
                     MqttTopics.STATUS ->
                         _plcStatus.value = PlcPayloads.parseStatus(msg.text())
                     MqttTopics.THERMIQ ->
-                        PlcPayloads.parseThermiq(msg.text())?.let { _heatPump.value = it }
+                        PlcPayloads.parseThermiq(msg.text())?.let {
+                            _heatPump.value = it
+                            persistHeatPump(it)
+                        }
                 }
             }
+        }
+    }
+
+    override suspend fun requestHeatPumpRead() {
+        if (mqtt.connectionState.value is MqttConnectionState.Connected) {
+            runCatching { mqtt.publish(MqttTopics.THERMIQ_READ, "", qos = 0) }
+        }
+    }
+
+    /** Last heat-pump reading, cached so the tiles aren't blank on a cold start. */
+    private fun loadPersistedHeatPump(): HeatPumpStatus {
+        val cached = settings.getStringOrNull(KEY_HEAT_PUMP) ?: return HeatPumpStatus(available = false)
+        return runCatching {
+            json.decodeFromString(HeatPumpStatus.serializer(), cached)
+        }.getOrElse { HeatPumpStatus(available = false) }
+    }
+
+    private fun persistHeatPump(status: HeatPumpStatus) {
+        runCatching {
+            settings.putString(KEY_HEAT_PUMP, json.encodeToString(HeatPumpStatus.serializer(), status))
         }
     }
 
@@ -161,5 +197,6 @@ class DefaultClimateRepository(
 
     private companion object {
         const val FIELD_HEAT_PUMP_POWER = "Lampopumppu_teho"
+        const val KEY_HEAT_PUMP = "climate.heatpump"
     }
 }
