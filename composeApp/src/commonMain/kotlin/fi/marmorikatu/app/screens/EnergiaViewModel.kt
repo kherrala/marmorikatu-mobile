@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
@@ -37,12 +40,21 @@ class EnergiaViewModel(
     private val _updatedAt = MutableStateFlow<Long?>(null)
     val updatedAt: StateFlow<Long?> = _updatedAt.asStateFlow()
 
+    /** Estimated consumption by component (kWh), largest first. Null until loaded. */
+    private val _consumption = MutableStateFlow<List<EnergyComponent>?>(null)
+    val consumption: StateFlow<List<EnergyComponent>?> = _consumption.asStateFlow()
+
     /** Pull today's spot curve. The screen also re-invokes this every 5 min. */
     @OptIn(ExperimentalTime::class)
     fun refresh() {
         viewModelScope.launch {
             _refreshing.value = true
             try {
+                launch {
+                    runCatching { energyRepo.energyConsumption() }
+                        .getOrNull()
+                        ?.let { _consumption.value = parseConsumption(it) }
+                }
                 runCatching { energyRepo.electricityPrices() }
                     .onSuccess {
                         _prices.value = PriceState.Ready(it.toModel())
@@ -57,6 +69,17 @@ class EnergiaViewModel(
                 _refreshing.value = false
             }
         }
+    }
+
+    /** Fold the MCP `get_energy_consumption` breakdown into display components. */
+    private fun parseConsumption(obj: JsonObject): List<EnergyComponent> {
+        fun kwh(key: String) = (obj[key] as? JsonPrimitive)?.doubleOrNull ?: 0.0
+        return listOf(
+            EnergyComponent("Maalämpö", kwh("heat_pump_compressor_kwh") + kwh("heat_pump_aux_heaters_kwh")),
+            EnergyComponent("Valaistus", kwh("lighting_kwh")),
+            EnergyComponent("Sauna", kwh("sauna_kwh")),
+            EnergyComponent("Ilmanvaihto", kwh("hvac_fan_kwh")),
+        ).filter { it.kwh > 0.0 }.sortedByDescending { it.kwh }
     }
 
     @OptIn(ExperimentalTime::class)
@@ -99,6 +122,9 @@ class EnergiaViewModel(
 
     private val zone get() = TimeZone.currentSystemDefault()
 }
+
+/** One estimated consumer for the "Kulutus laitteittain" list. */
+data class EnergyComponent(val name: String, val kwh: Double)
 
 /** Loading / ready / failed for the spot-price fetch. */
 sealed interface PriceState {

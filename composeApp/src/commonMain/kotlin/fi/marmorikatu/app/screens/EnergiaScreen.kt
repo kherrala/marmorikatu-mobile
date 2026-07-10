@@ -5,11 +5,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -21,8 +23,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import fi.marmorikatu.app.components.MkCard
@@ -56,6 +60,7 @@ fun EnergiaScreen(
 ) {
     val priceState by viewModel.prices.collectAsState()
     val liveEnergy by viewModel.liveEnergy.collectAsState()
+    val consumption by viewModel.consumption.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
     val updatedAt by viewModel.updatedAt.collectAsState()
 
@@ -83,6 +88,7 @@ fun EnergiaScreen(
             )
             PriceCard(priceState)
             PriceStats(priceState)
+            ConsumptionCard(consumption)
             MetersCard(liveEnergy)
         }
     }
@@ -132,6 +138,73 @@ private fun PriceStat(label: String, cents: Double?, modifier: Modifier) {
         icon = MkIcons.Lightning,
         modifier = modifier,
     )
+}
+
+/** Estimated consumption by component, as labelled bars (design: "Kulutus laitteittain"). */
+@Composable
+private fun ConsumptionCard(components: List<EnergyComponent>?) {
+    if (components.isNullOrEmpty()) return
+    val c = MkTheme.colors
+    val max = components.maxOf { it.kwh }.coerceAtLeast(0.01)
+    MkCard {
+        MkCardHead("Kulutus laitteittain")
+        components.forEach { comp ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(MkRadius.sm))
+                        .background(c.accentDim),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(consumerIcon(comp.name), null, tint = c.accent, modifier = Modifier.size(16.dp))
+                }
+                Text(
+                    text = comp.name,
+                    style = MkTheme.type.body,
+                    color = c.inkHi,
+                    modifier = Modifier.width(96.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(7.dp)
+                        .clip(RoundedCornerShape(MkRadius.round))
+                        .background(c.track),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth((comp.kwh / max).toFloat())
+                            .clip(RoundedCornerShape(MkRadius.round))
+                            .background(c.warm),
+                    )
+                }
+                Text(
+                    text = "${Fmt.oneDecimal(comp.kwh)} kWh",
+                    style = MkTheme.type.readout(12),
+                    color = c.inkMid,
+                    modifier = Modifier.width(72.dp),
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+private fun consumerIcon(name: String): ImageVector = when {
+    name.contains("Maalämpö") -> MkIcons.ThermometerHot
+    name.contains("Valaistus") -> MkIcons.LightbulbFill
+    name.contains("Sauna") -> MkIcons.FlameFill
+    name.contains("Ilmanvaihto") -> MkIcons.Fan
+    else -> MkIcons.LightningFill
 }
 
 @Composable
