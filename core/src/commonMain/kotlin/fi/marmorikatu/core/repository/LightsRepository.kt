@@ -72,6 +72,14 @@ class DefaultLightsRepository(
     private val _controlFailures = MutableSharedFlow<Int>(extraBufferCapacity = 8)
     override val controlFailures: SharedFlow<Int> = _controlFailures.asSharedFlow()
 
+    /**
+     * Commands are queued and paced rather than fired in a burst. The PLC drops
+     * commands that arrive faster than its scan cycle — a measured burst of
+     * eight publishes landed as seven, with no error anywhere. Declared before
+     * [init] so the pacing coroutine never sees it uninitialised.
+     */
+    private val commands = Channel<Pair<Int, Boolean>>(Channel.UNLIMITED)
+
     init {
         scope.launch {
             mqtt.messages.collect { msg ->
@@ -123,16 +131,6 @@ class DefaultLightsRepository(
             publishLocked()
         }
     }
-
-    /**
-     * Commands are queued and paced rather than fired in a burst.
-     *
-     * The PLC drops commands that arrive faster than its scan cycle — a
-     * measured burst of eight publishes landed as seven, with no error
-     * anywhere. The backend's own batch helper paces at 100 ms for the same
-     * reason; this mirrors it, with a little more headroom.
-     */
-    private val commands = Channel<Pair<Int, Boolean>>(Channel.UNLIMITED)
 
     override suspend fun setLight(id: Int, on: Boolean) {
         stateLock.withLock {

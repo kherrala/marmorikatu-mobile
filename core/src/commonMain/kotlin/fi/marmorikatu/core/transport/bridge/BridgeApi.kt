@@ -200,7 +200,15 @@ class BridgeApi(
                 runCatching {
                     AppJson.decodeFromString(Announcement.serializer(), sse.data)
                 }.onSuccess { emit(it) }
-                    .onFailure { log.d { "skipping non-announcement event: ${sse.data.take(80)}" } }
+                    .onFailure {
+                        // The stream interleaves keepalive/heartbeat frames
+                        // (empty or `{}`) with real announcements — every ~20 s.
+                        // Those aren't errors and shouldn't be logged at all.
+                        val d = sse.data.trim()
+                        if (d.isNotEmpty() && d != "{}") {
+                            log.v { "ignoring non-announcement frame: ${d.take(80)}" }
+                        }
+                    }
             }
         }
     }

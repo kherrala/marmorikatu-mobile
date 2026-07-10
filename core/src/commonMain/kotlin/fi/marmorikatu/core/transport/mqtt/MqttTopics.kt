@@ -18,10 +18,17 @@ object MqttTopics {
     const val ENERGY_HEATPUMP = "marmorikatu/energy/heatpump"
     const val ENERGY_EXTRA = "marmorikatu/energy/extra"
 
+    /**
+     * ThermIQ heat-pump register dump. Lives under its own root (not
+     * `marmorikatu/`) and is published by the ThermIQ bridge, not the PLC.
+     * Not retained, so the first value can lag a publish cycle after connect.
+     */
+    const val THERMIQ = "ThermIQ/marmorikatu/data"
+
     /** All state topics the app subscribes to. */
     val STATE_SUBSCRIPTIONS = listOf(
         LIGHTS, LIGHT_NAMES, OUTLETS, TEMPERATURES, HEATING, COOLING,
-        VENTILATION, STATUS, ENERGY_HEATPUMP, ENERGY_EXTRA,
+        VENTILATION, STATUS, ENERGY_HEATPUMP, ENERGY_EXTRA, THERMIQ,
     )
 
     /**

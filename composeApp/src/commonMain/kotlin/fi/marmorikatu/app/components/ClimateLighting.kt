@@ -2,6 +2,7 @@ package fi.marmorikatu.app.components
 
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -119,6 +121,10 @@ fun MkRoomCarousel(
                 horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
             ) {
                 Row(
+                    // fill=false keeps the name centred when short, but lets a
+                    // long name (e.g. "Makuuhuone alakerta") shrink and ellipsize
+                    // instead of pushing the status tag off the row.
+                    modifier = Modifier.weight(1f, fill = false),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
@@ -133,6 +139,7 @@ fun MkRoomCarousel(
                         ),
                         color = colors.inkHi,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 trailing?.invoke()
@@ -200,6 +207,7 @@ fun MkClimateCard(
 ) {
     val colors = MkTheme.colors
     val cur = rooms.getOrNull(index) ?: return
+    val n = rooms.size
     val st = cur.status ?: "ok"
     val label = cur.statusLabel ?: STATUS_LABEL[st] ?: "Mukava"
     // spec: the trailing status label rides a raw mk-tag span, not the Tag component.
@@ -207,12 +215,30 @@ fun MkClimateCard(
         "alarm", "warn", "info" -> st
         else -> "ok"
     }
+    val go: (Int) -> Unit = { d -> if (n > 0) onIndexChange((index + d + n) % n) }
 
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(MkRadius.xl))
             .background(colors.surfaceCard)
             .border(1.dp, colors.borderSubtle, RoundedCornerShape(MkRadius.xl))
+            // Swipe the whole card to change room — the arrows are a fallback.
+            // Horizontal drags are consumed here; vertical ones pass through to
+            // the screen's scroll.
+            .pointerInput(index, n) {
+                var accumulated = 0f
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        val threshold = 48.dp.toPx()
+                        when {
+                            accumulated <= -threshold -> go(1)
+                            accumulated >= threshold -> go(-1)
+                        }
+                        accumulated = 0f
+                    },
+                    onHorizontalDrag = { _, delta -> accumulated += delta },
+                )
+            }
             .padding(20.dp), // mk-card--hero: --sp-5
     ) {
         MkRoomCarousel(
@@ -248,7 +274,10 @@ fun MkClimateCard(
             }
         }
 
-        // Divider then the target row (border-top + padding-top:14).
+        // The target row appears only when there is a setpoint to show. The
+        // house publishes per-room temperature and heating demand but no
+        // per-room setpoint, so an empty "Tavoite —" would just read as broken.
+        if (cur.target != null) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -266,7 +295,7 @@ fun MkClimateCard(
                 style = MkTheme.type.label,
                 color = colors.inkMid,
             )
-            if (targetEnabled && cur.target != null) {
+            if (targetEnabled) {
                 MkSetpointControl(
                     value = cur.target,
                     min = min,
@@ -277,6 +306,7 @@ fun MkClimateCard(
             } else {
                 ReadOnlySetpoint(cur.target, size)
             }
+        }
         }
     }
 }

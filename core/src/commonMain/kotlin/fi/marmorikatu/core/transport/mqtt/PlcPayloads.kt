@@ -159,6 +159,58 @@ object PlcPayloads {
         )
     }
 
+    /**
+     * `ThermIQ/marmorikatu/data` — the Thermia register dump. Registers arrive
+     * as `dNN` (decimal index) or `rNN` (hex index) depending on the ThermIQ
+     * REGFMT setting; both are handled. Returns null when the payload can't be
+     * read as an object or carries no usable reading.
+     *
+     * Register map mirrors the backend (`scripts/thermiq_write.py`): plain
+     * temperatures are direct °C; indoor and indoor-target combine an integer
+     * register with a 0.1 °C decimal register; d16 is the component bitfield
+     * (bit 1 = compressor, bit 3 = hot-water production). A few sensors report
+     * a −40 "not connected" sentinel, which is filtered out.
+     */
+    fun parseThermiq(payload: String): fi.marmorikatu.core.model.HeatPumpStatus? {
+        val obj = parseObject(payload) ?: return null
+
+        fun reg(index: Int): Double? {
+            (obj["d$index"] as? JsonPrimitive)?.doubleOrNull?.let { return it }
+            val hex = "r" + index.toString(16).padStart(2, '0')
+            return (obj[hex] as? JsonPrimitive)?.doubleOrNull
+        }
+        // The Thermia's disconnected-sensor sentinel; never a real temperature.
+        fun temp(index: Int): Double? = reg(index)?.takeIf { it > -40.0 }
+        fun combined(whole: Int, decimal: Int): Double? {
+            val w = temp(whole) ?: return null
+            return w + (reg(decimal) ?: 0.0) / 10.0
+        }
+        val bits = reg(16)?.toInt() ?: 0
+        fun bit(n: Int): Boolean = (bits shr n) and 1 == 1
+
+        val hotWater = temp(7)
+        val target = combined(3, 4)
+        // Neither the hot-water tank nor the target read → not real ThermIQ data.
+        if (hotWater == null && target == null) return null
+
+        val current = reg(12)
+        return fi.marmorikatu.core.model.HeatPumpStatus(
+            available = true,
+            running = bit(1) || (current ?: 0.0) > 0.5,
+            hotWaterActive = bit(3),
+            hotWaterC = hotWater,
+            indoorTargetC = target,
+            indoorC = combined(1, 2),
+            outdoorC = temp(0),
+            supplyC = temp(5),
+            returnC = temp(6),
+            brineInC = temp(9),
+            brineOutC = temp(8),
+            currentA = current,
+            updatedAtEpochSeconds = (obj["timestamp"] as? JsonPrimitive)?.longOrNull,
+        )
+    }
+
     private fun parseObject(payload: String): JsonObject? =
         runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
 

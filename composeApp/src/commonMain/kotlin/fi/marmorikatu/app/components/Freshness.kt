@@ -64,24 +64,23 @@ fun MkFreshness(
 
     // Re-read the clock every second so "12 s sitten" actually ticks.
     val age = rememberTickingAge(updatedAtEpochSeconds)
-    val breathAlpha = rememberBreathe(2000)
 
     Row(
         modifier = modifier.fillMaxWidth().padding(bottom = MkSpacing.x1),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
     ) {
+        // A static dot at rest — the flash on new data carries the signal.
+        // A perpetual breathe here would redraw the whole tree every frame
+        // (120fps) on every screen, which is wasteful and floods logcat with
+        // Android 15's per-frame setRequestedFrameRate hints.
         Box(
             modifier = Modifier
                 .size(8.dp)
                 .scale(flash.value)
                 .then(if (flash.value > 1.05f) Modifier.mkGlow(colors.accent, 6.dp) else Modifier)
                 .background(
-                    color = when {
-                        refreshing -> colors.accent
-                        updatedAtEpochSeconds == null -> colors.inkLo
-                        else -> colors.accent.copy(alpha = breathAlpha)
-                    },
+                    color = if (updatedAtEpochSeconds == null) colors.inkLo else colors.accent,
                     shape = CircleShape,
                 )
         )
@@ -111,20 +110,26 @@ fun MkFreshness(
     }
 }
 
-/** Recomputes the human-readable age once a second while composed. */
+/** Recomputes the human-readable age while composed, updating only when it changes. */
 @Composable
 private fun rememberTickingAge(updatedAtEpochSeconds: Long?): String? {
     if (updatedAtEpochSeconds == null) return null
-    val tick = remember { mutableStateOf(0) }
+    val age = remember(updatedAtEpochSeconds) {
+        mutableStateOf(Fmt.since(updatedAtEpochSeconds.toDouble()))
+    }
     LaunchedEffect(updatedAtEpochSeconds) {
         while (true) {
             delay(1_000)
-            tick.value++
+            // Only a *changed* state value invalidates composition. Once the
+            // age reads in minutes this fires once a minute instead of every
+            // second, so the screen stops redrawing when nothing has changed —
+            // which is what was flooding logcat with Android 15's per-frame
+            // setRequestedFrameRate hints.
+            val next = Fmt.since(updatedAtEpochSeconds.toDouble())
+            if (next != age.value) age.value = next
         }
     }
-    // Reading `tick` is what makes the age recompute as the clock advances.
-    tick.value
-    return Fmt.since(updatedAtEpochSeconds.toDouble())
+    return age.value
 }
 
 /**

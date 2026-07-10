@@ -21,8 +21,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Rooms, ventilation, and heat pump — READ ONLY in v1 by design.
@@ -40,11 +38,15 @@ interface ClimateRepository {
     val cooling: StateFlow<Cooling>
     val plcStatus: StateFlow<PlcStatus>
 
-    /** On-demand heat pump snapshot via MCP `get_thermia_status`. */
-    suspend fun heatPumpStatus(): JsonObject
+    /**
+     * Live heat-pump view, decoded from the retained-less `ThermIQ/marmorikatu/data`
+     * register feed. Starts unavailable and flips to available once the ThermIQ
+     * bridge publishes; power/COP are merged in by the caller from other sources.
+     */
+    val heatPump: StateFlow<HeatPumpStatus>
 
-    /** Typed heat-pump view; reports unavailable when the ThermIQ feed is stale. */
-    suspend fun heatPump(): HeatPumpStatus
+    /** On-demand raw heat pump snapshot via MCP `get_thermia_status` (debug/history). */
+    suspend fun heatPumpStatus(): JsonObject
 
     /** Ruuvi air quality (CO₂, PM2.5, VOC) via MCP. */
     suspend fun airQuality(): AirQuality
@@ -81,6 +83,9 @@ class DefaultClimateRepository(
     private val _plcStatus = MutableStateFlow(PlcStatus())
     override val plcStatus: StateFlow<PlcStatus> = _plcStatus.asStateFlow()
 
+    private val _heatPump = MutableStateFlow(HeatPumpStatus(available = false))
+    override val heatPump: StateFlow<HeatPumpStatus> = _heatPump.asStateFlow()
+
     init {
         scope.launch {
             mqtt.messages.collect { msg ->
@@ -95,41 +100,14 @@ class DefaultClimateRepository(
                         _cooling.value = PlcPayloads.parseCooling(msg.text())
                     MqttTopics.STATUS ->
                         _plcStatus.value = PlcPayloads.parseStatus(msg.text())
+                    MqttTopics.THERMIQ ->
+                        PlcPayloads.parseThermiq(msg.text())?.let { _heatPump.value = it }
                 }
             }
         }
     }
 
     override suspend fun heatPumpStatus(): JsonObject = mcp.getThermiaStatus()
-
-    /**
-     * The ThermIQ bridge publishes independently of the PLC; when it stops,
-     * `get_thermia_status` answers with empty groups rather than an error.
-     * Treat that as "no data" instead of showing a stale reading as live.
-     *
-     * Compressor state still has a live proxy: the heat pump's own energy
-     * meter, which the PLC publishes on the `hvac` measurement.
-     */
-    override suspend fun heatPump(): HeatPumpStatus {
-        val powerKw = runCatching {
-            flux.latest("hvac", listOf(FIELD_HEAT_PUMP_POWER))[FIELD_HEAT_PUMP_POWER]
-        }.getOrNull()
-
-        val thermia = runCatching { mcp.getThermiaStatus() }.getOrNull()
-        val temperatures = thermia?.get("temperatures") as? JsonObject
-        val settings = thermia?.get("settings") as? JsonObject
-        val performance = thermia?.get("performance") as? JsonObject
-        val hasThermia = !temperatures.isNullOrEmpty()
-
-        return HeatPumpStatus(
-            available = hasThermia,
-            running = (powerKw ?: 0.0) > HEAT_PUMP_RUNNING_KW,
-            powerKw = powerKw,
-            hotWaterC = temperatures?.get("hotwater_temp")?.jsonPrimitive?.doubleOrNull,
-            indoorTargetC = settings?.get("indoor_requested_t")?.jsonPrimitive?.doubleOrNull,
-            cop = performance?.get("cop")?.jsonPrimitive?.doubleOrNull,
-        )
-    }
 
     override suspend fun airQuality(): AirQuality = mcp.getAirQuality()
 
@@ -183,9 +161,5 @@ class DefaultClimateRepository(
 
     private companion object {
         const val FIELD_HEAT_PUMP_POWER = "Lampopumppu_teho"
-
-        /** Above this the compressor is drawing real power, i.e. it is running. */
-        const val HEAT_PUMP_RUNNING_KW = 0.3
-
     }
 }

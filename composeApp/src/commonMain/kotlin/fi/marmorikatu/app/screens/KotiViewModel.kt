@@ -99,7 +99,6 @@ class KotiViewModel(
         val sauna: SaunaStatus? = null,
         val prices: ElectricityPrices? = null,
         val hvac: HvacSummary? = null,
-        val heatPump: HeatPumpStatus? = null,
         val air: AirQuality? = null,
     )
 
@@ -116,9 +115,22 @@ class KotiViewModel(
         climateRepo.heatingDemand,
         announcementsRepo.recent,
         snapshots,
-    ) { temps, demand, recent, snap ->
-        buildState(temps, demand, recent, snap)
+        climateRepo.heatPump,
+    ) { temps, demand, recent, snap, heatPump ->
+        buildState(temps, demand, recent, snap, freshHeatPump(heatPump))
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), KotiUiState())
+
+    /**
+     * The ThermIQ feed is a live push; if it dies the last value would linger.
+     * Treat a reading older than [HEAT_PUMP_STALE_SECONDS] as no data so the UI
+     * says "Ei tietoa" rather than freezing a stale number as if it were live.
+     */
+    private fun freshHeatPump(hp: HeatPumpStatus): HeatPumpStatus {
+        if (!hp.available) return hp
+        val stampedAt = hp.updatedAtEpochSeconds ?: return hp
+        val ageSeconds = nowEpochSeconds() - stampedAt
+        return if (ageSeconds > HEAT_PUMP_STALE_SECONDS) HeatPumpStatus(available = false) else hp
+    }
 
     init {
         refresh()
@@ -144,18 +156,16 @@ class KotiViewModel(
                     val sauna = async { runCatching { saunaRepo.status() }.getOrNull() }
                     val prices = async { runCatching { energyRepo.electricityPrices() }.getOrNull() }
                     val hvac = async { runCatching { climateRepo.hvacSummary() }.getOrNull() }
-                    val heatPump = async { runCatching { climateRepo.heatPump() }.getOrNull() }
                     val air = async { runCatching { climateRepo.airQuality() }.getOrNull() }
                     Snapshots(
                         loading = false,
                         sauna = sauna.await(),
                         prices = prices.await(),
                         hvac = hvac.await(),
-                        heatPump = heatPump.await(),
                         air = air.await(),
                     )
                 }
-                val allFailed = listOf(snap.sauna, snap.prices, snap.hvac, snap.heatPump, snap.air)
+                val allFailed = listOf(snap.sauna, snap.prices, snap.hvac, snap.air)
                     .all { it == null }
                 snapshots.value = snap.copy(error = if (allFailed) "Tietojen haku epäonnistui" else null)
                 if (!allFailed) _updatedAt.value = nowEpochSeconds()
@@ -170,13 +180,14 @@ class KotiViewModel(
         demand: List<HeatingDemand>,
         recent: List<Announcement>,
         snap: Snapshots,
+        heatPump: HeatPumpStatus,
     ): KotiUiState = KotiUiState(
         loading = snap.loading,
         error = snap.error,
         attention = buildAttention(snap),
         door = buildDoor(recent),
-        rooms = buildRooms(temps, demand, snap),
-        kpis = buildKpis(snap),
+        rooms = buildRooms(temps, demand, heatPump),
+        kpis = buildKpis(snap, heatPump),
     )
 
     // ── Attention strip: only REAL abnormal conditions ────────────────────────
@@ -252,10 +263,11 @@ class KotiViewModel(
     private fun buildRooms(
         temps: List<RoomTemperature>,
         demand: List<HeatingDemand>,
-        snap: Snapshots,
+        heatPump: HeatPumpStatus,
     ): List<MkClimateRoom> {
-        // No fallback: the ThermIQ feed is the only setpoint source, and it may be down.
-        val target = snap.heatPump?.indoorTargetC
+        // The heat pump is single-zone: one house-wide indoor target applies to
+        // every room. No fallback — when the ThermIQ feed is down, target is null.
+        val target = heatPump.indoorTargetC?.takeIf { heatPump.available }
         return Rooms.livingSpaces.mapNotNull { room ->
             // Only rooms with a real sensor reading — never invent one.
             val reading = temps.firstOrNull { it.key == room.mqttKey } ?: return@mapNotNull null
@@ -283,11 +295,11 @@ class KotiViewModel(
 
     // ── KPI tiles ─────────────────────────────────────────────────────────────
 
-    private fun buildKpis(snap: Snapshots): List<KotiKpi> = listOf(
+    private fun buildKpis(snap: Snapshots, heatPump: HeatPumpStatus): List<KotiKpi> = listOf(
         electricityKpi(snap.prices),
         co2Kpi(snap.air),
-        heatPumpKpi(snap.heatPump),
-        hotWaterKpi(snap.heatPump),
+        heatPumpKpi(heatPump, snap.hvac?.heatPumpPowerKw),
+        hotWaterKpi(heatPump),
     )
 
     private fun electricityKpi(p: ElectricityPrices?): KotiKpi {
@@ -341,29 +353,45 @@ class KotiViewModel(
         )
     }
 
-    private fun heatPumpKpi(hp: HeatPumpStatus?): KotiKpi {
-        val available = hp?.available == true
-        val cop = hp?.cop
+    /**
+     * Running state and temperatures are live from the ThermIQ register feed;
+     * the power draw (kW) is merged in from the pump's own energy meter, which
+     * the `hvac` measurement carries independently.
+     */
+    private fun heatPumpKpi(hp: HeatPumpStatus, powerKw: Double?): KotiKpi {
+        val running = hp.running
         return KotiKpi(
             key = "maalampo",
             icon = MkIcons.ThermometerHot,
             label = "Maalämpö",
-            value = if (available) (if (hp!!.running) "Käy" else "Seis") else "Ei tietoa",
+            value = when {
+                !hp.available -> "Ei tietoa"
+                running -> "Käy"
+                else -> "Seis"
+            },
             unit = null,
             statStatus = MkStatStatus.None,
-            tag = if (available && cop != null) "COP ${Fmt.oneDecimal(cop)}" else null,
+            tag = when {
+                !hp.available -> null
+                hp.hotWaterActive -> "Käyttövesi"
+                running && powerKw != null -> "${Fmt.oneDecimal(powerKw)} kW"
+                else -> null
+            },
             tagStatus = MkTagStatus.Ok,
-            detailStatus = if (available) "ok" else "accent",
+            detailStatus = "accent",
             detailUnit = "",
-            // ThermIQ feed is dead — no history to plot.
             seriesValues = emptyList(),
             labels = emptyList(),
-            stats = if (available && cop != null) listOf(MkStat("COP", Fmt.comma(cop, 1))) else emptyList(),
+            stats = buildList {
+                if (powerKw != null) add(MkStat("TEHO", "${Fmt.oneDecimal(powerKw)} kW"))
+                hp.brineDeltaC?.let { add(MkStat("LIUOS Δ", "${Fmt.oneDecimal(it)} °C")) }
+                hp.outdoorC?.let { add(MkStat("ULKO", "${Fmt.oneDecimal(it)} °C")) }
+            },
         )
     }
 
-    private fun hotWaterKpi(hp: HeatPumpStatus?): KotiKpi {
-        val hw = hp?.hotWaterC
+    private fun hotWaterKpi(hp: HeatPumpStatus): KotiKpi {
+        val hw = hp.hotWaterC?.takeIf { hp.available }
         return KotiKpi(
             key = "vesi",
             icon = MkIcons.DropFill,
@@ -371,11 +399,10 @@ class KotiViewModel(
             value = hw?.let { Fmt.oneDecimal(it) } ?: "Ei tietoa",
             unit = if (hw != null) "°C" else null,
             statStatus = MkStatStatus.None,
-            tag = null,
-            tagStatus = MkTagStatus.Neutral,
+            tag = if (hp.available && hp.hotWaterActive) "Lämmitetään" else null,
+            tagStatus = MkTagStatus.Ok,
             detailStatus = "accent",
             detailUnit = if (hw != null) "°C" else "",
-            // No live hot-water source.
             seriesValues = emptyList(),
             labels = emptyList(),
             stats = emptyList(),
@@ -393,6 +420,12 @@ class KotiViewModel(
 
     private companion object {
         val BEDROOM_KEYS = setOf("yk_aatu", "yk_onni", "yk_essi", "mh_ak")
+
+        /**
+         * ThermIQ publishes roughly every 15–60 s; past this the feed is
+         * considered dead and the heat-pump tiles fall back to "Ei tietoa".
+         */
+        const val HEAT_PUMP_STALE_SECONDS = 30L * 60L
 
         /**
          * TimeRangeOption → (Flux range, every) for [ClimateRepository.temperatureHistory].

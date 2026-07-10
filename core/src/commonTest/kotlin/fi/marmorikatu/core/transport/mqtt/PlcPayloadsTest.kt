@@ -120,4 +120,54 @@ class PlcPayloadsTest {
         assertEquals(100, heating.first { it.key == "essi" }.percent)
         assertEquals(0, heating.first { it.key == "aatu" }.percent)
     }
+
+    // --- ThermIQ heat-pump register dump -------------------------------------
+
+    /** A live `ThermIQ/marmorikatu/data` payload captured 2026-07-10 (summer, idle). */
+    private val thermiqPayload = """
+        {"d0":24,"d1":20,"d2":5,"d3":22,"d4":0,"d5":22,"d6":24,"d7":53,"d8":10,"d9":11,
+        "d10":-40,"d12":0,"d16":0,"d50":22,"INDR_T":20.5,"EVU":0,
+        "time":"2026-07-10 17:12:52 BST","timestamp":1783699972}
+    """.trimIndent().replace("\n", "")
+
+    @Test
+    fun parsesThermiqRegisters() {
+        val hp = PlcPayloads.parseThermiq(thermiqPayload)!!
+        assertTrue(hp.available)
+        assertEquals(53.0, hp.hotWaterC)          // d7
+        assertEquals(22.0, hp.indoorTargetC)      // d3 + d4/10
+        assertEquals(20.5, hp.indoorC)            // d1 + d2/10, matches INDR_T
+        assertEquals(24.0, hp.outdoorC)           // d0
+        assertEquals(22.0, hp.supplyC)            // d5
+        assertEquals(24.0, hp.returnC)            // d6
+        assertEquals(11.0, hp.brineInC)           // d9
+        assertEquals(10.0, hp.brineOutC)          // d8
+        assertEquals(1.0, hp.brineDeltaC)         // in - out
+        assertEquals(1783699972L, hp.updatedAtEpochSeconds)
+        // d16 == 0 → compressor bit clear, current 0 A → idle.
+        assertTrue(!hp.running)
+        assertTrue(!hp.hotWaterActive)
+    }
+
+    @Test
+    fun thermiqRunningFromCompressorBit() {
+        // d16 bit 1 (compressor) + bit 3 (hot water) set = 0b1010 = 10.
+        val hp = PlcPayloads.parseThermiq("""{"d7":48,"d16":10,"d12":8}""")!!
+        assertTrue(hp.running)
+        assertTrue(hp.hotWaterActive)
+    }
+
+    @Test
+    fun thermiqFiltersDisconnectedSensorSentinel() {
+        // −40 is the Thermia "sensor not connected" value; must read as null.
+        val hp = PlcPayloads.parseThermiq("""{"d7":50,"d0":-40}""")!!
+        assertEquals(null, hp.outdoorC)
+    }
+
+    @Test
+    fun thermiqRejectsNonData() {
+        assertEquals(null, PlcPayloads.parseThermiq("not json"))
+        // No hot water and no target → not a usable ThermIQ frame.
+        assertEquals(null, PlcPayloads.parseThermiq("""{"rssi":-85,"EVU":0}"""))
+    }
 }

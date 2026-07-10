@@ -119,9 +119,11 @@ fun MkVoiceButton(
         MkVoiceSize.Kid -> 76.dp to 34.dp
     }
     val interaction = rememberMkInteractionSource()
-    // mk-breathe 1.4s while listening (opacity pulse).
-    val breathe = rememberBreathe(1400)
-    val breatheAlpha = if (listening) breathe else 1f
+    // mk-breathe 1.4s WHILE LISTENING only. Calling rememberBreathe
+    // unconditionally would leave an infinite transition running on the idle
+    // mic button — which sits on every screen — invalidating at the display
+    // refresh rate forever. Gate the whole animation on `listening`.
+    val breatheAlpha = if (listening) rememberBreathe(1400) else 1f
 
     val button: @Composable () -> Unit = {
         Box(
