@@ -8,6 +8,7 @@ import fi.marmorikatu.app.screens.TapahtumatViewModel
 import fi.marmorikatu.app.screens.ValotViewModel
 import org.koin.core.module.Module
 import org.koin.core.module.dsl.viewModel
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
 val kotiModule = module {
@@ -17,6 +18,8 @@ val kotiModule = module {
             energyRepo = get(),
             saunaRepo = get(),
             lightsRepo = get(),
+            infoRepo = get(),
+            tts = get(named("platformTts")),
             announcementsRepo = get(),
         )
     }

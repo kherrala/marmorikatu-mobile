@@ -24,9 +24,15 @@ import fi.marmorikatu.core.model.SpotPrice
 import fi.marmorikatu.core.repository.AnnouncementsRepository
 import fi.marmorikatu.core.repository.ClimateRepository
 import fi.marmorikatu.core.repository.EnergyRepository
+import fi.marmorikatu.core.repository.InfoRepository
 import fi.marmorikatu.core.repository.LightsRepository
 import fi.marmorikatu.core.repository.SaunaRepository
+import fi.marmorikatu.core.speech.SpeechOutput
 import fi.marmorikatu.core.transport.mcp.SaunaStatus
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +45,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
+
+/** Top news headline for the home dashboard's news card. */
+data class NewsHeadline(val title: String, val published: String)
 
 /** The home dashboard's one-tap lighting quick-states. */
 enum class KotiLightPreset(val label: String, val icon: ImageVector) {
@@ -101,8 +110,14 @@ class KotiViewModel(
     private val energyRepo: EnergyRepository,
     private val saunaRepo: SaunaRepository,
     private val lightsRepo: LightsRepository,
+    private val infoRepo: InfoRepository,
+    private val tts: SpeechOutput,
     announcementsRepo: AnnouncementsRepository,
 ) : ViewModel() {
+
+    private val _news = MutableStateFlow<NewsHeadline?>(null)
+    /** The top news headline, or null until loaded / if unavailable. */
+    val news: StateFlow<NewsHeadline?> = _news.asStateFlow()
 
     /** Home-dashboard lighting quick-states. Best effort — failures are quiet. */
     fun runLightPreset(preset: KotiLightPreset) {
@@ -115,6 +130,21 @@ class KotiViewModel(
                     KotiLightPreset.Upstairs -> lightsRepo.setFloor(Floor.YLAKERTA, true)
                 }
             }
+        }
+    }
+
+    /** Read the current headline aloud with the device voice (the card's "Lue"). */
+    fun readNews() {
+        val headline = _news.value ?: return
+        viewModelScope.launch { runCatching { tts.speak(headline.title) } }
+    }
+
+    private fun loadNews() {
+        viewModelScope.launch {
+            val el = runCatching { infoRepo.news(5) }.getOrNull() ?: return@launch
+            val first = (el as? JsonArray)?.firstOrNull() as? JsonObject ?: return@launch
+            val title = first["title"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return@launch
+            _news.value = NewsHeadline(title, first["published"]?.jsonPrimitive?.contentOrNull.orEmpty())
         }
     }
 
@@ -160,6 +190,7 @@ class KotiViewModel(
 
     init {
         refresh()
+        loadNews()
         // Room temperatures are a live MQTT StateFlow; stamp freshness whenever a
         // real reading lands, independently of the on-demand snapshot fetch.
         viewModelScope.launch {

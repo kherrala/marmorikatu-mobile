@@ -63,6 +63,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     val state by viewModel.uiState.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
     val updatedAt by viewModel.updatedAt.collectAsState()
+    val news by viewModel.news.collectAsState()
     val colors = MkTheme.colors
 
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -162,6 +163,8 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 }
             }
 
+            news?.let { NewsCard(it, onRead = viewModel::readNews) }
+
             SectionLabel("Valaistus")
             LightPresetRow(onPreset = viewModel::runLightPreset)
 
@@ -185,6 +188,52 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 state.error != null ->
                     Text(state.error!!, style = MkTheme.type.label, color = colors.inkLo)
             }
+        }
+    }
+}
+
+/** Top news headline with a read-aloud action, per the design's news card. */
+@Composable
+private fun NewsCard(news: NewsHeadline, onRead: () -> Unit) {
+    val c = MkTheme.colors
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.lg)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(c.surfaceCard)
+            .border(1.dp, c.borderSubtle, shape)
+            .clickable(onClick = onRead)
+            .padding(horizontal = 13.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.md))
+                .background(c.accentDim),
+            contentAlignment = Alignment.Center,
+        ) {
+            androidx.compose.material3.Icon(MkIcons.Info, null, tint = c.accent, modifier = Modifier.size(19.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Uutiset" + news.published.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                style = MkTheme.type.readout(10).copy(letterSpacing = 0.1.em),
+                color = c.inkLo,
+            )
+            Text(
+                text = news.title,
+                style = MkTheme.type.heading,
+                color = c.inkHi,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            androidx.compose.material3.Icon(MkIcons.SpeakerHigh, null, tint = c.accent, modifier = Modifier.size(17.dp))
+            Text("Lue", style = MkTheme.type.readout(10).copy(letterSpacing = 0.06.em), color = c.accent)
         }
     }
 }
