@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -64,6 +66,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     val refreshing by viewModel.refreshing.collectAsState()
     val updatedAt by viewModel.updatedAt.collectAsState()
     val news by viewModel.news.collectAsState()
+    val activeScenes by viewModel.activeScenes.collectAsState()
     val colors = MkTheme.colors
 
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -166,7 +169,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
             news?.let { NewsCard(it, onRead = viewModel::readNews) }
 
             SectionLabel("Valaistus")
-            LightPresetRow(onPreset = viewModel::runLightPreset)
+            SceneRow(active = activeScenes, onScene = viewModel::toggleScene)
 
             if (state.rooms.isNotEmpty()) {
                 val safeIndex = roomIndex.coerceIn(0, state.rooms.size - 1)
@@ -238,38 +241,45 @@ private fun NewsCard(news: NewsHeadline, onRead: () -> Unit) {
     }
 }
 
-/** Four one-tap lighting quick-states, per the design's "Pikatilat" grid. */
+/**
+ * One-tap lighting scenes, per the design's "Pikatilat" strip. Scrolls
+ * horizontally; an active scene is filled with the accent tint so its state is
+ * visible at a glance, and tapping it again toggles it off.
+ */
 @Composable
-private fun LightPresetRow(onPreset: (KotiLightPreset) -> Unit) {
+private fun SceneRow(active: Set<KotiScene>, onScene: (KotiScene) -> Unit) {
     val c = MkTheme.colors
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.md)
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        KotiLightPreset.entries.forEach { p ->
+        KotiScene.entries.forEach { s ->
+            val on = s in active
             Column(
                 modifier = Modifier
-                    .weight(1f)
+                    .width(82.dp)
                     .clip(shape)
-                    .background(c.surfaceCard)
-                    .border(1.dp, c.borderSubtle, shape)
-                    .clickable { onPreset(p) }
+                    .background(if (on) c.accentDim else c.surfaceCard)
+                    .border(1.dp, if (on) c.accentBorder else c.borderSubtle, shape)
+                    .clickable { onScene(s) }
                     .padding(vertical = 11.dp, horizontal = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 androidx.compose.material3.Icon(
-                    imageVector = p.icon,
+                    imageVector = s.icon,
                     contentDescription = null,
                     tint = c.accent,
                     modifier = Modifier.size(18.dp),
                 )
                 Text(
-                    text = p.label,
+                    text = s.label,
                     style = MkTheme.type.label,
-                    color = c.inkMid,
-                    maxLines = 2,
+                    color = if (on) c.accent else c.inkMid,
+                    maxLines = 1,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }

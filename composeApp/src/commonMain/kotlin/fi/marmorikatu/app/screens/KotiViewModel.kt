@@ -14,10 +14,10 @@ import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.core.model.AirQuality
 import fi.marmorikatu.core.model.Announcement
 import fi.marmorikatu.core.model.ElectricityPrices
-import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.HeatPumpStatus
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.HvacSummary
+import fi.marmorikatu.core.model.Light
 import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Rooms
 import fi.marmorikatu.core.model.SpotPrice
@@ -29,6 +29,12 @@ import fi.marmorikatu.core.repository.LightsRepository
 import fi.marmorikatu.core.repository.SaunaRepository
 import fi.marmorikatu.core.speech.SpeechOutput
 import fi.marmorikatu.core.transport.mcp.SaunaStatus
+import com.russhwolf.settings.Settings
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -49,12 +55,33 @@ import kotlin.time.ExperimentalTime
 /** Top news headline for the home dashboard's news card. */
 data class NewsHeadline(val title: String, val published: String)
 
-/** The home dashboard's one-tap lighting quick-states. */
-enum class KotiLightPreset(val label: String, val icon: ImageVector) {
-    AllOff("Kaikki pois", MkIcons.Moon),
-    Downstairs("Alakerta", MkIcons.HouseFill),
-    Upstairs("Yläkerta", MkIcons.BedFill),
-    AllOn("Kaikki päälle", MkIcons.LightbulbFill),
+/** One "restore this fixture to `on`" step of a scene's undo snapshot. */
+@Serializable
+data class SceneCmd(val id: Int, val on: Boolean)
+
+private val SCENES_SERIALIZER =
+    MapSerializer(String.serializer(), ListSerializer(SceneCmd.serializer()))
+
+/**
+ * The home dashboard's one-tap lighting scenes. Every scene is defined over the
+ * shared living areas and deliberately never touches a bedroom (all bedroom
+ * fixtures are named `MH…`), so a parent can set the mood without switching a
+ * child's light. The house has no dimmer channel, so "dark" scenes are built by
+ * leaving specific fixtures off rather than lowering brightness.
+ */
+enum class KotiScene(val label: String, val icon: ImageVector) {
+    /** Staircase — morning and evening circulation. */
+    Portaikko("Portaikko", MkIcons.Stairs),
+    /** Living room — evening. */
+    Olohuone("Olohuone", MkIcons.ArmchairFill),
+    /** Dining + kitchen ceiling — morning and evening. */
+    Keittio("Keittiö", MkIcons.CookingPotFill),
+    /** Movie: only the basement billiard light; the rest of the cellar goes dark. */
+    Elokuva("Elokuva", MkIcons.Television),
+    /** Office: both cellar work lights (etu + taka), billiard off. */
+    Toimisto("Toimisto", MkIcons.LightbulbFill),
+    /** Everything in the common areas off (bedrooms untouched). */
+    KaikkiPois("Kaikki pois", MkIcons.Moon),
 }
 
 /** "At the door" banner content, surfaced only for a person announcement. */
@@ -113,24 +140,94 @@ class KotiViewModel(
     private val infoRepo: InfoRepository,
     private val tts: SpeechOutput,
     announcementsRepo: AnnouncementsRepository,
+    private val settings: Settings = Settings(),
 ) : ViewModel() {
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     private val _news = MutableStateFlow<NewsHeadline?>(null)
     /** The top news headline, or null until loaded / if unavailable. */
     val news: StateFlow<NewsHeadline?> = _news.asStateFlow()
 
-    /** Home-dashboard lighting quick-states. Best effort — failures are quiet. */
-    fun runLightPreset(preset: KotiLightPreset) {
+    // Each active scene remembers the exact prior state of the fixtures it moved,
+    // so toggling it off is a true undo. Persisted so the active set survives a
+    // relaunch (the physical lights keep their state; the UI must match it).
+    private val undo = mutableMapOf<KotiScene, List<SceneCmd>>()
+    private val _activeScenes = MutableStateFlow<Set<KotiScene>>(loadScenes())
+    /** Scenes currently applied — the chips render these as active. */
+    val activeScenes: StateFlow<Set<KotiScene>> = _activeScenes.asStateFlow()
+
+    /**
+     * Toggle a lighting scene. Off → apply it (recording an undo snapshot);
+     * on → replay that snapshot to restore the fixtures to their prior state.
+     */
+    fun toggleScene(scene: KotiScene) {
         viewModelScope.launch {
-            runCatching {
-                when (preset) {
-                    KotiLightPreset.AllOff -> lightsRepo.setAll(false)
-                    KotiLightPreset.AllOn -> lightsRepo.setAll(true)
-                    KotiLightPreset.Downstairs -> lightsRepo.setFloor(Floor.ALAKERTA, true)
-                    KotiLightPreset.Upstairs -> lightsRepo.setFloor(Floor.YLAKERTA, true)
+            if (scene in _activeScenes.value) {
+                undo[scene].orEmpty().forEach { runCatching { lightsRepo.setLight(it.id, it.on) } }
+                undo.remove(scene)
+                _activeScenes.value = _activeScenes.value - scene
+            } else {
+                val lights = lightsRepo.lights.value
+                val cmds = sceneCommands(scene, lights)
+                undo[scene] = cmds.mapNotNull { (id, _) ->
+                    lights.firstOrNull { it.id == id }?.let { SceneCmd(id, it.displayedOn) }
+                }
+                cmds.forEach { (id, on) -> runCatching { lightsRepo.setLight(id, on) } }
+                _activeScenes.value = _activeScenes.value + scene
+            }
+            persistScenes()
+        }
+    }
+
+    private fun loadScenes(): Set<KotiScene> {
+        val cached = settings.getStringOrNull(KEY_SCENES) ?: return emptySet()
+        return runCatching {
+            val stored = json.decodeFromString(SCENES_SERIALIZER, cached)
+            stored.forEach { (name, cmds) ->
+                KotiScene.entries.firstOrNull { it.name == name }?.let { undo[it] = cmds }
+            }
+            undo.keys.toSet()
+        }.getOrElse { emptySet() }
+    }
+
+    private fun persistScenes() {
+        runCatching {
+            settings.putString(KEY_SCENES, json.encodeToString(SCENES_SERIALIZER, undo.mapKeys { it.key.name }))
+        }
+    }
+
+    /**
+     * Resolve a scene against the live catalog by fixture name (names are the
+     * stable identity; ids can be renumbered). Bedrooms (`MH…`) are excluded up
+     * front, and only fixtures not already in the target state are returned.
+     */
+    private fun sceneCommands(scene: KotiScene, lights: List<Light>): List<Pair<Int, Boolean>> {
+        fun Light.has(vararg needles: String) = needles.any { name.contains(it, ignoreCase = true) }
+        val common = lights.filterNot { it.name.trim().startsWith("MH", ignoreCase = true) }
+        val targets: List<Pair<Light, Boolean>> = when (scene) {
+            KotiScene.Portaikko -> common.filter { it.has("Portaikko", "Aula rappuset") }.map { it to true }
+            KotiScene.Olohuone -> common.filter { it.has("Olohuone") }.map { it to true }
+            KotiScene.Keittio -> common
+                .filter { it.has("Ruokailu") || (it.has("Keittiö") && it.has("atto")) }
+                .map { it to true }
+            KotiScene.Elokuva -> common.mapNotNull { l ->
+                when {
+                    l.has("biljard") -> l to true
+                    l.has("Kellari") -> l to false
+                    else -> null
                 }
             }
+            KotiScene.Toimisto -> common.mapNotNull { l ->
+                when {
+                    l.has("Kellari etuosa", "Kellari takaosa") -> l to true
+                    l.has("biljard") -> l to false
+                    else -> null
+                }
+            }
+            KotiScene.KaikkiPois -> common.map { it to false }
         }
+        return targets.filter { (l, on) -> l.displayedOn != on }.map { (l, on) -> l.id to on }
     }
 
     /** Read the current headline aloud with the device voice (the card's "Lue"). */
@@ -487,6 +584,9 @@ class KotiViewModel(
          * considered dead and the heat-pump tiles fall back to "Ei tietoa".
          */
         const val HEAT_PUMP_STALE_SECONDS = 30L * 60L
+
+        /** Persisted active scenes + their undo snapshots. */
+        const val KEY_SCENES = "koti.scenes"
 
         /**
          * TimeRangeOption → (Flux range, every) for [ClimateRepository.temperatureHistory].
