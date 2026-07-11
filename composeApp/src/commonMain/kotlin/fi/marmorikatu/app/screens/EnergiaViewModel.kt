@@ -100,11 +100,18 @@ class EnergiaViewModel(
 
     @OptIn(ExperimentalTime::class)
     private fun ElectricityPrices.toModel(tier: PriceTier?): PriceModel {
-        val nowHour = resolveCurrentHour()
-        val bars = today.map { sp ->
-            val hour = hourOf(sp.time)
+        // Past detection on the full slot timestamp, not the hour-of-day: the old
+        // `hour < nowHour` mislabeled the current hour's elapsed slots and — worse
+        // — would paint a whole stale (yesterday's) curve as "future". Now every
+        // slot before the one containing "now" is Past, so stale data shows up as
+        // an all-grey chart instead of hiding.
+        val now = Clock.System.now()
+        val starts = today.map { runCatching { Instant.parse(it.time) }.getOrNull() }
+        val currentStart = starts.filterNotNull().filter { it <= now }.maxOrNull()
+        val bars = today.mapIndexed { i, sp ->
+            val start = starts[i]
             val state = when {
-                hour != null && hour < nowHour -> BarState.Past
+                start != null && currentStart != null && start < currentStart -> BarState.Past
                 tierOf(sp.centsPerKwh) == PriceTier.Expensive -> BarState.Exp
                 tierOf(sp.centsPerKwh) == PriceTier.Cheap -> BarState.Cheap
                 else -> BarState.Future

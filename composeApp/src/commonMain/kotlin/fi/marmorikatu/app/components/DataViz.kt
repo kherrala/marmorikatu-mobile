@@ -399,7 +399,9 @@ fun MkPriceBars(
         ) {
             bars.forEach { bar ->
                 val barColor = when (bar.state) {
-                    BarState.Past -> colors.accent.copy(alpha = 0.38f)
+                    // Past hours in a neutral grey so they read clearly as elapsed,
+                    // distinct from the green/orange upcoming bars.
+                    BarState.Past -> colors.inkMid.copy(alpha = 0.5f)
                     BarState.Future -> colors.accent
                     BarState.Exp -> colors.warm
                     BarState.Cheap -> colors.statusOk
