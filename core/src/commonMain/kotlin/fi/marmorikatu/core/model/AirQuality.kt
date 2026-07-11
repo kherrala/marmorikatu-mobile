@@ -61,11 +61,36 @@ data class HeatPumpStatus(
     val brineOutC: Double? = null,
     val currentA: Double? = null,
     val cop: Double? = null,
+    /** The electric backup (aux) heater is running — register d13, bits 0/1 (3/6 kW). */
+    val auxHeaterActive: Boolean = false,
+    /** Active ThermIQ fault codes, decoded from the d19/d20 alarm bitfields. */
+    val alarms: Set<HeatPumpAlarm> = emptySet(),
     val updatedAtEpochSeconds: Long? = null,
 ) {
     /** Brine loop temperature drop across the ground collector, if both ends read. */
     val brineDeltaC: Double?
         get() = if (brineInC != null && brineOutC != null) brineInC - brineOutC else null
+}
+
+/**
+ * ThermIQ heat-pump fault codes from the d19 (pressure/flow/brine/motor) and d20
+ * (sensor) alarm bitfields. [code] is the `d<reg>:<bit>` reference shown on the
+ * alert, matching the Thermia service manual and the design.
+ */
+@Serializable
+enum class HeatPumpAlarm(val code: String) {
+    HighPressure("d19:0"),
+    LowPressure("d19:1"),
+    MotorBreaker("d19:2"),
+    LowBrineFlow("d19:3"),
+    LowBrineTemp("d19:4"),
+    OutdoorSensor("d20:0"),
+    SupplySensor("d20:1"),
+    ReturnSensor("d20:2"),
+    HotWaterSensor("d20:3"),
+    IndoorSensor("d20:4"),
+    PhaseOrder("d20:5"),
+    Overheating("d20:6"),
 }
 
 /** Ventilation heat-recovery summary drawn from the `hvac` measurement. */
@@ -76,4 +101,9 @@ data class HvacSummary(
     val heatPumpPowerKw: Double? = null,
     val freezingDanger: Boolean = false,
     val anyAlarm: Boolean = false,
+    /** MVHR duct temps for the ventilation diagram (from InfluxDB `hvac`). */
+    val extractC: Double? = null,
+    val exhaustC: Double? = null,
+    val supplyPreHeatC: Double? = null,
+    val supplyPostHeatC: Double? = null,
 )

@@ -97,17 +97,40 @@ class AnnouncementService : Service() {
             .setStyle(Notification.BigTextStyle().bigText(event.text))
             .setSmallIcon(applicationInfo.icon)
             .setAutoCancel(true)
-            .setContentIntent(launchIntent())
+            .setContentIntent(launchIntent(routeFor(event.kind), requestCode = event.id.toInt()))
             .build()
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(event.id.toInt(), notification)
     }
 
-    private fun launchIntent(): PendingIntent? {
+    /**
+     * Which app view a tapped notification should open, from its announcement
+     * kind (see [Announcement.kind]). Unknown kinds fall back to the event log.
+     */
+    private fun routeFor(kind: String): String {
+        val k = kind.lowercase()
+        return when {
+            k.startsWith("news") -> "news"
+            k.startsWith("light") -> "valot"
+            k.startsWith("sauna") || k.startsWith("hvac") || k.startsWith("lto") ||
+                k.startsWith("outdoor") || k.startsWith("aux_heater") -> "ilmasto"
+            k.startsWith("price") || k.contains("energy") -> "energia"
+            k.startsWith("garbage") || k.startsWith("calendar") -> "kalenteri"
+            else -> "loki" // person/door/camera + anything else → the event log
+        }
+    }
+
+    /**
+     * PendingIntent to the launcher activity, optionally carrying a [route] the
+     * activity reads to switch views. Each notification uses a distinct
+     * [requestCode] so one notification's target can't overwrite another's.
+     */
+    private fun launchIntent(route: String? = null, requestCode: Int = 0): PendingIntent? {
         val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return null
+        route?.let { intent.putExtra(EXTRA_NAV, it) }
         return PendingIntent.getActivity(
-            this, 0, intent,
+            this, requestCode, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
     }
@@ -126,19 +149,35 @@ class AnnouncementService : Service() {
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ONGOING, "Taustayhteys", NotificationManager.IMPORTANCE_MIN)
         )
+        // Informational events (priority 1–2): quiet by design — they appear in
+        // the shade with no sound or vibration. Any light buzz for a priority-1
+        // event comes from the app's own haptics, gated on the user's setting,
+        // rather than the OS channel firing for every event.
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_EVENTS, "Tapahtumat", NotificationManager.IMPORTANCE_DEFAULT)
+            NotificationChannel(CHANNEL_EVENTS, "Tapahtumat", NotificationManager.IMPORTANCE_LOW)
+                .apply {
+                    enableVibration(false)
+                    setSound(null, null)
+                }
         )
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ALERTS, "Hälytykset", NotificationManager.IMPORTANCE_HIGH)
                 .apply { enableVibration(true) }
         )
+        // A channel's importance can't be lowered once created, so the old
+        // default-importance events channel is retired in favour of the quiet one.
+        manager.deleteNotificationChannel(CHANNEL_EVENTS_LEGACY)
     }
 
     companion object {
+        /** Intent extra carrying the view a tapped notification should open (see routeFor). */
+        const val EXTRA_NAV = "mk.nav"
         private const val ONGOING_ID = 1
         private const val CHANNEL_ONGOING = "mk.ongoing"
-        private const val CHANNEL_EVENTS = "mk.events"
+        // New id so the lowered (silent) importance actually applies; the old
+        // default-importance channel below is deleted on channel creation.
+        private const val CHANNEL_EVENTS = "mk.events.quiet"
+        private const val CHANNEL_EVENTS_LEGACY = "mk.events"
         private const val CHANNEL_ALERTS = "mk.alerts"
 
         fun start(context: Context) {

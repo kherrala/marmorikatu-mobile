@@ -6,6 +6,7 @@ import fi.marmorikatu.app.components.BarState
 import fi.marmorikatu.app.components.MkPriceBar
 import fi.marmorikatu.core.model.ElectricityPrices
 import fi.marmorikatu.core.model.EnergyReading
+import fi.marmorikatu.core.model.PriceTier
 import fi.marmorikatu.core.repository.EnergyRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,14 @@ class EnergiaViewModel(
     private val _consumption = MutableStateFlow<List<EnergyComponent>?>(null)
     val consumption: StateFlow<List<EnergyComponent>?> = _consumption.asStateFlow()
 
+    /**
+     * Backend's own `total_kwh` for the window (design: "Kulutus tänään"). Can
+     * exceed the sum of [consumption]'s named components, since it also covers
+     * load that isn't attributed to any of them. Null until loaded.
+     */
+    private val _totalConsumptionKwh = MutableStateFlow<Double?>(null)
+    val totalConsumptionKwh: StateFlow<Double?> = _totalConsumptionKwh.asStateFlow()
+
     /** Pull today's spot curve. The screen also re-invokes this every 5 min. */
     @OptIn(ExperimentalTime::class)
     fun refresh() {
@@ -53,11 +62,18 @@ class EnergiaViewModel(
                 launch {
                     runCatching { energyRepo.energyConsumption() }
                         .getOrNull()
-                        ?.let { _consumption.value = parseConsumption(it) }
+                        ?.let { obj ->
+                            _consumption.value = parseConsumption(obj)
+                            _totalConsumptionKwh.value = (obj["total_kwh"] as? JsonPrimitive)?.doubleOrNull
+                        }
                 }
                 runCatching { energyRepo.electricityPrices() }
-                    .onSuccess {
-                        _prices.value = PriceState.Ready(it.toModel())
+                    .onSuccess { prices ->
+                        // Authoritative band from the backend optimizer; fall back
+                        // to a local clamped-percentile classification when
+                        // InfluxDB is unreachable.
+                        val tier = runCatching { energyRepo.priceTier() }.getOrNull()
+                        _prices.value = PriceState.Ready(prices.toModel(tier))
                         _updatedAt.value = Clock.System.now().epochSeconds
                     }
                     .onFailure {
@@ -83,14 +99,14 @@ class EnergiaViewModel(
     }
 
     @OptIn(ExperimentalTime::class)
-    private fun ElectricityPrices.toModel(): PriceModel {
-        val threshold = expensiveThreshold
+    private fun ElectricityPrices.toModel(tier: PriceTier?): PriceModel {
         val nowHour = resolveCurrentHour()
         val bars = today.map { sp ->
             val hour = hourOf(sp.time)
             val state = when {
                 hour != null && hour < nowHour -> BarState.Past
-                threshold != null && sp.centsPerKwh >= threshold -> BarState.Exp
+                tierOf(sp.centsPerKwh) == PriceTier.Expensive -> BarState.Exp
+                tierOf(sp.centsPerKwh) == PriceTier.Cheap -> BarState.Cheap
                 else -> BarState.Future
             }
             MkPriceBar(sp.centsPerKwh.toFloat(), state)
@@ -98,11 +114,38 @@ class EnergiaViewModel(
         return PriceModel(
             bars = bars,
             currentCents = currentCentsPerKwh,
-            isExpensiveNow = isExpensiveNow,
+            // Backend tier wins; local classification is the offline fallback.
+            nowTier = tier ?: currentTierFallback,
             minCents = minCentsPerKwh,
             maxCents = maxCentsPerKwh,
             avgCents = avgCentsPerKwh,
+            cheapestWindow = cheapestWindow(),
         )
+    }
+
+    /**
+     * Cheapest contiguous [windowHours]-hour block in today's spot curve, for the
+     * "Halvimmat tunnit tänään" tip. Requires near-full-day coverage (at least 20
+     * distinct hours with data) so a partial fetch can't surface a misleading
+     * window — real, not fabricated: derived straight from today's own prices.
+     */
+    @OptIn(ExperimentalTime::class)
+    private fun ElectricityPrices.cheapestWindow(windowHours: Int = 3): CheapWindow? {
+        val byHour = today.mapNotNull { sp -> hourOf(sp.time)?.let { it to sp.centsPerKwh } }
+            .groupBy({ it.first }, { it.second })
+        if (byHour.size < 20) return null
+        var best: CheapWindow? = null
+        var bestAvg = Double.MAX_VALUE
+        for (start in 0..24 - windowHours) {
+            val values = (start until start + windowHours).flatMap { byHour[it].orEmpty() }
+            if (values.size < windowHours) continue
+            val avg = values.average()
+            if (avg < bestAvg) {
+                bestAvg = avg
+                best = CheapWindow(start, start + windowHours, values.min(), values.max())
+            }
+        }
+        return best
     }
 
     @OptIn(ExperimentalTime::class)
@@ -137,8 +180,12 @@ sealed interface PriceState {
 data class PriceModel(
     val bars: List<MkPriceBar>,
     val currentCents: Double?,
-    val isExpensiveNow: Boolean,
+    val nowTier: PriceTier?,
     val minCents: Double?,
     val maxCents: Double?,
     val avgCents: Double?,
+    val cheapestWindow: CheapWindow?,
 )
+
+/** Cheapest contiguous hour block found in today's prices (the "Halvimmat tunnit" tip). */
+data class CheapWindow(val startHour: Int, val endHour: Int, val minCents: Double, val maxCents: Double)

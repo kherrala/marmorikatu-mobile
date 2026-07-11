@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
@@ -29,6 +30,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -130,8 +132,12 @@ fun MkVoiceButton(
             Modifier
                 .mkPressScale(interaction, pressed = 0.94f)
                 .size(btnSize)
-                .graphicsLayer { alpha = breatheAlpha }
-                .mkGlow(colors.accentGlow, radius = 22.dp)
+                // Breathe by fading only while listening. Using a plain alpha
+                // (a no-op when == 1f) instead of an always-on graphicsLayer{}
+                // block avoids compositing an offscreen layer around the glow —
+                // on the kiosk's scaled density that turned the whole button
+                // into an opaque black disc.
+                .then(if (listening) Modifier.alpha(breatheAlpha) else Modifier)
                 .clip(CircleShape)
                 .background(colors.accent)
                 .clickable(interaction, indication = null, onClick = onClick),
@@ -170,6 +176,74 @@ fun MkVoiceButton(
                     .border(1.dp, colors.borderSubtle, RoundedCornerShape(MkRadius.round))
                     .padding(horizontal = 9.dp, vertical = 2.dp),
             )
+        }
+    }
+}
+
+/** One tappable prompt in the [MkVoiceQuickCommands] panel. */
+data class MkVoiceCommand(val icon: ImageVector, val label: String, val prompt: String)
+
+/**
+ * The "PIKAKOMENNOT" panel: common voice prompts the user can fire by tapping
+ * instead of speaking. Shown above the active dock while the assistant listens.
+ */
+@Composable
+fun MkVoiceQuickCommands(
+    commands: List<MkVoiceCommand>,
+    onRun: (MkVoiceCommand) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MkTheme.colors
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(MkRadius.xxl))
+            .background(colors.surfaceCard)
+            .border(1.dp, colors.borderSubtle, RoundedCornerShape(MkRadius.xxl))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Text(
+            text = "PIKAKOMENNOT",
+            style = TextStyle(
+                fontFamily = MkTheme.type.mono,
+                fontWeight = FontWeight.Medium,
+                fontSize = 11.sp,
+                letterSpacing = 0.14.em,
+                color = colors.inkLo,
+            ),
+            modifier = Modifier.padding(bottom = 1.dp),
+        )
+        commands.forEach { cmd ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(MkRadius.lg))
+                    .background(colors.surfaceRaised)
+                    .clickable(
+                        interactionSource = rememberMkInteractionSource(),
+                        indication = null,
+                        onClick = { onRun(cmd) },
+                    )
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                horizontalArrangement = Arrangement.spacedBy(13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = cmd.icon,
+                    contentDescription = null,
+                    tint = colors.accent,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = cmd.label,
+                    style = TextStyle(
+                        fontFamily = MkTheme.type.ui,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        color = colors.inkHi,
+                    ),
+                )
+            }
         }
     }
 }

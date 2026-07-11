@@ -41,18 +41,70 @@ class FluxClient(
         fields: List<String>,
         range: String = "-24h",
         every: String = "30m",
+        tagKey: String? = null,
+        tagValue: String? = null,
     ): Map<String, List<FluxPoint>> {
         if (fields.isEmpty()) return emptyMap()
         val predicate = fields.joinToString(" or ") { """r._field == "$it"""" }
+        // Optional tag filter — e.g. a specific Ruuvi sensor_name, since several
+        // sensors share the `ruuvi`/`temperature` series.
+        val tagFilter = if (tagKey != null && tagValue != null) {
+            "\n              |> filter(fn: (r) => r.$tagKey == \"$tagValue\")"
+        } else ""
         val flux = """
             from(bucket: "$bucket")
               |> range(start: $range)
               |> filter(fn: (r) => r._measurement == "$measurement")
-              |> filter(fn: (r) => $predicate)
+              |> filter(fn: (r) => $predicate)$tagFilter
               |> aggregateWindow(every: $every, fn: mean, createEmpty: false)
               |> keep(columns: ["_time", "_value", "_field"])
         """.trimIndent()
         return runQuery(flux)
+    }
+
+    /**
+     * Heat-recovery (LTO) efficiency history, computed in Flux exactly as the
+     * Grafana dashboard / backend `get_heat_recovery_efficiency` do — the
+     * `LTO_hyotysuhde` sensor is unconnected, so efficiency is derived:
+     *   η = (supply_after_HRU − outdoor) / (setpoint − outdoor) × 100,
+     * kept only when it lands in (0, 100]. Returns a percentage series.
+     */
+    suspend fun recoveryEfficiencyHistory(range: String = "-24h", every: String = "30m"): List<FluxPoint> {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: $range)
+              |> filter(fn: (r) => r._measurement == "hvac")
+              |> filter(fn: (r) => r._field == "Ulkolampotila" or r._field == "Tuloilma_ennen_lammitysta" or r._field == "Tuloilma_asetusarvo")
+              |> aggregateWindow(every: $every, fn: mean, createEmpty: false)
+              |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+              |> filter(fn: (r) => exists r.Ulkolampotila and exists r.Tuloilma_ennen_lammitysta and exists r.Tuloilma_asetusarvo)
+              |> filter(fn: (r) => r.Tuloilma_asetusarvo != r.Ulkolampotila)
+              |> map(fn: (r) => ({ _time: r._time, _value: (r.Tuloilma_ennen_lammitysta - r.Ulkolampotila) / (r.Tuloilma_asetusarvo - r.Ulkolampotila) * 100.0, _field: "lto" }))
+              |> filter(fn: (r) => r._value > 0.0 and r._value <= 100.0)
+              |> keep(columns: ["_time", "_value", "_field"])
+        """.trimIndent()
+        val csv = postFlux(flux) ?: return emptyList()
+        return parseAnnotatedCsv(csv)["lto"] ?: emptyList()
+    }
+
+    /**
+     * Latest value of one field filtered to a specific tag — e.g. the outdoor
+     * Ruuvi (`ruuvi`/`temperature`, `sensor_name = "Ulkolämpötila"`), where
+     * several sensors share the same field and an untagged [latest] would be
+     * ambiguous. Returns null if unreachable or absent.
+     */
+    suspend fun latest(measurement: String, field: String, tagKey: String, tagValue: String): Double? {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: -3h)
+              |> filter(fn: (r) => r._measurement == "$measurement")
+              |> filter(fn: (r) => r._field == "$field")
+              |> filter(fn: (r) => r.$tagKey == "$tagValue")
+              |> last()
+              |> keep(columns: ["_time", "_value", "_field"])
+        """.trimIndent()
+        val csv = postFlux(flux) ?: return null
+        return parseAnnotatedCsv(csv)[field]?.lastOrNull()?.value
     }
 
     /** Latest value per field. */
@@ -72,9 +124,27 @@ class FluxClient(
         }.toMap()
     }
 
-    private suspend fun runQuery(flux: String): Map<String, List<FluxPoint>> {
+    /**
+     * Latest string value of one field — e.g. the `tier` classification the
+     * heating optimizer writes. The numeric [latest]/[history] readers drop
+     * non-numeric values, so string fields need their own path. Returns null
+     * when InfluxDB is unreachable or the field is absent (callers fall back).
+     */
+    suspend fun latestString(measurement: String, field: String): String? {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: -3h)
+              |> filter(fn: (r) => r._measurement == "$measurement")
+              |> filter(fn: (r) => r._field == "$field")
+              |> last()
+              |> keep(columns: ["_time", "_value", "_field"])
+        """.trimIndent()
+        return lastStringValue(postFlux(flux))
+    }
+
+    private suspend fun postFlux(flux: String): String? {
         val url = "${configStore.config.value.influxUrl}/api/v2/query?org=$org"
-        val csv = try {
+        return try {
             httpClient.post(url) {
                 header(HttpHeaders.Authorization, "Token $token")
                 header(HttpHeaders.Accept, "application/csv")
@@ -83,9 +153,36 @@ class FluxClient(
             }.bodyAsText()
         } catch (e: Exception) {
             log.w(e) { "flux query failed" }
-            return emptyMap()
+            null
         }
+    }
+
+    private suspend fun runQuery(flux: String): Map<String, List<FluxPoint>> {
+        val csv = postFlux(flux) ?: return emptyMap()
         return parseAnnotatedCsv(csv)
+    }
+
+    /** Read the last data row's `_value` cell as a raw string. */
+    internal fun lastStringValue(csv: String?): String? {
+        if (csv == null) return null
+        var valueIdx = -1
+        var result: String? = null
+        csv.lineSequence().forEach { rawLine ->
+            val line = rawLine.trim('\r', '\n')
+            if (line.isBlank()) return@forEach
+            if (line.startsWith("#")) {
+                valueIdx = -1
+                return@forEach
+            }
+            val cells = line.split(",")
+            if (valueIdx < 0) {
+                valueIdx = cells.indexOf("_value")
+                return@forEach
+            }
+            if (valueIdx < 0 || cells.size <= valueIdx) return@forEach
+            cells[valueIdx].takeIf { it.isNotBlank() }?.let { result = it }
+        }
+        return result
     }
 
     /**

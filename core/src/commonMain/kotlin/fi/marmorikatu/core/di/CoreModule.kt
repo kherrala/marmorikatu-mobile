@@ -63,7 +63,7 @@ val coreModule: Module = module {
 
     single<LightsRepository> { DefaultLightsRepository(get(), get(), get()) }
     single<ClimateRepository> { DefaultClimateRepository(get(), get(), get(), get()) }
-    single<EnergyRepository> { DefaultEnergyRepository(get(), get(), get()) }
+    single<EnergyRepository> { DefaultEnergyRepository(get(), get(), get(), get()) }
     single<SaunaRepository> { DefaultSaunaRepository(get()) }
     single<TvRepository> { DefaultTvRepository(get()) }
     single<AnnouncementsRepository> { DefaultAnnouncementsRepository(get(), get()) }

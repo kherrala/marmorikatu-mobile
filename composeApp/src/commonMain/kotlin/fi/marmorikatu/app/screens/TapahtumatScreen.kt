@@ -76,14 +76,14 @@ fun TapahtumatScreen(viewModel: TapahtumatViewModel = koinViewModel()) {
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = MkSpacing.pagePad, vertical = MkSpacing.x3),
+                .padding(
+                    start = MkSpacing.pagePad,
+                    end = MkSpacing.pagePad,
+                    top = MkSpacing.x3,
+                    bottom = MkSpacing.x3 + MkSpacing.scrollBottomGap,
+                ),
             verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
         ) {
-            MkFreshness(
-                updatedAtEpochSeconds = updatedAt,
-                refreshing = refreshing,
-                onRefresh = viewModel::refresh,
-            )
 
             if (cameraEvent != null) {
                 MkCameraCard(

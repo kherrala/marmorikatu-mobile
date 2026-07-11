@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -19,11 +21,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +40,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import fi.marmorikatu.app.components.Detection
+import fi.marmorikatu.app.platform.LockLandscapeWhileVisible
+import fi.marmorikatu.app.shell.UiSignals
+import org.koin.compose.koinInject
 import fi.marmorikatu.app.components.MkAttentionStrip
 import fi.marmorikatu.app.components.MkButton
 import fi.marmorikatu.app.components.MkButtonSize
@@ -42,14 +50,17 @@ import fi.marmorikatu.app.components.MkButtonVariant
 import fi.marmorikatu.app.components.MkArticleViewer
 import fi.marmorikatu.app.components.MkCameraViewer
 import fi.marmorikatu.app.components.MkClimateCard
+import fi.marmorikatu.app.components.rememberTickingAge
 import fi.marmorikatu.app.components.MkDoorAlert
 import fi.marmorikatu.app.components.rememberBase64Painter
-import fi.marmorikatu.app.components.MkFreshness
 import fi.marmorikatu.app.components.MkMetricDetail
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.components.MkSeries
 import fi.marmorikatu.app.components.MkStatTile
-import fi.marmorikatu.app.format.Fmt
+import fi.marmorikatu.app.components.GarbageNextCard
+import fi.marmorikatu.app.components.MkWeatherWidget
+import fi.marmorikatu.app.components.WeatherReading
+import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
@@ -65,21 +76,60 @@ import org.koin.compose.viewmodel.koinViewModel
 fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     val state by viewModel.uiState.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
-    val updatedAt by viewModel.updatedAt.collectAsState()
     val news by viewModel.news.collectAsState()
-    val activeScenes by viewModel.activeScenes.collectAsState()
+    val activePreset by viewModel.activePreset.collectAsState()
+    val kpiDetailSeries by viewModel.kpiDetailSeries.collectAsState()
+    val kpiDetailLoading by viewModel.kpiDetailLoading.collectAsState()
+    val weather by viewModel.weather.collectAsState()
+    val outdoorTemp by viewModel.outdoorTemp.collectAsState()
+    val nextGarbage by viewModel.nextGarbage.collectAsState()
+    val updatedAt by viewModel.updatedAt.collectAsState()
+    val metricsUpdatedAt by viewModel.metricsUpdatedAt.collectAsState()
+    val newsReading by viewModel.newsReading.collectAsState()
     val colors = MkTheme.colors
 
     LaunchedEffect(Unit) { viewModel.refresh() }
 
-    var selKey by remember { mutableStateOf<String?>(null) }
+    // Detail selection lives in the ViewModel: turning the phone to landscape
+    // recycles this pager page (disposing even rememberSaveable state), so local
+    // state would bounce the detail closed. The VM survives the recreation.
+    val selKey by viewModel.detailKey.collectAsState()
+    val roomDetailIndex by viewModel.roomDetailIndex.collectAsState()
+    val detailRange by viewModel.detailRange.collectAsState()
     var roomIndex by remember { mutableStateOf(0) }
     var doorDismissed by remember { mutableStateOf(false) }
-    var cameraOpen by remember { mutableStateOf(false) }
+    // VM-backed so it survives the landscape recreation the camera viewer forces.
+    val cameraOpen by viewModel.cameraOpen.collectAsState()
     var newsOpen by remember { mutableStateOf(false) }
+    // Attention chips can be dismissed (tap) and restored from a collapsed strip.
+    var dismissedAttn by remember { mutableStateOf(setOf<String>()) }
+    var showDismissed by remember { mutableStateOf(false) }
 
-    // System back leaves the KPI detail for the grid instead of quitting.
-    BackHandler(enabled = selKey != null) { selKey = null }
+    // System back leaves a detail chart for the dashboard instead of quitting.
+    BackHandler(enabled = selKey != null || roomDetailIndex != null) {
+        viewModel.closeDetail()
+    }
+
+    // A detail chart turns the phone to landscape (even under an orientation
+    // lock) to use the width, and signals the shell to keep the phone surface
+    // rather than swapping to the kiosk when it goes wide.
+    val detailOpen = selKey != null || roomDetailIndex != null || cameraOpen
+    val uiSignals: UiSignals = koinInject()
+    // Commit the signal synchronously at composition-apply (SideEffect), not on a
+    // coroutine (LaunchedEffect) — otherwise the forced rotation can outrun it and
+    // the shell briefly swaps to the kiosk surface, disposing this detail.
+    SideEffect { uiSignals.detailOpen.value = detailOpen }
+    DisposableEffect(Unit) { onDispose { uiSignals.detailOpen.value = false } }
+
+    // A tapped news notification (routed here by the shell) opens the news reader.
+    val openNewsReader by uiSignals.openNewsReader.collectAsState()
+    LaunchedEffect(openNewsReader) {
+        if (openNewsReader) {
+            newsOpen = true
+            uiSignals.openNewsReader.value = false
+        }
+    }
+    if (detailOpen) LockLandscapeWhileVisible()
 
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
         Column(
@@ -90,60 +140,126 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 .padding(MkSpacing.pagePad),
             verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
         ) {
-            MkFreshness(
-                updatedAtEpochSeconds = updatedAt,
-                refreshing = refreshing,
-                onRefresh = viewModel::refresh,
-            )
-
+            // No freshness/refresh bar here: pull-to-refresh already covers it.
             val selected = selKey?.let { key -> state.kpis.firstOrNull { it.key == key } }
 
             if (selected != null) {
-                MkButton(
-                    text = "Takaisin",
-                    onClick = { selKey = null },
-                    variant = MkButtonVariant.Ghost,
-                    size = MkButtonSize.Sm,
-                    icon = MkIcons.CaretLeft,
-                    modifier = Modifier.align(Alignment.Start),
-                )
-                val series = if (selected.seriesValues.isEmpty()) {
-                    emptyList()
-                } else {
-                    listOf(
-                        MkSeries(
-                            name = null,
-                            values = selected.seriesValues,
-                            color = lineColor(selected.detailStatus, colors),
-                            area = true,
-                        ),
-                    )
+                // Load this metric's history at the chosen window from InfluxDB.
+                val hasSource = selected.detailMeasurement != null && selected.detailField != null
+                LaunchedEffect(selected.key, detailRange, hasSource) {
+                    if (hasSource) {
+                        viewModel.loadKpiDetail(
+                            selected.detailMeasurement!!,
+                            selected.detailField!!,
+                            selected.detailTagKey,
+                            selected.detailTagValue,
+                            detailRange,
+                        )
+                    }
                 }
+                val loaded = if (hasSource) kpiDetailSeries else selected.seriesValues
+                val series = if (loaded.size < 2) emptyList() else listOf(
+                    MkSeries(
+                        name = null,
+                        values = loaded,
+                        color = lineColor(selected.detailStatus, colors),
+                        area = true,
+                    ),
+                )
                 MkMetricDetail(
                     icon = selected.icon,
                     label = selected.label,
                     value = selected.value,
                     unit = selected.unit ?: selected.detailUnit,
                     series = series,
-                    labels = selected.labels,
+                    labels = chartLabels(detailRange),
                     stats = selected.stats,
                     status = selected.detailStatus,
+                    range = if (hasSource) detailRange else null,
+                    onRangeChange = if (hasSource) ({ viewModel.setDetailRange(it) }) else null,
+                    onBack = { viewModel.closeDetail() },
                     // Swipe the card to the right to go back to the grid.
                     modifier = Modifier.pointerInput(selKey) {
                         var dragged = 0f
                         detectHorizontalDragGestures(
                             onDragEnd = {
-                                if (dragged > 56.dp.toPx()) selKey = null
+                                if (dragged > 56.dp.toPx()) viewModel.closeDetail()
                                 dragged = 0f
                             },
                             onHorizontalDrag = { _, delta -> dragged += delta },
                         )
                     },
                 )
+                if (hasSource && kpiDetailLoading) {
+                    Text("Ladataan historiaa…", style = MkTheme.type.label, color = colors.inkLo)
+                } else if (hasSource && loaded.size < 2) {
+                    Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
+                }
                 return@Column
             }
 
-            MkAttentionStrip(items = state.attention, updatedAt = Fmt.now())
+            // Room temperature detail — opened by tapping the climate card's value.
+            val room = roomDetailIndex?.let { state.rooms.getOrNull(it) }
+            if (room != null) {
+                val field = room.historyField
+                LaunchedEffect(room.name, detailRange, field) {
+                    if (field != null) viewModel.loadKpiDetail("rooms", field, null, null, detailRange)
+                }
+                val series = if (kpiDetailSeries.size < 2) emptyList() else listOf(
+                    MkSeries(name = null, values = kpiDetailSeries, color = colors.accent, area = true),
+                )
+                MkMetricDetail(
+                    icon = room.icon ?: MkIcons.Thermometer,
+                    label = room.name,
+                    value = room.temp,
+                    unit = "°C",
+                    series = series,
+                    labels = chartLabels(detailRange),
+                    stats = emptyList(),
+                    status = "accent",
+                    range = if (field != null) detailRange else null,
+                    onRangeChange = if (field != null) ({ viewModel.setDetailRange(it) }) else null,
+                    onBack = { viewModel.closeDetail() },
+                    modifier = Modifier.pointerInput(room.name) {
+                        var dragged = 0f
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                if (dragged > 56.dp.toPx()) viewModel.closeDetail()
+                                dragged = 0f
+                            },
+                            onHorizontalDrag = { _, delta -> dragged += delta },
+                        )
+                    },
+                )
+                if (field != null && kpiDetailLoading) {
+                    Text("Ladataan historiaa…", style = MkTheme.type.label, color = colors.inkLo)
+                } else if (field != null && kpiDetailSeries.size < 2) {
+                    Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
+                }
+                return@Column
+            }
+
+            val activeAttn = state.attention.filterNot { it.text in dismissedAttn }
+            val dismissedAttnItems = state.attention.filter { it.text in dismissedAttn }
+            // Only surface the strip when something actually needs attention — the
+            // "Kaikki kunnossa" empty state was redundant noise.
+            if (activeAttn.isNotEmpty()) {
+                MkAttentionStrip(
+                    items = activeAttn,
+                    onItemClick = { dismissedAttn = dismissedAttn + it.text },
+                )
+            }
+            if (dismissedAttnItems.isNotEmpty()) {
+                DismissedToggle(dismissedAttnItems.size, showDismissed) { showDismissed = !showDismissed }
+                if (showDismissed) {
+                    MkAttentionStrip(
+                        items = dismissedAttnItems,
+                        title = "Ohitetut",
+                        onItemClick = { dismissedAttn = dismissedAttn - it.text },
+                        modifier = Modifier.alpha(0.55f),
+                    )
+                }
+            }
 
             val door = state.door
             if (door != null && !doorDismissed) {
@@ -154,7 +270,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     time = door.time,
                     subtitle = door.subtitle,
                     detection = Detection(),
-                    onView = { cameraOpen = true },
+                    onView = { viewModel.openCamera() },
                     onDismiss = { doorDismissed = true },
                 )
                 if (cameraOpen) {
@@ -163,13 +279,43 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                         title = door.title,
                         subtitle = door.subtitle,
                         time = door.time,
-                        onDismiss = { cameraOpen = false },
+                        onDismiss = { viewModel.closeCamera() },
                     )
                 }
             }
 
+            weather?.let { w ->
+                MkWeatherWidget(
+                    forecast = w,
+                    outdoorTempOverride = outdoorTemp?.primary?.celsius,
+                    outdoorSource = outdoorTemp?.primary?.source,
+                    outdoorAlternatives = outdoorTemp?.alternatives.orEmpty()
+                        .map { WeatherReading(it.source, it.celsius) },
+                )
+            }
+
+            nextGarbage?.let { g -> GarbageNextCard(next = g) }
+
+            SectionLabel("Valaistus")
+            SceneRow(active = activePreset, onScene = viewModel::applyPreset)
+
+            if (state.rooms.isNotEmpty()) {
+                val safeIndex = roomIndex.coerceIn(0, state.rooms.size - 1)
+                SectionLabel("Lämpötilat", updatedAtEpochSeconds = updatedAt)
+                MkClimateCard(
+                    rooms = state.rooms,
+                    index = safeIndex,
+                    onIndexChange = { roomIndex = it },
+                    targetEnabled = false, // no per-room write path exists
+                    colorTempByBand = true, // design: warm ≥22°, accent ≤19.5°
+                    onTempClick = { viewModel.openRoomDetail(safeIndex) },
+                )
+            }
+
+            // News sits directly under the climate card, above the KPI grid (design).
             news.firstOrNull()?.let { top ->
-                NewsCard(top, onOpen = { newsOpen = true }, onRead = viewModel::readNews)
+                SectionLabel("Uutiset")
+                NewsCard(top, onOpen = { newsOpen = true }, onRead = viewModel::toggleReadNews, reading = newsReading)
                 if (newsOpen) {
                     MkArticleViewer(
                         title = "Uutiset",
@@ -183,28 +329,14 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                             }
                         },
                         meta = "${news.size} uutista",
-                        onRead = viewModel::readNews,
+                        onRead = viewModel::toggleReadNews,
                         onDismiss = { newsOpen = false },
                     )
                 }
             }
 
-            SectionLabel("Valaistus")
-            SceneRow(active = activeScenes, onScene = viewModel::toggleScene)
-
-            if (state.rooms.isNotEmpty()) {
-                val safeIndex = roomIndex.coerceIn(0, state.rooms.size - 1)
-                SectionLabel("Lämpötilat")
-                MkClimateCard(
-                    rooms = state.rooms,
-                    index = safeIndex,
-                    onIndexChange = { roomIndex = it },
-                    targetEnabled = false, // no per-room write path exists
-                )
-            }
-
-            if (state.kpis.isNotEmpty()) SectionLabel("Mittarit")
-            KpiGrid(state.kpis) { selKey = it }
+            if (state.kpis.isNotEmpty()) SectionLabel("Mittarit", updatedAtEpochSeconds = metricsUpdatedAt)
+            KpiGrid(state.kpis) { viewModel.openKpiDetail(it) }
 
             when {
                 state.loading && state.kpis.isEmpty() ->
@@ -212,13 +344,15 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 state.error != null ->
                     Text(state.error!!, style = MkTheme.type.label, color = colors.inkLo)
             }
+
+            Spacer(Modifier.height(MkSpacing.scrollBottomGap))
         }
     }
 }
 
 /** Top news headline: the left opens the full list, the speaker reads it aloud. */
 @Composable
-private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit, onRead: () -> Unit) {
+private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit, onRead: () -> Unit, reading: Boolean) {
     val c = MkTheme.colors
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.lg)
     val pill = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.round)
@@ -266,18 +400,25 @@ private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit, onRead: () -> Unit)
                 )
             }
         }
-        // Right: the speaker reads every headline aloud.
+        // Right: the speaker reads every headline aloud; while reading it becomes
+        // a stop control (tap to cancel).
+        val tint = if (reading) c.warm else c.accent
         Row(
             modifier = Modifier
                 .clip(pill)
-                .background(c.accentDim)
+                .background(if (reading) c.warmDim else c.accentDim)
                 .clickable(onClick = onRead)
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            androidx.compose.material3.Icon(MkIcons.SpeakerHigh, "Lue uutiset", tint = c.accent, modifier = Modifier.size(18.dp))
-            Text("Lue", style = MkTheme.type.readout(10).copy(letterSpacing = 0.06.em), color = c.accent)
+            androidx.compose.material3.Icon(
+                if (reading) MkIcons.X else MkIcons.SpeakerHigh,
+                if (reading) "Lopeta luku" else "Lue uutiset",
+                tint = tint,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(if (reading) "Lopeta" else "Lue", style = MkTheme.type.readout(10).copy(letterSpacing = 0.06.em), color = tint)
         }
     }
 }
@@ -288,20 +429,21 @@ private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit, onRead: () -> Unit)
  * visible at a glance, and tapping it again toggles it off.
  */
 @Composable
-private fun SceneRow(active: Set<KotiScene>, onScene: (KotiScene) -> Unit) {
+internal fun SceneRow(active: KotiScene?, onScene: (KotiScene) -> Unit) {
     val c = MkTheme.colors
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.md)
+    // Full-width grid: the four presets share the row as equal columns (design's
+    // repeat(4,1fr)) rather than a left-aligned horizontally scrolling strip.
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         KotiScene.entries.forEach { s ->
-            val on = s in active
+            val on = s == active
             Column(
                 modifier = Modifier
-                    .width(82.dp)
+                    .weight(1f)
+                    .heightIn(min = 62.dp)
                     .clip(shape)
                     .background(if (on) c.accentDim else c.surfaceCard)
                     .border(1.dp, if (on) c.accentBorder else c.borderSubtle, shape)
@@ -328,25 +470,64 @@ private fun SceneRow(active: Set<KotiScene>, onScene: (KotiScene) -> Unit) {
     }
 }
 
+/** Collapsed toggle that reveals the dismissed-attention strip. */
+@Composable
+private fun DismissedToggle(count: Int, shown: Boolean, onToggle: () -> Unit) {
+    val c = MkTheme.colors
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.md)
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        androidx.compose.material3.Icon(MkIcons.EyeSlash, null, tint = c.inkLo, modifier = Modifier.size(15.dp))
+        Text(
+            text = if (shown) "Piilota ohitetut" else "Näytä ohitetut ($count)",
+            style = MkTheme.type.readout(11).copy(letterSpacing = 0.06.em),
+            color = c.inkLo,
+        )
+    }
+}
+
 /** An uppercase mono section label with a live-data dot, per the design. */
 @Composable
-private fun SectionLabel(text: String) {
+internal fun SectionLabel(text: String, updatedAtEpochSeconds: Long? = null) {
     val colors = MkTheme.colors
+    // A plain uppercase kicker (design). The old leading accent dot was purely
+    // decorative; a right-aligned freshness dot + "N s sitten" is shown only when
+    // an updated-at is supplied (the design's climate section).
+    val age = rememberTickingAge(updatedAtEpochSeconds)
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .background(colors.accent, androidx.compose.foundation.shape.CircleShape),
-        )
         Text(
-            text = text,
+            text = text.uppercase(),
             style = MkTheme.type.readout(11).copy(letterSpacing = 0.12.em),
             color = colors.inkLo,
         )
+        if (updatedAtEpochSeconds != null && age != null) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(colors.accent, androidx.compose.foundation.shape.CircleShape),
+                )
+                Text(
+                    text = age,
+                    style = MkTheme.type.readout(10),
+                    color = colors.inkLo,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 
@@ -368,6 +549,11 @@ private fun KpiGrid(kpis: List<KotiKpi>, onSelect: (String) -> Unit) {
                         status = kpi.statStatus,
                         tag = kpi.tag,
                         tagStatus = kpi.tagStatus,
+                        spark = kpi.seriesValues,
+                        // Flash when the source produces a new reading (its ts/push
+                        // advances), and dim when that feed goes stale.
+                        pulseKey = kpi.freshAsOf,
+                        dimmed = kpi.stale,
                         onClick = { onSelect(kpi.key) },
                         modifier = Modifier.weight(1f),
                     )
@@ -376,6 +562,15 @@ private fun KpiGrid(kpis: List<KotiKpi>, onSelect: (String) -> Unit) {
             }
         }
     }
+}
+
+/** X-axis ticks describing the selected detail window. */
+internal fun chartLabels(range: TimeRangeOption): List<String> = when (range) {
+    TimeRangeOption.H6 -> listOf("-6 t", "-4 t", "-2 t", "nyt")
+    TimeRangeOption.H24 -> listOf("00:00", "06:00", "12:00", "18:00", "nyt")
+    TimeRangeOption.D7 -> listOf("ma", "ke", "pe", "su")
+    TimeRangeOption.D30 -> listOf("1.", "10.", "20.", "30.")
+    TimeRangeOption.Y1 -> listOf("tammi", "huhti", "heinä", "loka")
 }
 
 private fun lineColor(status: String, colors: fi.marmorikatu.app.theme.MkColors): Color = when (status) {

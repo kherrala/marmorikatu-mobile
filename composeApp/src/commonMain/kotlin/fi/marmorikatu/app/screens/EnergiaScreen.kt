@@ -1,6 +1,7 @@
 package fi.marmorikatu.app.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,10 +25,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import fi.marmorikatu.app.components.MkCard
 import fi.marmorikatu.app.components.MkCardHead
@@ -41,6 +46,7 @@ import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.core.model.EnergyReading
+import fi.marmorikatu.core.model.PriceTier
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import org.koin.compose.viewmodel.koinViewModel
@@ -61,6 +67,7 @@ fun EnergiaScreen(
     val priceState by viewModel.prices.collectAsState()
     val liveEnergy by viewModel.liveEnergy.collectAsState()
     val consumption by viewModel.consumption.collectAsState()
+    val totalConsumptionKwh by viewModel.totalConsumptionKwh.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
     val updatedAt by viewModel.updatedAt.collectAsState()
 
@@ -78,18 +85,19 @@ fun EnergiaScreen(
             modifier = modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(MkSpacing.pagePad),
+                .padding(
+                    start = MkSpacing.pagePad,
+                    end = MkSpacing.pagePad,
+                    top = MkSpacing.pagePad,
+                    bottom = MkSpacing.pagePad + MkSpacing.scrollBottomGap,
+                ),
             verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
         ) {
-            MkFreshness(
-                updatedAtEpochSeconds = updatedAt,
-                refreshing = refreshing,
-                onRefresh = viewModel::refresh,
-            )
             PriceCard(priceState)
-            PriceStats(priceState)
-            ConsumptionCard(consumption)
             MetersCard(liveEnergy)
+            TotalsRow(totalConsumptionKwh)
+            ConsumptionCard(consumption)
+            CheapestWindowTip(priceState)
         }
     }
 }
@@ -101,15 +109,22 @@ private fun PriceCard(state: PriceState) {
         when (state) {
             is PriceState.Ready -> {
                 val m = state.model
-                val expensive = m.isExpensiveNow
+                // Three bands from the backend optimizer (CHEAP/NORMAL/EXPENSIVE),
+                // so a genuinely cheap hour reads cheap even on a flat day.
+                val (tag, status) = when (m.nowTier) {
+                    PriceTier.Expensive -> "KALLIS NYT" to "warn"
+                    PriceTier.Cheap -> "EDULLINEN" to "ok"
+                    PriceTier.Normal -> "NORMAALI" to "info"
+                    null -> null to "info"
+                }
                 MkPriceBars(
                     bars = m.bars,
                     labels = PRICE_LABELS.split(","),
                     height = 132.dp,
                     nowValue = m.currentCents?.let { Fmt.oneDecimal(it) },
                     nowUnit = "c/kWh",
-                    nowTag = if (expensive) "KALLIS NYT" else "EDULLINEN",
-                    nowStatus = if (expensive) "warn" else "ok",
+                    nowTag = tag,
+                    nowStatus = status,
                 )
             }
             PriceState.Loading -> QuietLine("Ladataan hintoja…")
@@ -118,27 +133,64 @@ private fun PriceCard(state: PriceState) {
     }
 }
 
+/** Today's total consumption + its cost (design: "Kulutus tänään" / "Kustannus"). */
 @Composable
-private fun PriceStats(state: PriceState) {
-    val model = (state as? PriceState.Ready)?.model
+private fun TotalsRow(totalKwh: Double?) {
     Row(horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3)) {
-        PriceStat("Halvin", model?.minCents, Modifier.weight(1f))
-        PriceStat("Kallein", model?.maxCents, Modifier.weight(1f))
-        PriceStat("Keskiarvo", model?.avgCents, Modifier.weight(1f))
+        MkStatTile(
+            label = "Kulutus tänään",
+            value = totalKwh?.let { Fmt.oneDecimal(it) } ?: "Ei tietoa",
+            unit = if (totalKwh != null) "kWh" else null,
+            icon = MkIcons.LightningFill,
+            modifier = Modifier.weight(1f),
+        )
+        MkStatTile(
+            label = "Kustannus",
+            // No wired backend source yet: the MCP `get_energy_cost` tool exists
+            // server-side but isn't called from here, so an honest placeholder
+            // beats fabricating a euro figure. See EnergiaViewModel gap notes.
+            value = "Ei tietoa",
+            icon = null,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
+/**
+ * Cheapest hour block today, as a spot-price tip (design: "Halvimmat tunnit
+ * tänä yönä"). Renamed to "tänään" here since it's derived from today's whole
+ * curve, not specifically the coming night — honest about what was computed.
+ */
 @Composable
-private fun PriceStat(label: String, cents: Double?, modifier: Modifier) {
-    val known = cents != null
-    MkStatTile(
-        label = label,
-        value = if (known) Fmt.oneDecimal(cents!!) else "Ei tietoa",
-        unit = if (known) "c/kWh" else null,
-        icon = MkIcons.Lightning,
-        modifier = modifier,
-    )
+private fun CheapestWindowTip(state: PriceState) {
+    val window = (state as? PriceState.Ready)?.model?.cheapestWindow ?: return
+    val c = MkTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(MkRadius.md))
+            .background(c.accentDim)
+            .border(1.dp, c.accentBorder, RoundedCornerShape(MkRadius.md))
+            .padding(horizontal = MkSpacing.x3, vertical = MkSpacing.x3),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+    ) {
+        Icon(MkIcons.LightbulbFill, null, tint = c.accent, modifier = Modifier.size(16.dp))
+        Text(
+            text = buildAnnotatedString {
+                append("Halvimmat tunnit tänään ")
+                withStyle(SpanStyle(color = c.inkHi, fontFamily = MkTheme.type.mono, fontWeight = FontWeight.Medium)) {
+                    append("${pad2(window.startHour)}–${pad2(window.endHour)}")
+                }
+                append(" · ${Fmt.comma(window.minCents, 1)}–${Fmt.comma(window.maxCents, 1)} c/kWh")
+            },
+            style = MkTheme.type.body,
+            color = c.inkMid,
+        )
+    }
 }
+
+private fun pad2(value: Int): String = value.toString().padStart(2, '0')
 
 /** Estimated consumption by component, as labelled bars (design: "Kulutus laitteittain"). */
 @Composable
@@ -211,8 +263,8 @@ private fun consumerIcon(name: String): ImageVector = when {
 private fun MetersCard(live: Map<String, EnergyReading>) {
     val c = MkTheme.colors
     MkCard {
-        MkCardHead("Kulutus laitteittain")
-        MeterRow("Lämpöpumppu", MkIcons.ThermometerHot, live["heatpump"])
+        MkCardHead("Sähkömittari")
+        MeterRow("Maalämpö", MkIcons.ThermometerHot, live["heatpump"])
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -220,6 +272,112 @@ private fun MetersCard(live: Map<String, EnergyReading>) {
                 .background(c.borderSubtle),
         )
         MeterRow("Lisävastus", MkIcons.FlameFill, live["extra"])
+        // Grid frequency + three-phase voltages from the OR-WE-517 payload (both
+        // meters read the same grid). Shown only when the fields are present.
+        GridMeterInfo(live["heatpump"] ?: live["extra"])
+    }
+}
+
+/** Grid frequency + L1/L2/L3 voltages, read from a meter's raw OR-WE-517 map. */
+@Composable
+private fun GridMeterInfo(reading: EnergyReading?) {
+    val c = MkTheme.colors
+    val raw = reading?.raw ?: return
+    fun pick(key: String): Double? =
+        raw.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
+    val freq = pick("Grid_Frequency")
+    val v1 = pick("L1_Voltage")
+    val v2 = pick("L2_Voltage")
+    val v3 = pick("L3_Voltage")
+    // Cumulative import/export (design: "Verkosta" / "Verkkoon"), from the
+    // OR-WE-517's own forward/reverse energy registers — real meter fields,
+    // not derived. Reverse stays near-zero unless something local feeds power
+    // back (there's no solar on this circuit today), but it's still honest to show.
+    val fromGrid = pick("Forward_Active_Energy")
+    val toGrid = pick("Reverse_Active_Energy")
+    if (freq == null && v1 == null && v2 == null && v3 == null) return
+
+    Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(c.borderSubtle))
+    Column(
+        modifier = Modifier.padding(top = MkSpacing.x3),
+        verticalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+    ) {
+        if (freq != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Verkkotaajuus", style = MkTheme.type.body, color = c.inkMid)
+                Text("${Fmt.oneDecimal(freq)} Hz", style = MkTheme.type.readout(14), color = c.inkHi)
+            }
+        }
+        if (v1 != null || v2 != null || v3 != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+            ) {
+                PhaseChip("L1", v1, Modifier.weight(1f))
+                PhaseChip("L2", v2, Modifier.weight(1f))
+                PhaseChip("L3", v3, Modifier.weight(1f))
+            }
+        }
+        // Verkosta/Verkkoon only — the per-meter "Mittarilukema" is already shown
+        // above each MeterRow, so repeating it here would just be a near-duplicate
+        // of the same cumulative total under a different register name.
+        if (fromGrid != null || toGrid != null) {
+            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(c.borderSubtle))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x1),
+                horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+            ) {
+                MeterTotalCell("Verkosta", fromGrid, c.inkHi, TextAlign.Start, Modifier.weight(1f))
+                MeterTotalCell("Verkkoon", toGrid, c.accent, TextAlign.End, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** One cell of the meter's cumulative-total footer: uppercase label + a `kWh` readout. */
+@Composable
+private fun MeterTotalCell(label: String, kwh: Double?, valueColor: Color, align: TextAlign, modifier: Modifier) {
+    val c = MkTheme.colors
+    Column(modifier = modifier, horizontalAlignment = when (align) {
+        TextAlign.Start -> Alignment.Start
+        TextAlign.End -> Alignment.End
+        else -> Alignment.CenterHorizontally
+    }) {
+        Text(
+            text = label,
+            style = MkTheme.type.kicker,
+            color = c.inkLo,
+            maxLines = 1,
+        )
+        Text(
+            text = kwh?.let { "${Fmt.oneDecimal(it)} kWh" } ?: "—",
+            style = MkTheme.type.readout(15),
+            color = valueColor,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun PhaseChip(label: String, volts: Double?, modifier: Modifier = Modifier) {
+    val c = MkTheme.colors
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(MkRadius.sm))
+            .background(c.surfaceInset)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(label, style = MkTheme.type.readout(10), color = c.inkLo)
+        Text(
+            volts?.let { "${Fmt.oneDecimal(it)} V" } ?: "—",
+            style = MkTheme.type.readout(14),
+            color = c.inkHi,
+            maxLines = 1,
+        )
     }
 }
 

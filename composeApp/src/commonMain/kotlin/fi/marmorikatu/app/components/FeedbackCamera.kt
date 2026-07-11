@@ -21,7 +21,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -742,8 +750,9 @@ fun MkCameraViewer(
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.94f))
-                .clickable(rememberMkInteractionSource(), indication = null) { onDismiss() },
+                .background(Color.Black.copy(alpha = 0.94f)),
+            // Only the "Sulje" button (or system back) closes it — a stray tap on
+            // the photo used to dismiss it, which fought with pinch-to-zoom.
             contentAlignment = Alignment.Center,
         ) {
             Column(
@@ -768,13 +777,36 @@ fun MkCameraViewer(
                     contentAlignment = Alignment.Center,
                 ) {
                     if (painter != null) {
+                        // Pinch to zoom (1–5×) and pan while zoomed; a double-tap
+                        // resets. Fit + fillMaxSize already shows it as large and
+                        // centred as the frame allows.
+                        var scale by remember { mutableStateOf(1f) }
+                        var offset by remember { mutableStateOf(Offset.Zero) }
                         Image(
                             painter = painter,
                             contentDescription = camera,
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .clip(RoundedCornerShape(MkRadius.lg)),
+                                .clip(RoundedCornerShape(MkRadius.lg))
+                                .graphicsLayer {
+                                    scaleX = scale
+                                    scaleY = scale
+                                    translationX = offset.x
+                                    translationY = offset.y
+                                }
+                                .pointerInput(Unit) {
+                                    detectTransformGestures { _, pan, zoom, _ ->
+                                        scale = (scale * zoom).coerceIn(1f, 5f)
+                                        offset = if (scale <= 1f) Offset.Zero else offset + pan
+                                    }
+                                }
+                                .pointerInput(Unit) {
+                                    detectTapGestures(onDoubleTap = {
+                                        scale = 1f
+                                        offset = Offset.Zero
+                                    })
+                                },
                         )
                     } else {
                         Box(

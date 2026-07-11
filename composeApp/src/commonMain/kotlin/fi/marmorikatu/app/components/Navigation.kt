@@ -3,11 +3,12 @@ package fi.marmorikatu.app.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -143,6 +144,8 @@ fun MkNavRail(
     onChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     brand: String = "M",
+    onBrandClick: (() -> Unit)? = null,
+    brandActive: Boolean = false,
     footer: @Composable () -> Unit = {},
 ) {
     val colors = MkTheme.colors
@@ -160,18 +163,35 @@ fun MkNavRail(
                     strokeWidth = 1.dp.toPx(),
                 )
             }
-            .padding(top = 16.dp, bottom = 14.dp),
+            .padding(top = 20.dp, bottom = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(5.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Logo tile.
+        // Logo tile. When [onBrandClick] is supplied it doubles as the Home
+        // button — the "M" *is* Marmorikatu — so no separate house icon is
+        // needed in the rail. A brighter ring marks it active.
         Box(
             modifier = Modifier
-                .padding(bottom = 12.dp)
-                .size(44.dp)
+                .padding(bottom = 16.dp)
+                .size(54.dp)
                 .clip(RoundedCornerShape(MkRadius.md))
                 .background(colors.accentDim)
-                .border(1.dp, colors.accentBorder, RoundedCornerShape(MkRadius.md)),
+                .border(
+                    width = if (brandActive) 2.dp else 1.dp,
+                    color = if (brandActive) colors.accent else colors.accentBorder,
+                    shape = RoundedCornerShape(MkRadius.md),
+                )
+                .then(
+                    if (onBrandClick != null) {
+                        Modifier.clickable(
+                            interactionSource = rememberMkInteractionSource(),
+                            indication = null,
+                            onClick = onBrandClick,
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -179,63 +199,73 @@ fun MkNavRail(
                 style = TextStyle(
                     fontFamily = MkTheme.type.display,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 22.sp,
+                    fontSize = 26.sp,
                     color = colors.accent,
                 ),
             )
         }
 
-        items.forEach { item ->
-            val isActive = item.key == active
-            val fg = if (isActive) colors.accent else colors.inkLo
-            val glyph = if (isActive) item.iconActive ?: item.icon else item.icon
-            Box(
-                modifier = Modifier
-                    .width(56.dp)
-                    .defaultMinSize(minHeight = 52.dp)
-                    .clip(RoundedCornerShape(MkRadius.md))
-                    .background(if (isActive) colors.accentDim else Color.Transparent)
-                    .clickable(
-                        interactionSource = rememberMkInteractionSource(),
-                        indication = null,
-                        onClick = { onChange(item.key) },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
+        // The items live in a weighted, scrollable band so the logo (above) and
+        // the footer mic (below) stay pinned and visible even when many tall
+        // items at the kiosk's scaled density would otherwise overflow the rail.
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items.forEach { item ->
+                val isActive = item.key == active
+                val fg = if (isActive) colors.accent else colors.inkLo
+                val glyph = if (isActive) item.iconActive ?: item.icon else item.icon
+                Box(
+                    modifier = Modifier
+                        .width(84.dp)
+                        .defaultMinSize(minHeight = 68.dp)
+                        .clip(RoundedCornerShape(MkRadius.md))
+                        .background(if (isActive) colors.accentDim else Color.Transparent)
+                        .clickable(
+                            interactionSource = rememberMkInteractionSource(),
+                            indication = null,
+                            onClick = { onChange(item.key) },
+                        ),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = glyph,
-                        contentDescription = item.label,
-                        tint = fg,
-                        modifier = Modifier.size(21.dp),
-                    )
-                    if (item.label != null) {
-                        Text(
-                            text = item.label,
-                            style = TextStyle(
-                                fontFamily = MkTheme.type.ui,
-                                fontWeight = FontWeight.Medium,
-                                fontSize = 9.sp,
-                                color = fg,
-                            ),
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = glyph,
+                            contentDescription = item.label,
+                            tint = fg,
+                            modifier = Modifier.size(26.dp),
+                        )
+                        if (item.label != null) {
+                            Text(
+                                text = item.label,
+                                style = TextStyle(
+                                    fontFamily = MkTheme.type.ui,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 12.sp,
+                                    color = fg,
+                                ),
+                            )
+                        }
+                    }
+                    if (!item.badge.isNullOrEmpty()) {
+                        NavBadge(
+                            text = item.badge,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = (-9).dp, y = 3.dp),
                         )
                     }
-                }
-                if (!item.badge.isNullOrEmpty()) {
-                    NavBadge(
-                        text = item.badge,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(x = (-9).dp, y = 3.dp),
-                    )
                 }
             }
         }
 
-        Spacer(Modifier.weight(1f))
         footer()
     }
 }

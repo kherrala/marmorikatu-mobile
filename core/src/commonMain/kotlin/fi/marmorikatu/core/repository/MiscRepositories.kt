@@ -3,7 +3,9 @@ package fi.marmorikatu.core.repository
 import fi.marmorikatu.core.model.BusDepartures
 import fi.marmorikatu.core.model.EnergyReading
 import fi.marmorikatu.core.model.ElectricityPrices
+import fi.marmorikatu.core.model.PriceTier
 import fi.marmorikatu.core.model.WeatherForecast
+import fi.marmorikatu.core.transport.influx.FluxClient
 import fi.marmorikatu.core.transport.mcp.McpApi
 import fi.marmorikatu.core.transport.mcp.SaunaStatus
 import fi.marmorikatu.core.transport.mqtt.MqttClient
@@ -26,11 +28,20 @@ interface EnergyRepository {
 
     suspend fun electricityPrices(): ElectricityPrices
     suspend fun energyConsumption(hours: Int = 24): JsonObject
+
+    /**
+     * The authoritative current price band from the backend
+     * `heating_optimizer.tier` (same source the announcements use), or null
+     * when InfluxDB is unreachable — callers then fall back to classifying the
+     * MCP price locally.
+     */
+    suspend fun priceTier(): PriceTier?
 }
 
 class DefaultEnergyRepository(
     mqtt: MqttClient,
     private val mcp: McpApi,
+    private val flux: FluxClient,
     scope: CoroutineScope,
 ) : EnergyRepository {
 
@@ -53,6 +64,14 @@ class DefaultEnergyRepository(
 
     override suspend fun electricityPrices(): ElectricityPrices = mcp.getElectricityPrices()
     override suspend fun energyConsumption(hours: Int): JsonObject = mcp.getEnergyConsumption(hours)
+
+    override suspend fun priceTier(): PriceTier? =
+        when (flux.latestString("heating_optimizer", "tier")?.trim()?.uppercase()) {
+            "CHEAP" -> PriceTier.Cheap
+            "EXPENSIVE" -> PriceTier.Expensive
+            "NORMAL", "PRE_HEAT" -> PriceTier.Normal
+            else -> null
+        }
 }
 
 // --- Sauna ---------------------------------------------------------------------

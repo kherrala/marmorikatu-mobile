@@ -30,8 +30,10 @@ object MkSpacing {
     val pagePad = 18.dp
     val pagePadTablet = 24.dp
     val stackGap = 12.dp
-    val railWidth = 84.dp
+    val railWidth = 108.dp
     val tabBarHeight = 64.dp
+    /** Extra bottom room on scrollable screens so the last item clears the mic FAB. */
+    val scrollBottomGap = 92.dp
 
     val touchMin = 44.dp
     val touchComfort = 52.dp

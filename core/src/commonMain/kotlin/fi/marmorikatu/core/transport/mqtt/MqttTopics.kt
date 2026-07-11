@@ -32,10 +32,22 @@ object MqttTopics {
      */
     const val THERMIQ_READ = "ThermIQ/marmorikatu/read"
 
+    /**
+     * Ruuvi Gateway feed — one message per tag under `ruuvi/<gw_mac>/<tag_mac>`,
+     * already decoded to JSON (temperature, CO₂, …) with the real per-measurement
+     * timestamp. The `#` wildcard also carries non-Ruuvi BLE devices, which the
+     * parser discards; overall volume is only ~5–10 msg/s, well within the
+     * message buffer.
+     */
+    const val RUUVI = "ruuvi/CC:F1:A2:8E:F8:8A/#"
+
+    /** Prefix used to recognise a Ruuvi message by its per-tag topic. */
+    const val RUUVI_PREFIX = "ruuvi/"
+
     /** All state topics the app subscribes to. */
     val STATE_SUBSCRIPTIONS = listOf(
         LIGHTS, LIGHT_NAMES, OUTLETS, TEMPERATURES, HEATING, COOLING,
-        VENTILATION, STATUS, ENERGY_HEATPUMP, ENERGY_EXTRA, THERMIQ,
+        VENTILATION, STATUS, ENERGY_HEATPUMP, ENERGY_EXTRA, THERMIQ, RUUVI,
     )
 
     /**

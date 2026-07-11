@@ -4,7 +4,10 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.BoxScope
+import fi.marmorikatu.app.theme.rememberMkInteractionSource
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
@@ -18,8 +21,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,6 +38,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import fi.marmorikatu.app.components.MkIconButton
@@ -41,20 +48,25 @@ import fi.marmorikatu.app.components.MkNavRail
 import fi.marmorikatu.app.components.MkTabBar
 import fi.marmorikatu.app.components.MkTabItem
 import fi.marmorikatu.app.components.MkVoiceButton
+import fi.marmorikatu.app.components.MkVoiceCommand
 import fi.marmorikatu.app.components.MkVoiceDock
+import fi.marmorikatu.app.components.MkVoiceQuickCommands
 import fi.marmorikatu.app.components.MkVoiceSize
 import fi.marmorikatu.app.components.VoiceState
 import fi.marmorikatu.app.debug.DebugScreen
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.screens.BussitScreen
+import fi.marmorikatu.app.screens.KalenteriScreen
 import fi.marmorikatu.app.screens.EnergiaScreen
 import fi.marmorikatu.app.screens.IlmastoScreen
 import fi.marmorikatu.app.screens.KotiScreen
+import fi.marmorikatu.app.screens.TabletKotiDashboard
 import fi.marmorikatu.app.screens.TapahtumatScreen
 import fi.marmorikatu.app.screens.ValotScreen
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
+import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 
 /**
@@ -69,14 +81,38 @@ import org.koin.compose.viewmodel.koinViewModel
 @Composable
 fun MarmorikatuApp(
     widthDp: Int,
+    heightDp: Int,
     viewModel: ShellViewModel = koinViewModel(),
 ) {
     LaunchedEffect(Unit) { viewModel.start() }
 
+    val uiSignals: UiSignals = koinInject()
+    val detailOpen by uiSignals.detailOpen.collectAsState()
+
+    // Route a tapped notification (kind → route, set from MainActivity) to its
+    // view: switch tab, and for news also flag the Koti news reader to open.
+    val pendingNav by uiSignals.pendingNav.collectAsState()
+    LaunchedEffect(pendingNav) {
+        val route = pendingNav ?: return@LaunchedEffect
+        val target = if (route == "news") Tab.Koti
+            else Tab.entries.firstOrNull { it.key == route } ?: Tab.Tapahtumat
+        viewModel.setTab(target)
+        if (route == "news") uiSignals.openNewsReader.value = true
+        uiSignals.pendingNav.value = null
+    }
+
     val surface by viewModel.surface.collectAsState()
-    LaunchedEffect(widthDp) {
+    LaunchedEffect(widthDp, heightDp, detailOpen) {
         if (surface != Surface.Kid) {
-            viewModel.setSurface(if (widthDp >= TABLET_MIN_WIDTH_DP) Surface.Tablet else Surface.Phone)
+            // The kiosk dashboard wants a wide canvas: a genuine tablet in either
+            // orientation, or any device turned landscape (a phone on its side).
+            // A real tablet (short side already wide) always stays on the kiosk.
+            val isTablet = minOf(widthDp, heightDp) >= TABLET_MIN_WIDTH_DP
+            // While a phone shows a detail chart it forces landscape only to give
+            // the chart room — keep it on the phone surface so the whole app does
+            // not swap to the kiosk just because it turned wide.
+            val wide = isTablet || (!detailOpen && widthDp > heightDp)
+            viewModel.setSurface(if (wide) Surface.Tablet else Surface.Phone)
         }
     }
 
@@ -141,16 +177,85 @@ private fun DebugOverlay(onClose: () -> Unit) {
 private const val TABLET_MIN_WIDTH_DP = 720
 
 @Composable
-private fun ScreenHost(tab: Tab, modifier: Modifier = Modifier) {
+private fun ScreenHost(tab: Tab, modifier: Modifier = Modifier, phone: Boolean = false) {
     Box(modifier = modifier) {
         when (tab) {
             Tab.Koti -> KotiScreen()
             Tab.Valot -> ValotScreen()
-            Tab.Ilmasto -> IlmastoScreen()
+            // Only the phone instance forces a detail chart to landscape; the
+            // kiosk is already wide.
+            Tab.Ilmasto -> IlmastoScreen(forceLandscapeDetail = phone)
             Tab.Energia -> EnergiaScreen()
             Tab.Bussit -> BussitScreen()
+            Tab.Kalenteri -> KalenteriScreen()
             Tab.Tapahtumat -> TapahtumatScreen()
         }
+    }
+}
+
+/**
+ * The "PIKAKOMENNOT" prompts offered while the assistant listens. Tapping one
+ * sends its [MkVoiceCommand.prompt] straight to the assistant. (The news glyph
+ * is a stand-in — Phosphor's newspaper icon is not yet in the icon set.)
+ */
+private val voiceQuickCommands = listOf(
+    MkVoiceCommand(MkIcons.Info, "Lue uutiset", "Lue uutiset"),
+    MkVoiceCommand(MkIcons.House, "Talon yhteenveto", "Anna talon yhteenveto"),
+    MkVoiceCommand(MkIcons.Moon, "Iltavalot päälle", "Laita iltavalot päälle"),
+    MkVoiceCommand(MkIcons.Drop, "Onko sauna päällä?", "Onko sauna päällä?"),
+)
+
+/**
+ * The active-voice overlay: a full-screen "smokescreen" scrim (dim + tap to
+ * close, per the design) with the quick-command panel and dock floating above
+ * it. Renders nothing while idle. Must be placed in a fill-size [Box].
+ */
+@Composable
+private fun BoxScope.VoiceOverlay(
+    voice: VoiceState,
+    voiceHint: String?,
+    voiceLine: String?,
+    onMic: () -> Unit,
+    onDismiss: () -> Unit,
+    onRunCommand: (String) -> Unit,
+    horizontalPad: Dp,
+    bottomPad: Dp,
+) {
+    if (voice == VoiceState.Idle) return
+    // Smokescreen: dims the dashboard and dismisses the assistant on tap.
+    Box(
+        modifier = Modifier
+            .matchParentSize()
+            .background(Color(0x99080A0E))
+            .clickable(
+                interactionSource = rememberMkInteractionSource(),
+                indication = null,
+                onClick = onDismiss,
+            ),
+    )
+    Column(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = horizontalPad)
+            .padding(bottom = bottomPad),
+        verticalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+    ) {
+        if (voice == VoiceState.Listening) {
+            MkVoiceQuickCommands(
+                commands = voiceQuickCommands,
+                onRun = { onRunCommand(it.prompt) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        MkVoiceDock(
+            onMic = onMic,
+            state = voice,
+            hint = voiceHint,
+            transcript = voiceLine,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -184,13 +289,19 @@ private fun PhoneSurface(
     val voiceLine by viewModel.voiceLine.collectAsState()
     val voiceHint by viewModel.voiceHint.collectAsState()
     val dark by viewModel.dark.collectAsState()
+    // A detail chart forces landscape and wants the whole height for the chart —
+    // the app header is redundant there (Takaisin + the card's own title cover
+    // it), so it collapses while a detail is open.
+    val detailOpen by koinInject<UiSignals>().detailOpen.collectAsState()
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.appBg)
             .statusBarsPadding(),
     ) {
+        if (!detailOpen) {
         // Header: kicker + title, then the icon actions.
         Row(
             modifier = Modifier
@@ -256,10 +367,19 @@ private fun PhoneSurface(
                 )
                 .zIndex(1f)
         )
+        }
 
         // Each screen applies MkSpacing.pagePad itself; padding here too would
-        // double it and push the header outside the content edges.
-        Box(modifier = Modifier.weight(1f).offset(y = (-14).dp)) {
+        // double it and push the header outside the content edges. Without the
+        // header the content sits flush, so the -14 tuck only applies with it.
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .offset(y = if (detailOpen) 0.dp else (-14).dp)
+                // With the tab bar hidden in a detail view, the content would run
+                // under the system nav bar — inset it so nothing is occluded.
+                .then(if (detailOpen) Modifier.navigationBarsPadding() else Modifier),
+        ) {
             // Swipe left/right to move between tabs. The climate card's own
             // room carousel consumes its horizontal drags, so it keeps working
             // inside the pager; only drags it doesn't take reach the pager.
@@ -280,12 +400,13 @@ private fun PhoneSurface(
                 modifier = Modifier.fillMaxSize(),
                 key = { tabs[it].key },
             ) { page ->
-                ScreenHost(tab = tabs[page])
+                ScreenHost(tab = tabs[page], phone = true)
             }
 
             // Idle, the dock is just a mic button: it floats over the content
-            // rather than reserving a row it does not need.
-            if (voice == VoiceState.Idle) {
+            // rather than reserving a row it does not need. Hidden in a detail
+            // view, where the chart wants every pixel.
+            if (voice == VoiceState.Idle && !detailOpen) {
                 MkVoiceDock(
                     onMic = viewModel::onMic,
                     state = voice,
@@ -298,22 +419,30 @@ private fun PhoneSurface(
             }
         }
 
-        if (voice != VoiceState.Idle) {
-            Box(modifier = Modifier.padding(horizontal = MkSpacing.pagePad, vertical = MkSpacing.x2)) {
-                MkVoiceDock(
-                    onMic = viewModel::onMic,
-                    state = voice,
-                    hint = voiceHint,
-                    transcript = voiceLine,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
+        // The tab bar is hidden while a detail chart is open — it forces landscape
+        // and wants the full canvas (design).
+        if (!detailOpen) {
+            MkTabBar(
+                // Loki/Tapahtumat is dropped from the phone bar (design): it is
+                // reached via the header bell, which already carries the unread badge.
+                items = tabItems(unread, rail = false).filter { it.key != Tab.Tapahtumat.key },
+                active = tab.key,
+                onChange = { key -> Tab.entries.firstOrNull { it.key == key }?.let(viewModel::setTab) },
+            )
         }
+    }
 
-        MkTabBar(
-            items = tabItems(unread, rail = false),
-            active = tab.key,
-            onChange = { key -> Tab.entries.firstOrNull { it.key == key }?.let(viewModel::setTab) },
+        // The active-voice UI floats above the whole surface over its scrim, so
+        // it sits on top of the content and tab bar rather than in its own row.
+        VoiceOverlay(
+            voice = voice,
+            voiceHint = voiceHint,
+            voiceLine = voiceLine,
+            onMic = viewModel::onMic,
+            onDismiss = viewModel::stopListening,
+            onRunCommand = viewModel::runQuickCommand,
+            horizontalPad = MkSpacing.pagePad,
+            bottomPad = MkSpacing.tabBarHeight + MkSpacing.x2,
         )
     }
 }
@@ -388,18 +517,32 @@ private fun TabletSurface(
     val voiceHint by viewModel.voiceHint.collectAsState()
     val dark by viewModel.dark.collectAsState()
 
-    Row(modifier = Modifier.fillMaxSize().background(colors.appBg)) {
+    // safeDrawingPadding keeps the rail and content clear of the status bar and,
+    // crucially in landscape, the side/bottom navigation bar — the app background
+    // still fills edge-to-edge behind the bars.
+    Box(modifier = Modifier.fillMaxSize()) {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.appBg)
+            .safeDrawingPadding(),
+    ) {
         MkNavRail(
-            items = tabItems(unread, rail = true),
+            // Koti is reached via the "M" brand tile below, and Loki/Tapahtumat
+            // via the header bell (design) — both dropped from the icon list.
+            items = tabItems(unread, rail = true)
+                .filter { it.key != Tab.Koti.key && it.key != Tab.Tapahtumat.key },
             active = tab.key,
             onChange = { key -> Tab.entries.firstOrNull { it.key == key }?.let(viewModel::setTab) },
             brand = "M",
+            onBrandClick = { viewModel.setTab(Tab.Koti) },
+            brandActive = tab == Tab.Koti,
             footer = {
                 MkVoiceButton(onClick = viewModel::onMic, size = MkVoiceSize.Lg)
             },
         )
 
-        Column(modifier = Modifier.weight(1f).statusBarsPadding()) {
+        Column(modifier = Modifier.weight(1f)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -424,6 +567,14 @@ private fun TabletSurface(
                 )
                 Spacer(Modifier.width(MkSpacing.x2))
                 MkIconButton(
+                    icon = MkIcons.BellFill,
+                    label = "Tapahtumat",
+                    size = MkIconButtonSize.Lg,
+                    badge = if (unread > 0) unread.toString() else null,
+                    onClick = { viewModel.setTab(Tab.Tapahtumat) },
+                )
+                Spacer(Modifier.width(MkSpacing.x2))
+                MkIconButton(
                     icon = MkIcons.GearSix,
                     label = "Asetukset",
                     size = MkIconButtonSize.Lg,
@@ -433,41 +584,43 @@ private fun TabletSurface(
                 Text(Fmt.now(), style = type.readout(22), color = colors.inkHi)
             }
 
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = MkSpacing.pagePadTablet - MkSpacing.pagePad),
-            ) {
-                ScreenHost(tab = tab)
-
-                if (voice == VoiceState.Idle) {
-                    MkVoiceDock(
-                        onMic = viewModel::onMic,
-                        state = voice,
-                        hint = voiceHint,
-                        transcript = voiceLine,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(MkSpacing.x3),
-                    )
+            // The idle mic lives in the nav-rail footer on this surface, so the
+            // content area does NOT float its own mic dock (that duplicated it,
+            // showing a mic on both the left rail and the bottom-right).
+            Box(modifier = Modifier.weight(1f)) {
+                if (tab == Tab.Koti) {
+                    // The design's bespoke kiosk dashboard, not the phone screen.
+                    TabletKotiDashboard()
+                } else {
+                    // Other tabs reuse their screens, centred on the wide canvas.
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .widthIn(max = 900.dp)
+                                .fillMaxSize()
+                                .padding(horizontal = MkSpacing.pagePadTablet - MkSpacing.pagePad),
+                        ) {
+                            ScreenHost(tab = tab)
+                        }
+                    }
                 }
             }
 
-            if (voice != VoiceState.Idle) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = MkSpacing.pagePadTablet, vertical = MkSpacing.x3),
-                ) {
-                    MkVoiceDock(
-                        onMic = viewModel::onMic,
-                        state = voice,
-                        hint = voiceHint,
-                        transcript = voiceLine,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
         }
+    }
+
+        VoiceOverlay(
+            voice = voice,
+            voiceHint = voiceHint,
+            voiceLine = voiceLine,
+            onMic = viewModel::onMic,
+            onDismiss = viewModel::stopListening,
+            onRunCommand = viewModel::runQuickCommand,
+            horizontalPad = MkSpacing.pagePadTablet,
+            bottomPad = MkSpacing.x4,
+        )
     }
 }

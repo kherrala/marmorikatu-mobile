@@ -100,6 +100,9 @@ class ShellViewModel(
     fun setSurface(surface: Surface) {
         _surface.value = surface
         configStore.update { it.copy(kidMode = surface == Surface.Kid) }
+        // The kiosk (tablet surface) keeps its connections live in the background
+        // so light state is always current; phones disconnect to save battery.
+        connections.keepAlive.value = surface == Surface.Tablet
     }
 
     /** Leaves kid mode; the shell then picks phone or tablet by window width. */
@@ -231,6 +234,19 @@ class ShellViewModel(
         }
         _voiceHint.value = message
         _voice.value = VoiceState.Idle
+    }
+
+    /**
+     * Fire a canned prompt from the "PIKAKOMENNOT" panel without speaking —
+     * skips STT and hands the text straight to the assistant.
+     */
+    fun runQuickCommand(prompt: String) {
+        listenJob?.cancel()
+        listenJob = viewModelScope.launch {
+            runCatching { activeStt?.stopListening() }
+            activeStt = null
+            converse(prompt)
+        }
     }
 
     /** Release / cancel: the server engine records until told to stop. */

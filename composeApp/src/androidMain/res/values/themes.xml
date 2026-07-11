@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Cold-start splash via androidx.core.splashscreen (installSplashScreen()
+      in MainActivity, called before super.onCreate()). This theme is applied
+      to the whole <application> in the manifest so it is what's visible the
+      instant the process launches, before Compose has drawn a single frame —
+      then the library hands off to postSplashScreenTheme. The library
+      backports the API 31+ SplashScreen behaviour down to this app's minSdk.
+
+      windowSplashScreenBackground resolves per values-night (see colors.xml)
+      so light/dark follows the system setting; the icon itself is
+      theme-invariant, same as the launcher icon it's drawn from.
+    -->
+    <style name="Theme.App.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/mk_splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@android:style/Theme.Material.Light.NoActionBar</item>
+    </style>
+</resources>

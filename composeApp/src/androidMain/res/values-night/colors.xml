@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Cold-start splash background (androidx.core.splashscreen), dark variant —
+      MkDarkColors.appBg. Same value as ic_launcher_background, which is
+      defined separately since it must stay theme-invariant.
+    -->
+    <color name="mk_splash_background">#0E1116</color>
+</resources>

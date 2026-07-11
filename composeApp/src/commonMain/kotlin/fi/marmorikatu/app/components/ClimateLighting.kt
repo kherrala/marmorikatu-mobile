@@ -59,6 +59,10 @@ data class MkClimateRoom(
     val target: Double?,
     val status: String? = null,
     val statusLabel: String? = null,
+    /** InfluxDB `rooms` field for this room's temperature history, or null. */
+    val historyField: String? = null,
+    /** Recent temperature samples (oldest→newest) for the card's trend line. */
+    val history: List<Float> = emptyList(),
 )
 
 /** A single controllable light within [MkAreaLightCard]. */
@@ -204,12 +208,26 @@ fun MkClimateCard(
     min: Double = 18.0,
     max: Double = 24.0,
     size: MkControlSize = MkControlSize.Md,
+    /** Show the trailing Viileä/Mukava pill (design hides it on the Koti card). */
+    showStatusTag: Boolean = false,
+    /** Tint the big temperature by band: ≥22° warm, ≤19.5° accent (Koti card). */
+    colorTempByBand: Boolean = false,
+    /** Tapping the big temperature opens the room's history chart (Koti card). */
+    onTempClick: (() -> Unit)? = null,
 ) {
     val colors = MkTheme.colors
     val cur = rooms.getOrNull(index) ?: return
     val n = rooms.size
     val st = cur.status ?: "ok"
     val label = cur.statusLabel ?: STATUS_LABEL[st] ?: "Mukava"
+    val tempBand = if (colorTempByBand) cur.temp.replace(',', '.').toDoubleOrNull() else null
+    val tempColor = when {
+        tempBand == null -> colors.inkHi
+        tempBand >= 22.0 -> colors.warm
+        tempBand <= 19.5 -> colors.accent
+        else -> colors.inkHi
+    }
+    val degColor = if (tempBand != null && tempBand >= 22.0) colors.warm else colors.accent
     // spec: the trailing status label rides a raw mk-tag span, not the Tag component.
     val tagStatus = when (st) {
         "alarm", "warn", "info" -> st
@@ -246,7 +264,7 @@ fun MkClimateCard(
             index = index,
             onIndexChange = onIndexChange,
             size = size,
-            trailing = { ClimateStatusTag(label, tagStatus) },
+            trailing = { if (showStatusTag) ClimateStatusTag(label, tagStatus) },
         )
 
         Row(
@@ -257,11 +275,35 @@ fun MkClimateCard(
             Text(
                 text = buildAnnotatedString {
                     append(cur.temp)
-                    withStyle(SpanStyle(color = colors.accent)) { append("°") }
+                    withStyle(SpanStyle(color = degColor)) { append("°") }
                 },
                 style = MkTheme.type.readout(52).copy(lineHeight = 46.8.sp), // line-height .9
-                color = colors.inkHi,
+                color = tempColor,
+                modifier = if (onTempClick != null) {
+                    Modifier.clip(RoundedCornerShape(MkRadius.sm)).clickable(onClick = onTempClick)
+                } else Modifier,
             )
+            // Difference from the house target + the target itself (design). The
+            // house is single-zone, so the same setpoint applies to every room;
+            // shown read-only since there is no per-room write path.
+            val tempVal = cur.temp.replace(',', '.').toDoubleOrNull()
+            if (cur.target != null && !targetEnabled) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (tempVal != null) {
+                        val diff = tempVal - cur.target
+                        Text(
+                            text = (if (diff >= 0) "+" else "") + format1(diff) + "°",
+                            style = MkTheme.type.readout(15),
+                            color = colors.inkMid,
+                        )
+                    }
+                    Text(
+                        text = "tavoite ${format1(cur.target)}°",
+                        style = MkTheme.type.caption,
+                        color = colors.inkLo,
+                    )
+                }
+            }
             if (cur.demand != null) {
                 Column(horizontalAlignment = Alignment.End) {
                     Text("Lämmitys", style = MkTheme.type.caption, color = colors.inkLo)
@@ -274,28 +316,22 @@ fun MkClimateCard(
             }
         }
 
-        // The target row appears only when there is a setpoint to show. The
-        // house publishes per-room temperature and heating demand but no
-        // per-room setpoint, so an empty "Tavoite —" would just read as broken.
-        if (cur.target != null) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 16.dp)
-                .height(1.dp)
-                .background(colors.borderSubtle)
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                "Tavoite",
-                style = MkTheme.type.label,
-                color = colors.inkMid,
+        // The writable setpoint keeps its own row (only when editing is enabled;
+        // the Koti card is read-only and shows the compact target above instead).
+        if (cur.target != null && targetEnabled) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp)
+                    .height(1.dp)
+                    .background(colors.borderSubtle)
             )
-            if (targetEnabled) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Tavoite", style = MkTheme.type.label, color = colors.inkMid)
                 MkSetpointControl(
                     value = cur.target,
                     min = min,
@@ -303,10 +339,17 @@ fun MkClimateCard(
                     size = size,
                     onChange = { onTargetChange?.invoke(index, it) },
                 )
-            } else {
-                ReadOnlySetpoint(cur.target, size)
             }
         }
+
+        // Temperature trend across the bottom of the card (design).
+        if (cur.history.size >= 2) {
+            MkSparkline(
+                values = cur.history,
+                color = tempColor,
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                height = 40.dp,
+            )
         }
     }
 }

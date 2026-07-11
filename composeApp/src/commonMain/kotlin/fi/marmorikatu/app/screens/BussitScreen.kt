@@ -59,16 +59,14 @@ fun BussitScreen(viewModel: BussitViewModel = koinViewModel()) {
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(MkSpacing.pagePad),
+            contentPadding = PaddingValues(
+                start = MkSpacing.pagePad,
+                end = MkSpacing.pagePad,
+                top = MkSpacing.pagePad,
+                bottom = MkSpacing.pagePad + MkSpacing.scrollBottomGap,
+            ),
             verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
         ) {
-            item {
-                MkFreshness(
-                    updatedAtEpochSeconds = updatedAt,
-                    refreshing = refreshing,
-                    onRefresh = viewModel::refresh,
-                )
-            }
 
             item {
                 Text(
@@ -188,9 +186,13 @@ private fun FeaturedDepartureCard(d: BusDeparture) {
                     Text(sub, style = MkTheme.type.readout(11), color = c.inkLo, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
+            // The featured card always carries a status pill (audit #26): live
+            // states first, else "Pian" when it's nearly leave-time, else "Ajallaan".
             when {
                 d.vehicleAtStop -> MkTag(text = "PYSÄKILLÄ", status = MkTagStatus.Accent)
                 (d.delaySeconds ?: 0) > 60 -> MkTag(text = "MYÖHÄSSÄ", status = MkTagStatus.Warn)
+                leaveIn != null && leaveIn <= 3 -> MkTag(text = "Pian", status = MkTagStatus.Warn)
+                else -> MkTag(text = "Ajallaan", status = MkTagStatus.Ok)
             }
         }
         Row(
@@ -249,20 +251,21 @@ private fun DepartureCard(d: BusDeparture) {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Line number in a rounded accent tile.
+            // Line number in a neutral raised tile — the accent tile is reserved
+            // for the featured (soonest) departure (audit #10).
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .defaultMinSize(minWidth = 42.dp)
-                    .height(38.dp)
-                    .clip(RoundedCornerShape(MkRadius.sm))
-                    .background(c.accent)
-                    .padding(horizontal = 11.dp),
+                    .defaultMinSize(minWidth = 34.dp)
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(MkRadius.xs))
+                    .background(c.surfaceRaised)
+                    .padding(horizontal = 9.dp),
             ) {
                 Text(
                     text = d.lineRef,
-                    style = MkTheme.type.readout(17, FontWeight.SemiBold),
-                    color = c.inkOnAccent,
+                    style = MkTheme.type.readout(15, FontWeight.SemiBold),
+                    color = c.inkHi,
                     maxLines = 1,
                 )
             }
@@ -298,37 +301,25 @@ private fun DepartureCard(d: BusDeparture) {
                 }
             }
 
-            // Right: optional status tag over the minutes-until readout.
+            // Right: optional status tag, then the departure clock time over a
+            // small minutes-until label — the design's two-line readout (audit #11).
             Column(horizontalAlignment = Alignment.End) {
                 when {
                     d.vehicleAtStop -> MkTag(text = "PYSÄKILLÄ", status = MkTagStatus.Accent)
                     (d.delaySeconds ?: 0) > 60 -> MkTag(text = "MYÖHÄSSÄ", status = MkTagStatus.Warn)
                 }
-                if (minutes < 1) {
-                    Text(
-                        text = "nyt",
-                        style = MkTheme.type.readout(22, FontWeight.Medium),
-                        color = c.accent,
-                        maxLines = 1,
-                    )
-                } else {
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Text(
-                            text = minutes.toString(),
-                            style = MkTheme.type.readout(22),
-                            color = c.inkHi,
-                            modifier = Modifier.alignByBaseline(),
-                            maxLines = 1,
-                        )
-                        Text(
-                            text = "min",
-                            style = MkTheme.type.readout(11, FontWeight.Normal),
-                            color = c.inkLo,
-                            modifier = Modifier.alignByBaseline().padding(start = 3.dp),
-                            maxLines = 1,
-                        )
-                    }
-                }
+                Text(
+                    text = Fmt.clock(d.departureTimeMs / 1000.0),
+                    style = MkTheme.type.readout(14),
+                    color = c.inkHi,
+                    maxLines = 1,
+                )
+                Text(
+                    text = if (minutes < 1) "nyt" else "$minutes min",
+                    style = MkTheme.type.readout(11, FontWeight.Normal),
+                    color = c.inkLo,
+                    maxLines = 1,
+                )
             }
         }
     }

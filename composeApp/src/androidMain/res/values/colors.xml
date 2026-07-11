@@ -2,4 +2,13 @@
 <resources>
     <!-- The design system's app background token (bg-1). -->
     <color name="ic_launcher_background">#0E1116</color>
+
+    <!--
+      Cold-start splash background (androidx.core.splashscreen). Light
+      variant — MkLightColors.appBg. Overridden in values-night for
+      MkDarkColors.appBg so the system splash follows the device's light/dark
+      setting; kept separate from ic_launcher_background above since that one
+      is deliberately theme-invariant (the launcher icon never changes).
+    -->
+    <color name="mk_splash_background">#EEF1F5</color>
 </resources>

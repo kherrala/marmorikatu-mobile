@@ -1,6 +1,8 @@
 package fi.marmorikatu.app.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +47,7 @@ import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
+import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.Light
 import org.koin.compose.viewmodel.koinViewModel
 
@@ -74,37 +78,25 @@ fun ValotScreen(
                 .fillMaxSize()
                 .background(colors.appBg),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                horizontal = MkSpacing.pagePad,
-                vertical = MkSpacing.x4,
+                start = MkSpacing.pagePad,
+                end = MkSpacing.pagePad,
+                top = MkSpacing.x4,
+                bottom = MkSpacing.x4 + MkSpacing.scrollBottomGap,
             ),
             verticalArrangement = Arrangement.spacedBy(11.dp),
         ) {
-            item(key = "freshness") {
-                MkFreshness(
-                    updatedAtEpochSeconds = updatedAt,
-                    refreshing = refreshing,
-                    onRefresh = viewModel::refresh,
-                )
+
+            // One-tap lighting presets pinned at the top (design).
+            item(key = "presets") {
+                PresetBar(active = state.activePreset, onApply = viewModel::applyPreset)
             }
 
-            item(key = "header") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text = "${state.areasOn} aluetta päällä",
-                        style = MkTheme.type.readout(11).copy(letterSpacing = 0.1.em),
-                        color = colors.inkLo,
-                    )
-                    MkButton(
-                        text = "Kaikki pois",
-                        onClick = viewModel::allOff,
-                        variant = MkButtonVariant.Secondary,
-                        size = MkButtonSize.Sm,
-                    )
-                }
+            // Additive area presets — toggle one area without touching the rest.
+            item(key = "areaPresets") {
+                AreaPresetBar(
+                    active = state.activeAreaPresets,
+                    onToggle = viewModel::toggleAreaPreset,
+                )
             }
 
             if (failure) {
@@ -119,43 +111,182 @@ fun ValotScreen(
             }
 
             if (state.loading) {
-                item(key = "loading") {
-                    CenteredNote("Haetaan valoja…")
-                }
+                item(key = "loading") { CenteredNote("Haetaan valoja…") }
             } else if (state.floors.isEmpty()) {
-                item(key = "empty") {
-                    CenteredNote("Ei tietoa valoista")
-                }
+                item(key = "empty") { CenteredNote("Ei tietoa valoista") }
             }
 
             if (state.floors.isNotEmpty()) {
+                // "Aktiiviset" section — every light on, house-wide. Hidden entirely
+                // when nothing is on, so it never wastes space with an empty note.
+                if (state.activeAreas.isNotEmpty()) {
+                    item(key = "aktiiviset") {
+                        ActiveHeader(count = state.areasOn, onAllOff = viewModel::allOff)
+                    }
+                    items(state.activeAreas, key = { "act:${it.key}" }) { area -> AreaCard(area, viewModel) }
+                }
+
+                // Floor pager (real floors only).
                 val idx = floorIndex.coerceIn(0, state.floors.size - 1)
                 val section = state.floors[idx]
                 item(key = "floor-nav") {
                     FloorSelector(
-                        label = section.label,
-                        onCount = section.areas.count { it.isOn() },
+                        section = section,
                         index = idx,
                         count = state.floors.size,
                         onSelect = { floorIndex = it },
+                        onFloorOff = { viewModel.floorOff(section.floor) },
                     )
                 }
-                items(section.areas, key = { it.key }) { area ->
-                    when (area) {
-                        is AreaUi.SceneArea -> SceneAreaCard(area, viewModel)
-                        is AreaUi.ToggleGroup -> ToggleGroupCard(area, viewModel)
-                        is AreaUi.SingleLight -> SingleLightRow(area.light, viewModel)
-                    }
-                }
+                items(section.areas, key = { "flr:${it.key}" }) { area -> AreaCard(area, viewModel) }
             }
         }
     }
 }
 
-/** Floor pager header: prev/next arrows, the floor name + how many areas are on, and page dots. */
+/** One-tap preset chips (Aamuvalot / Iltavalot / Elokuva / Kaikki pois). */
 @Composable
-private fun FloorSelector(label: String, onCount: Int, index: Int, count: Int, onSelect: (Int) -> Unit) {
+private fun PresetBar(active: KotiScene?, onApply: (KotiScene) -> Unit) {
     val c = MkTheme.colors
+    val shape = RoundedCornerShape(MkRadius.md)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        KotiScene.entries.forEach { s ->
+            val on = s == active
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .defaultMinSize(minHeight = 60.dp)
+                    .clip(shape)
+                    .background(if (on) c.accent else c.surfaceInset)
+                    .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
+                    .clickable { onApply(s) }
+                    .padding(vertical = 8.dp, horizontal = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                androidx.compose.material3.Icon(
+                    s.icon, null,
+                    tint = if (on) c.inkOnAccent else c.inkMid,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = s.label,
+                    style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (on) c.inkOnAccent else c.inkMid,
+                    maxLines = 1,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+/** Additive area chips (Terassi / Autokatos / Kotiintulo): each toggles its own area. */
+@Composable
+private fun AreaPresetBar(active: Set<LightAreaPreset>, onToggle: (LightAreaPreset) -> Unit) {
+    val c = MkTheme.colors
+    val shape = RoundedCornerShape(MkRadius.md)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LightAreaPreset.entries.forEach { p ->
+            val on = p in active
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clip(shape)
+                    .background(if (on) c.accentDim else c.surfaceInset)
+                    .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
+                    .clickable { onToggle(p) }
+                    .padding(vertical = 8.dp, horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.Icon(
+                    p.icon, null,
+                    tint = if (on) c.accent else c.inkMid,
+                    modifier = Modifier.size(17.dp),
+                )
+                Text(
+                    text = p.label,
+                    style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (on) c.accent else c.inkMid,
+                    maxLines = 1,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+/** The permanent "Aktiiviset" section header: icon tile, count, whole-house off. */
+@Composable
+private fun ActiveHeader(count: Int, onAllOff: () -> Unit) {
+    val c = MkTheme.colors
+    val shape = RoundedCornerShape(MkRadius.lg)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(c.surfaceCard)
+            .border(1.dp, c.borderSubtle, shape)
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        Box(
+            modifier = Modifier.size(36.dp).clip(RoundedCornerShape(MkRadius.md)).background(c.accentDim),
+            contentAlignment = Alignment.Center,
+        ) {
+            androidx.compose.material3.Icon(MkIcons.LightbulbFill, null, tint = c.accent, modifier = Modifier.size(19.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Aktiiviset", style = MkTheme.type.heading, color = c.inkHi)
+            Text(
+                text = if (count > 0) "$count aluetta päällä" else "Kaikki pois",
+                style = MkTheme.type.readout(11),
+                color = if (count > 0) c.accent else c.inkLo,
+            )
+        }
+        if (count > 0) {
+            MkButton(
+                text = "Kaikki pois",
+                onClick = onAllOff,
+                variant = MkButtonVariant.Secondary,
+                size = MkButtonSize.Sm,
+            )
+        }
+    }
+}
+
+/** Render one area as its matching card/row. */
+@Composable
+private fun AreaCard(area: AreaUi, viewModel: ValotViewModel) {
+    when (area) {
+        is AreaUi.SceneArea -> SceneAreaCard(area, viewModel)
+        is AreaUi.ToggleGroup -> ToggleGroupCard(area, viewModel)
+        is AreaUi.SingleLight -> SingleLightRow(area.light, viewModel)
+    }
+}
+
+private fun floorIcon(floor: Floor): ImageVector = when (floor) {
+    Floor.ALAKERTA -> MkIcons.HouseFill
+    Floor.YLAKERTA -> MkIcons.House
+    Floor.KELLARI -> MkIcons.Stairs
+    Floor.ULKO -> MkIcons.Door
+}
+
+/** Floor pager header: arrows, floor icon + name + on/total, page dots, per-floor off. */
+@Composable
+private fun FloorSelector(
+    section: FloorSection,
+    index: Int,
+    count: Int,
+    onSelect: (Int) -> Unit,
+    onFloorOff: () -> Unit,
+) {
+    val c = MkTheme.colors
+    val onCount = section.areas.count { it.isOn() }
+    val total = section.areas.size
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -173,9 +304,15 @@ private fun FloorSelector(label: String, onCount: Int, index: Int, count: Int, o
                 enabled = count > 1,
             )
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(label, style = MkTheme.type.heading, color = c.inkHi, maxLines = 1)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    androidx.compose.material3.Icon(floorIcon(section.floor), null, tint = c.inkMid, modifier = Modifier.size(18.dp))
+                    Text(section.label, style = MkTheme.type.heading, color = c.inkHi, maxLines = 1)
+                }
                 Text(
-                    text = if (onCount > 0) "$onCount aluetta päällä" else "Kaikki pois",
+                    text = "$onCount / $total päällä",
                     style = MkTheme.type.readout(11),
                     color = if (onCount > 0) c.accent else c.inkLo,
                 )
@@ -197,6 +334,14 @@ private fun FloorSelector(label: String, onCount: Int, index: Int, count: Int, o
                         .background(if (i == index) c.accent else c.track),
                 )
             }
+        }
+        if (onCount > 0) {
+            MkButton(
+                text = "Sammuta",
+                onClick = onFloorOff,
+                variant = MkButtonVariant.Secondary,
+                size = MkButtonSize.Sm,
+            )
         }
     }
 }

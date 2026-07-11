@@ -1,49 +1,78 @@
 package fi.marmorikatu.app.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import fi.marmorikatu.core.model.RuuviReading
+import fi.marmorikatu.core.model.RuuviSensors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import fi.marmorikatu.app.components.MkBanner
+import fi.marmorikatu.app.platform.LockLandscapeWhileVisible
+import fi.marmorikatu.app.shell.UiSignals
+import org.koin.compose.koinInject
+import fi.marmorikatu.app.components.MkButton
+import fi.marmorikatu.app.components.MkButtonSize
+import fi.marmorikatu.app.components.MkButtonVariant
 import fi.marmorikatu.app.components.MkCard
 import fi.marmorikatu.app.components.MkCardHead
 import fi.marmorikatu.app.components.MkFreshness
 import fi.marmorikatu.app.components.MkGauge
+import fi.marmorikatu.app.components.MkVentilationDiagram
 import fi.marmorikatu.app.components.MkLineChart
+import fi.marmorikatu.app.components.MkMetricDetail
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.components.MkSeries
 import fi.marmorikatu.app.components.MkStatTile
+import fi.marmorikatu.app.components.MkTag
+import fi.marmorikatu.app.components.MkTagStatus
 import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
+import fi.marmorikatu.core.model.Cooling
 import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.HeatPumpStatus
 import fi.marmorikatu.core.model.HeatingDemand
@@ -54,16 +83,25 @@ import org.koin.compose.viewmodel.koinViewModel
 
 private const val NO_DATA = "Ei tietoa"
 
+/**
+ * The Ruuvi that backs the air-quality readouts (VOC/temperature/humidity). The
+ * backend `get_air_quality` hardcodes this same sensor, so the focus charts must
+ * filter to it or the shared `ruuvi` series averages every sensor together.
+ */
+private const val AIR_SENSOR = "Keittiö"
+
 /** The four focused views of the climate screen, matching the design's sub-tabs. */
 private enum class IlmastoSub(val label: String) {
     Lampo("Lämpötilat"),
     Ilma("Ilmanlaatu"),
+    Anturit("Anturit"),
     Maalampo("Maalämpö"),
     Ilmanvaihto("Ilmanvaihto"),
+    Jaahdytys("Jäähdytys"),
 }
 
 /** Axis ticks must describe the selected window, not always a 24-hour clock. */
-private fun chartLabels(range: TimeRangeOption): List<String> = when (range) {
+private fun ilmastoAxisLabels(range: TimeRangeOption): List<String> = when (range) {
     TimeRangeOption.H6 -> listOf("-6 t", "-4 t", "-2 t", "nyt")
     TimeRangeOption.H24 -> listOf("00:00", "06:00", "12:00", "18:00", "nyt")
     TimeRangeOption.D7 -> listOf("ma", "ke", "pe", "su")
@@ -71,9 +109,30 @@ private fun chartLabels(range: TimeRangeOption): List<String> = when (range) {
     TimeRangeOption.Y1 -> listOf("tammi", "huhti", "heinä", "loka")
 }
 
-/** Ilmasto (climate): a sub-tab bar over temperature history, air quality, heat pump, MVHR. */
+/** A readout the user tapped to focus, with its InfluxDB history source. */
+data class FocusMetric(
+    val icon: ImageVector,
+    val label: String,
+    val value: String,
+    val unit: String,
+    val measurement: String,
+    val field: String,
+    /**
+     * Optional tag filter for series where one field is shared across sensors —
+     * e.g. `ruuvi`/`temperature` spans every Ruuvi, so the air-quality readouts
+     * pin `sensor_name = "Keittiö"` or the chart averages fridge/outdoor/rooms.
+     */
+    val tagKey: String? = null,
+    val tagValue: String? = null,
+)
+
+/** Ilmasto (climate): a sticky sub-tab bar scroll-spies over stacked sections. */
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
 @Composable
-fun IlmastoScreen(viewModel: IlmastoViewModel = koinViewModel()) {
+fun IlmastoScreen(
+    viewModel: IlmastoViewModel = koinViewModel(),
+    forceLandscapeDetail: Boolean = false,
+) {
     LaunchedEffect(Unit) { viewModel.refresh() }
 
     val colors = MkTheme.colors
@@ -81,47 +140,140 @@ fun IlmastoScreen(viewModel: IlmastoViewModel = koinViewModel()) {
     val rooms by viewModel.roomTemperatures.collectAsState()
     val heating by viewModel.heatingDemand.collectAsState()
     val ventilation by viewModel.ventilation.collectAsState()
+    val cooling by viewModel.cooling.collectAsState()
     val heatPump by viewModel.heatPump.collectAsState()
+    val ruuvi by viewModel.ruuvi.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
     val updatedAt by viewModel.updatedAt.collectAsState()
+    val focusSeries by viewModel.focusSeries.collectAsState()
+    val focusLoading by viewModel.focusLoading.collectAsState()
 
-    var sub by remember { mutableStateOf(IlmastoSub.Lampo) }
+    // Focus selection lives in the ViewModel so it survives the landscape
+    // recreation of this pager page (see KotiScreen).
+    val focus by viewModel.focus.collectAsState()
+    val openFocus: (FocusMetric) -> Unit = { m -> viewModel.openFocus(m) }
+    val closeFocus = { viewModel.closeFocus() }
+
+    // System back leaves the focus chart for the readouts instead of quitting.
+    BackHandler(enabled = focus != null) { closeFocus() }
+
+    // On the phone, a focus chart turns to landscape (even under an orientation
+    // lock) and keeps the phone surface while it is wide.
+    if (forceLandscapeDetail) {
+        val uiSignals: UiSignals = koinInject()
+        // Synchronous commit (SideEffect), not a coroutine — see KotiScreen.
+        SideEffect { uiSignals.detailOpen.value = focus != null }
+        DisposableEffect(Unit) { onDispose { uiSignals.detailOpen.value = false } }
+        if (focus != null) LockLandscapeWhileVisible()
+    }
+
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // Scroll-spy: the highlighted sub-tab follows the top-most visible section.
+    // The list is [sticky tabs, Lämpö, Ilma, Maalämpö, Ilmanvaihto, Jäähdytys],
+    // so the sections start at item index 1 (index 0 is the sticky tab bar).
+    val sectionStart = 1
+    val activeSub by remember {
+        derivedStateOf {
+            IlmastoSub.entries[(listState.firstVisibleItemIndex - sectionStart).coerceIn(0, IlmastoSub.entries.lastIndex)]
+        }
+    }
 
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(colors.appBg)
-                .verticalScroll(rememberScrollState())
-                .padding(MkSpacing.pagePad),
-            verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
-        ) {
-            MkFreshness(
-                updatedAtEpochSeconds = updatedAt,
-                refreshing = refreshing,
-                onRefresh = viewModel::refresh,
-            )
-
-            SubTabBar(active = sub, onSelect = { sub = it })
-
-            when (sub) {
-                IlmastoSub.Lampo -> {
-                    HistoryCard(snapshot, viewModel)
-                    RoomsCard(rooms, heating)
-                }
-                IlmastoSub.Ilma -> AirQualityCard(snapshot)
-                IlmastoSub.Maalampo -> HeatPumpCard(heatPump)
-                IlmastoSub.Ilmanvaihto -> VentilationCard(snapshot, ventilation)
+        val f = focus
+        if (f != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.appBg)
+                    // Swipe the focus page to the right to return to the readouts.
+                    .pointerInput(f.label) {
+                        var dragged = 0f
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                if (dragged > 64.dp.toPx()) closeFocus()
+                                dragged = 0f
+                            },
+                            onHorizontalDrag = { _, delta -> dragged += delta },
+                        )
+                    }
+                    .verticalScroll(rememberScrollState())
+                    .padding(MkSpacing.pagePad),
+                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+            ) {
+                MetricFocusView(f, focusSeries, focusLoading, onBack = closeFocus)
             }
-
-            if (snapshot.failed) {
-                Text(
-                    text = "Ilmastotietoja ei juuri nyt saatavilla.",
-                    style = MkTheme.type.caption,
-                    color = colors.inkLo,
-                )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().background(colors.appBg),
+                state = listState,
+                contentPadding = PaddingValues(
+                    start = MkSpacing.pagePad,
+                    end = MkSpacing.pagePad,
+                    top = MkSpacing.x4,
+                    bottom = MkSpacing.x4 + MkSpacing.scrollBottomGap,
+                ),
+                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+            ) {
+                // Sticky sub-tab bar: tapping a tab anchor-scrolls to its section.
+                stickyHeader(key = "tabs") {
+                    Box(modifier = Modifier.fillMaxWidth().background(colors.appBg).padding(vertical = 4.dp)) {
+                        SubTabBar(
+                            active = activeSub,
+                            onSelect = { s -> scope.launch { listState.animateScrollToItem(s.ordinal + sectionStart) } },
+                        )
+                    }
+                }
+                item(key = "lampo") {
+                    Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap)) {
+                        HistoryCard(snapshot, viewModel)
+                        RoomsCard(rooms, heating)
+                    }
+                }
+                item(key = "ilma") { AirQualityCard(snapshot, openFocus) }
+                item(key = "anturit") { AnturitSection(ruuvi) }
+                item(key = "maalampo") { HeatPumpCard(heatPump, openFocus) }
+                item(key = "iv") { VentilationCard(snapshot, ventilation, openFocus) }
+                item(key = "jaahdytys") { JaahdytysSection(ventilation, cooling) }
+                if (snapshot.failed) {
+                    item(key = "failed") {
+                        Text(
+                            text = "Ilmastotietoja ei juuri nyt saatavilla.",
+                            style = MkTheme.type.caption,
+                            color = colors.inkLo,
+                        )
+                    }
+                }
             }
         }
+    }
+}
+
+/** The tapped readout's 24 h history chart, with a "Takaisin" affordance. */
+@Composable
+private fun ColumnScope.MetricFocusView(
+    focus: FocusMetric,
+    series: List<Float>,
+    loading: Boolean,
+    onBack: () -> Unit,
+) {
+    val colors = MkTheme.colors
+    val chart = if (series.size < 2) emptyList()
+    else listOf(MkSeries(name = null, values = series, color = colors.accent, area = true))
+    MkMetricDetail(
+        icon = focus.icon,
+        label = focus.label,
+        value = focus.value,
+        unit = focus.unit,
+        series = chart,
+        labels = ilmastoAxisLabels(TimeRangeOption.H24),
+        stats = emptyList(),
+        onBack = onBack,
+    )
+    if (loading) {
+        Text("Ladataan historiaa…", style = MkTheme.type.label, color = colors.inkLo)
+    } else if (series.size < 2) {
+        Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
     }
 }
 
@@ -192,7 +344,7 @@ private fun HistoryCard(snapshot: IlmastoSnapshot, viewModel: IlmastoViewModel) 
             modifier = Modifier.padding(bottom = MkSpacing.x3),
         )
         if (series.any { it.values.isNotEmpty() }) {
-            MkLineChart(series = series, labels = chartLabels(snapshot.range), height = 200.dp)
+            MkLineChart(series = series, labels = ilmastoAxisLabels(snapshot.range), height = 200.dp)
         } else {
             Text(text = NO_DATA, style = MkTheme.type.readout(15), color = colors.inkLo)
         }
@@ -202,12 +354,16 @@ private fun HistoryCard(snapshot: IlmastoSnapshot, viewModel: IlmastoViewModel) 
 // ── Ilmanlaatu: humidity / CO₂ / PM2.5 gauges + tiles ───────────────────────
 
 @Composable
-private fun AirQualityCard(snapshot: IlmastoSnapshot) {
+private fun AirQualityCard(snapshot: IlmastoSnapshot, onFocus: (FocusMetric) -> Unit) {
     val hvac = snapshot.hvac
     val air = snapshot.air
 
+    // Backend returns "Kitchen (Keittiö)"; show only the Finnish part (audit #17).
+    val locationFi = air?.location?.takeIf { it.isNotBlank() }?.let { raw ->
+        Regex("\\(([^)]+)\\)").find(raw)?.groupValues?.get(1) ?: raw
+    }
     MkCard {
-        MkCardHead("Ilmanlaatu" + (air?.location?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""))
+        MkCardHead("Ilmanlaatu" + (locationFi?.let { " · $it" } ?: ""))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -242,6 +398,9 @@ private fun AirQualityCard(snapshot: IlmastoSnapshot) {
                     label = "VOC-indeksi",
                     value = voc?.let { Fmt.int(it.value) } ?: NO_DATA,
                     icon = MkIcons.Wind,
+                    onClick = voc?.let {
+                        { onFocus(FocusMetric(MkIcons.Wind, "VOC-indeksi", Fmt.int(it.value), "", "ruuvi", "voc", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 MkStatTile(
@@ -249,6 +408,9 @@ private fun AirQualityCard(snapshot: IlmastoSnapshot) {
                     value = temp?.let { Fmt.oneDecimal(it.value) } ?: NO_DATA,
                     unit = temp?.let { "°C" },
                     icon = MkIcons.Thermometer,
+                    onClick = temp?.let {
+                        { onFocus(FocusMetric(MkIcons.Thermometer, "Lämpötila", Fmt.oneDecimal(it.value), "°C", "ruuvi", "temperature", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+                    },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -258,8 +420,17 @@ private fun AirQualityCard(snapshot: IlmastoSnapshot) {
 
 // ── Maalämpö: live heat-pump register readouts ──────────────────────────────
 
+/** One heat-pump readout; a non-null [field] makes the tile open a focus chart. */
+private data class HpTile(
+    val label: String,
+    val value: String?,
+    val unit: String?,
+    val icon: ImageVector,
+    val field: String?,
+)
+
 @Composable
-private fun HeatPumpCard(hp: HeatPumpStatus) {
+private fun HeatPumpCard(hp: HeatPumpStatus, onFocus: (FocusMetric) -> Unit) {
     val colors = MkTheme.colors
     MkCard {
         Row(
@@ -280,30 +451,47 @@ private fun HeatPumpCard(hp: HeatPumpStatus) {
             return@MkCard
         }
         fun c(v: Double?) = v?.let { "${Fmt.oneDecimal(it)}" }
-        // Two columns of readouts, drawn from the ThermIQ register feed.
+        // Two columns of readouts, drawn from the ThermIQ register feed. COP leads
+        // as the headline efficiency metric (design's ph-gauge tile). Tapping a
+        // temperature opens its 24 h chart (thermia measurement fields).
         val tiles = listOf(
-            Triple("Menovesi", c(hp.supplyC), "°C") to MkIcons.ThermometerHot,
-            Triple("Paluuvesi", c(hp.returnC), "°C") to MkIcons.ThermometerCold,
-            Triple("Käyttövesi", c(hp.hotWaterC), "°C") to MkIcons.DropFill,
-            Triple("Liuos ulos", c(hp.brineOutC), "°C") to MkIcons.Snowflake,
-            Triple("Liuos sisään", c(hp.brineInC), "°C") to MkIcons.Drop,
-            Triple("Ulkona", c(hp.outdoorC), "°C") to MkIcons.ThermometerCold,
+            HpTile("COP", hp.cop?.let { Fmt.oneDecimal(it) }, null, MkIcons.Leaf, null),
+            HpTile("Menovesi", c(hp.supplyC), "°C", MkIcons.ThermometerHot, "supply_temp"),
+            HpTile("Paluuvesi", c(hp.returnC), "°C", MkIcons.ThermometerCold, "return_temp"),
+            HpTile("Käyttövesi", c(hp.hotWaterC), "°C", MkIcons.DropFill, "hotwater_temp"),
+            HpTile("Liuos ulos", c(hp.brineOutC), "°C", MkIcons.Snowflake, "brine_out_temp"),
+            HpTile("Liuos sisään", c(hp.brineInC), "°C", MkIcons.Drop, "brine_in_temp"),
+            HpTile("Ulkona", c(hp.outdoorC), "°C", MkIcons.ThermometerCold, "outdoor_temp"),
         )
         tiles.chunked(2).forEach { rowTiles ->
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x2),
                 horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
             ) {
-                rowTiles.forEach { (t, icon) ->
-                    val (label, value, unit) = t
+                rowTiles.forEach { tile ->
                     MkStatTile(
-                        label = label,
-                        value = value ?: NO_DATA,
-                        unit = if (value != null) unit else null,
-                        icon = icon,
+                        label = tile.label,
+                        value = tile.value ?: NO_DATA,
+                        unit = if (tile.value != null) tile.unit else null,
+                        icon = tile.icon,
+                        onClick = if (tile.field != null && tile.value != null) {
+                            {
+                                onFocus(
+                                    FocusMetric(
+                                        icon = tile.icon,
+                                        label = tile.label,
+                                        value = tile.value,
+                                        unit = tile.unit ?: "",
+                                        measurement = "thermia",
+                                        field = tile.field,
+                                    ),
+                                )
+                            }
+                        } else null,
                         modifier = Modifier.weight(1f),
                     )
                 }
+                if (rowTiles.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }
@@ -312,7 +500,11 @@ private fun HeatPumpCard(hp: HeatPumpStatus) {
 // ── Ilmanvaihto: LTO gauge + ventilation temperatures ───────────────────────
 
 @Composable
-private fun VentilationCard(snapshot: IlmastoSnapshot, ventilation: Ventilation) {
+private fun VentilationCard(
+    snapshot: IlmastoSnapshot,
+    ventilation: Ventilation,
+    onFocus: (FocusMetric) -> Unit,
+) {
     val colors = MkTheme.colors
     MkCard {
         MkCardHead("Ilmanvaihto")
@@ -326,23 +518,43 @@ private fun VentilationCard(snapshot: IlmastoSnapshot, ventilation: Ventilation)
             )
         }
         val lto = snapshot.hvac?.recoveryEfficiencyPct
-        Box(modifier = Modifier.fillMaxWidth().padding(bottom = MkSpacing.x2), contentAlignment = Alignment.Center) {
+        val ltoClick = lto?.let {
+            { onFocus(FocusMetric(MkIcons.FanFill, "Lämmöntalteenotto", Fmt.int(it), "%", "hvac_lto", "lto")) }
+        }
+        // The MVHR system diagram (design): the four duct temperatures around the
+        // heat-recovery core, with the live LTO efficiency.
+        val hv = snapshot.hvac
+        MkVentilationDiagram(
+            outdoorC = hv?.outdoorC ?: ventilation.outdoorC,
+            exhaustC = hv?.exhaustC ?: ventilation.exhaustC,
+            extractC = hv?.extractC ?: ventilation.extractC,
+            supplyC = hv?.supplyPostHeatC ?: ventilation.supplyC,
+            preHeatC = hv?.supplyPreHeatC ?: ventilation.supplyPreHeatC,
+            ltoPct = lto,
+            modifier = Modifier.padding(vertical = MkSpacing.x2),
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (ltoClick != null) Modifier.clickable(onClick = ltoClick) else Modifier)
+                .padding(bottom = MkSpacing.x2),
+            contentAlignment = Alignment.Center,
+        ) {
             if (lto != null) {
                 MkGauge(value = lto.toFloat(), max = 100f, label = "Lämmöntalteenotto", unit = "%", status = ltoStatus(lto))
             } else GaugePlaceholder("Lämmöntalteenotto")
         }
-        ReadoutRow("Ulkoilma", ventilation.outdoorC)
-        ReadoutRow("Tuloilma", ventilation.supplyC)
-        ReadoutRow("Poistoilma", ventilation.extractC)
-        ReadoutRow("Jäteilma", ventilation.exhaustC)
     }
 }
 
 @Composable
-private fun ReadoutRow(label: String, celsius: Double?) {
+private fun ReadoutRow(label: String, celsius: Double?, onClick: (() -> Unit)? = null) {
     val colors = MkTheme.colors
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = MkSpacing.x2),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(vertical = MkSpacing.x2),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -352,6 +564,106 @@ private fun ReadoutRow(label: String, celsius: Double?) {
             style = MkTheme.type.readout(15),
             color = if (celsius != null) colors.inkHi else colors.inkLo,
         )
+    }
+}
+
+// ── Jäähdytys: cooling + humidity control (read-only) ───────────────────────
+
+private data class ClimTile(val label: String, val value: String?, val unit: String?, val icon: ImageVector)
+
+/** Two-column grid of stat tiles (heat-pump/cooling readout style). */
+@Composable
+private fun StatGrid(tiles: List<ClimTile>) {
+    tiles.chunked(2).forEach { row ->
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x2),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+        ) {
+            row.forEach { t ->
+                MkStatTile(
+                    label = t.label,
+                    value = t.value ?: NO_DATA,
+                    unit = if (t.value != null) t.unit else null,
+                    icon = t.icon,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (row.size == 1) Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+/** Read-only mode selector: highlights the live state, not tappable (no write path). */
+@Composable
+private fun DisplayPills(options: List<String>, activeIndex: Int) {
+    val c = MkTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(MkRadius.md))
+            .background(c.surfaceInset)
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        options.forEachIndexed { i, opt ->
+            val on = i == activeIndex
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(MkRadius.sm))
+                    .background(if (on) c.surfaceCard else androidx.compose.ui.graphics.Color.Transparent)
+                    .padding(vertical = 7.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(opt, style = MkTheme.type.label, color = if (on) c.inkHi else c.inkLo, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling) {
+    val c = MkTheme.colors
+    val active = cooling.pumpCooling || cooling.coolingPump
+    fun raw(vararg keys: String): Double? = keys.firstNotNullOfOrNull { ventilation.raw[it] }
+    Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap)) {
+        MkCard {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = MkSpacing.x3),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Jäähdytys", style = MkTheme.type.heading, color = c.inkHi)
+                MkTag(text = if (active) "Aktiivinen" else "Pois", status = if (active) MkTagStatus.Ok else MkTagStatus.Neutral)
+            }
+            DisplayPills(listOf("Pois", "Auto", "Päällä"), if (active) 2 else 0)
+            StatGrid(
+                listOf(
+                    ClimTile("Jäähd. meno", cooling.coolantSupplyC?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.Snowflake),
+                    ClimTile("Jäähd. paluu", cooling.coolantReturnC?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.ThermometerCold),
+                    ClimTile("Venttiili", raw("damperposition")?.let { Fmt.int(it) }, "%", MkIcons.Drop),
+                    ClimTile("Kiertopumppu", if (active) "Päällä" else "Pois", null, MkIcons.FanFill),
+                ),
+            )
+        }
+        MkCard {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = MkSpacing.x3),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Kosteusohjaus", style = MkTheme.type.heading, color = c.inkHi)
+                Text("Max 60 %", style = MkTheme.type.readout(11), color = c.inkLo)
+            }
+            StatGrid(
+                listOf(
+                    ClimTile("Suhteellinen", (ventilation.relativeHumidity ?: raw("relativehumidity", "indoorrh"))?.let { Fmt.int(it) }, "%", MkIcons.DropHalf),
+                    ClimTile("Absoluuttinen", raw("abshumidity")?.let { Fmt.oneDecimal(it) }, "g/m³", MkIcons.Drop),
+                    ClimTile("Kastepiste", raw("dewpoint")?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.ThermometerCold),
+                    ClimTile("Entalpia", raw("enthalpy")?.let { Fmt.oneDecimal(it) }, "kJ/kg", MkIcons.Leaf),
+                ),
+            )
+        }
     }
 }
 
@@ -386,6 +698,65 @@ private fun ltoStatus(value: Double): String = when {
     value >= 60 -> "ok"
     value >= 40 -> "warn"
     else -> "alarm"
+}
+
+// ── Anturit: the Ruuvi tag readings ─────────────────────────────────────────
+
+@Composable
+private fun AnturitSection(ruuvi: Map<String, RuuviReading>) {
+    val c = MkTheme.colors
+    data class Anturi(val name: String, val icon: ImageVector, val value: String, val warn: Boolean)
+    val pressureHpa = ruuvi.values.firstNotNullOfOrNull { it.pressure }?.let { it / 100.0 }
+    val rows = buildList {
+        ruuvi[RuuviSensors.FRIDGE]?.temperature?.let {
+            add(Anturi("Jääkaappi", MkIcons.ThermometerCold, "${Fmt.oneDecimal(it)} °C", it > 8.0))
+        }
+        ruuvi[RuuviSensors.FREEZER]?.temperature?.let {
+            add(Anturi("Pakastin", MkIcons.Snowflake, "${Fmt.oneDecimal(it)} °C", it > -15.0))
+        }
+        ruuvi["Takka"]?.temperature?.let {
+            add(Anturi("Takka", MkIcons.FlameFill, "${Fmt.int(it)} °C", false))
+        }
+        ruuvi[RuuviSensors.OUTDOOR]?.temperature?.let {
+            add(Anturi("Ulkoilma", MkIcons.Leaf, "${Fmt.oneDecimal(it)} °C", false))
+        }
+        pressureHpa?.let {
+            add(Anturi("Ilmanpaine", MkIcons.Wind, "${Fmt.int(it)} hPa", false))
+        }
+    }
+    if (rows.isEmpty()) return
+    MkCard {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = MkSpacing.x3),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Anturit", style = MkTheme.type.heading, color = c.inkHi)
+            Text("Ruuvi", style = MkTheme.type.readout(11), color = c.inkLo)
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.x2)) {
+            rows.forEach { a ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(MkRadius.sm))
+                        .background(if (a.warn) c.warmDim else c.surfaceCard)
+                        .border(1.dp, if (a.warn) c.warm else c.borderSubtle, RoundedCornerShape(MkRadius.sm))
+                        .padding(horizontal = MkSpacing.x3, vertical = MkSpacing.x2),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+                ) {
+                    Icon(a.icon, null, tint = if (a.warn) c.warm else c.accent, modifier = Modifier.size(20.dp))
+                    Text(a.name, style = MkTheme.type.body, color = c.inkHi, modifier = Modifier.weight(1f))
+                    Box(
+                        Modifier.size(8.dp).clip(CircleShape)
+                            .background(if (a.warn) c.warm else c.accent),
+                    )
+                    Text(a.value, style = MkTheme.type.readout(15), color = c.inkHi)
+                }
+            }
+        }
+    }
 }
 
 // ── Room list ───────────────────────────────────────────────────────────────

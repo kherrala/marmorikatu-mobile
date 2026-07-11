@@ -1,8 +1,11 @@
 package fi.marmorikatu.core.repository
 
+import fi.marmorikatu.core.lifecycle.CONNECTED_HOLD
+import fi.marmorikatu.core.lifecycle.reconnectDelay
 import fi.marmorikatu.core.log.logger
 import fi.marmorikatu.core.model.Announcement
 import fi.marmorikatu.core.transport.bridge.BridgeApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -14,6 +17,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.time.TimeSource
 
 interface AnnouncementsRepository {
     /** Live pushed events while the stream is open. */
@@ -68,22 +72,29 @@ class DefaultAnnouncementsRepository(
                     }
             }
 
-            var backoffMs = 1_000L
+            var failures = 0
             while (isActive) {
+                var delivered = false
                 try {
                     _streaming.value = true
                     bridge.announcementStream(lastEventId).collect { event ->
-                        backoffMs = 1_000L
+                        delivered = true
                         lastEventId = event.id
                         _announcements.emit(event)
                         _recent.value = (listOf(event) + _recent.value).take(recentLimit)
                     }
+                } catch (e: CancellationException) {
+                    throw e   // never swallow cancellation — let the loop stop
                 } catch (e: Exception) {
                     log.d { "announcement stream dropped: ${e.message}" }
                 }
                 _streaming.value = false
-                delay(backoffMs)
-                backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+                // A stream that delivered an event was genuinely healthy → reconnect
+                // fast. A healthy idle stream stays open on keepalives, so a drop
+                // with nothing delivered is a real connection failure that ramps
+                // toward the slow poll sparing the radio in the background.
+                failures = if (delivered) 0 else failures + 1
+                delay(reconnectDelay(failures))
             }
         }
     }

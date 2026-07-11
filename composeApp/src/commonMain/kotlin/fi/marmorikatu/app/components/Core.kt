@@ -459,6 +459,16 @@ fun MkStatTile(
     tag: String? = null,
     tagStatus: MkTagStatus = MkTagStatus.Neutral,
     size: MkStatSize = MkStatSize.Md,
+    /** Optional 24 h history trend drawn as a sparkline under the value. */
+    spark: List<Float>? = null,
+    /**
+     * Changes each time fresh data arrives (e.g. a fetch timestamp), so the tile
+     * pulses on every refresh even when the value string is unchanged. Falls back
+     * to [value] when null, so a tile without a pulse key still flashes on change.
+     */
+    pulseKey: Any? = null,
+    /** Dims the whole tile when its data feed has gone stale (source stopped). */
+    dimmed: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
     val c = MkTheme.colors
@@ -468,14 +478,17 @@ fun MkStatTile(
     // Fresh-data flash: a brief pulse toward accent whenever the value changes,
     // so a refresh is noticeable at a glance. It settles back to 0 and is not an
     // infinite animation, so it adds no idle redraws once the pulse finishes.
+    // Flash on every fresh data arrival: keyed on [pulseKey] (a fetch timestamp)
+    // when supplied, so identical values still pulse; otherwise on the value.
+    val flashSignal = pulseKey ?: value
     val flash = remember { Animatable(0f) }
-    var seenValue by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(value) {
-        if (seenValue != null && seenValue != value) {
+    var seenSignal by remember { mutableStateOf<Any?>(null) }
+    LaunchedEffect(flashSignal) {
+        if (seenSignal != null && seenSignal != flashSignal) {
             flash.snapTo(1f)
             flash.animateTo(0f, tween(MkMotion.SLOW, easing = MkMotion.easeOut))
         }
-        seenValue = value
+        seenSignal = flashSignal
     }
 
     val border: Color = when (status) {
@@ -495,6 +508,7 @@ fun MkStatTile(
     }
 
     var box = modifier
+        .alpha(if (dimmed) 0.45f else 1f)
         .mkCardShadow(c, shape)
         .clip(shape)
     box = if (gradient != null) box.background(gradient, shape) else box.background(c.surfaceCard, shape)
@@ -549,6 +563,13 @@ fun MkStatTile(
                     maxLines = 1,
                 )
             }
+        }
+        if (spark != null) {
+            MkSparkline(
+                values = spark,
+                color = iconTint,
+                modifier = Modifier.padding(top = MkSpacing.x2),
+            )
         }
     }
 }

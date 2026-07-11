@@ -112,7 +112,7 @@ fun MkFreshness(
 
 /** Recomputes the freshness phrase while composed, updating only when it changes. */
 @Composable
-private fun rememberTickingAge(updatedAtEpochSeconds: Long?): String? {
+internal fun rememberTickingAge(updatedAtEpochSeconds: Long?): String? {
     if (updatedAtEpochSeconds == null) return null
     val age = remember(updatedAtEpochSeconds) {
         mutableStateOf(Fmt.freshness(updatedAtEpochSeconds.toDouble()))
@@ -120,11 +120,11 @@ private fun rememberTickingAge(updatedAtEpochSeconds: Long?): String? {
     LaunchedEffect(updatedAtEpochSeconds) {
         while (true) {
             delay(1_000)
-            // Only a *changed* state value invalidates composition. Fmt.freshness
-            // reads "juuri nyt" for the whole first minute, so a live feed that
-            // refreshes every ~13 s never trips this — the screen stops redrawing
-            // (and stops flooding logcat with Android 15's per-frame
-            // setRequestedFrameRate hints) when nothing visibly changed.
+            // Only a *changed* state value invalidates composition. Below a minute
+            // Fmt.freshness ticks every second ("12 s sitten"), so this label
+            // recomposes once a second — a single small Text, not the per-frame
+            // redraw a perpetual animation would trigger; above a minute it changes
+            // rarely and stays cheap.
             val next = Fmt.freshness(updatedAtEpochSeconds.toDouble())
             if (next != age.value) age.value = next
         }

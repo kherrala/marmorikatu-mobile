@@ -44,6 +44,10 @@ object Rooms {
     val byInfluxField: Map<String, Room> = ALL.associateBy { it.influxField }
     val byHeatingKey: Map<String, Room> = ALL.associateBy { it.heatingKey }
 
-    /** Rooms worth showing on the climate carousel, warmest floors first. */
-    val livingSpaces: List<Room> = ALL.filter { it.floor != Floor.KELLARI }
+    /**
+     * Rooms worth showing on the climate carousel + temperature chart. The
+     * basement counts as living space (the office and home theatre are down
+     * there); only its bare entrance hallway is left out.
+     */
+    val livingSpaces: List<Room> = ALL.filter { it.mqttKey != "kellari_eteinen" }
 }

@@ -180,7 +180,9 @@ class DefaultMcpApi(private val connection: McpConnection) : McpApi {
     }
 
     override suspend fun getEnergyConsumption(hours: Int): JsonObject =
-        connection.callToolJson("get_energy_consumption", mapOf("hours" to hours)).jsonObject
+        // The backend tool reads a Flux-style `time_range` string, not `hours` —
+        // passing `hours` was silently ignored and it defaulted to a 7-day window.
+        connection.callToolJson("get_energy_consumption", mapOf("time_range" to "-${hours}h")).jsonObject
 
     // --- Info (weather/news/calendar proxied server-side) --------------------
 

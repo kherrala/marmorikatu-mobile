@@ -2,8 +2,11 @@ package fi.marmorikatu.app.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -18,12 +21,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -31,15 +40,19 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkTheme
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 // ---------------------------------------------------------------------------
@@ -55,13 +68,55 @@ data class MkSeries(
 )
 
 /** Hour classification for a [MkPriceBar]. */
-enum class BarState { Past, Future, Exp }
+enum class BarState { Past, Future, Exp, Cheap }
 
 /** One hourly spot-price bar. */
 data class MkPriceBar(val value: Float, val state: BarState = BarState.Future)
 
 /** One key/value cell in a [MkMetricDetail] stats row. */
 data class MkStat(val k: String, val v: String)
+
+// ---------------------------------------------------------------------------
+// Sparkline
+// ---------------------------------------------------------------------------
+
+/**
+ * A tiny inline trend line for stat tiles — no axes, no labels. Mirrors the
+ * design's `<polyline>` in a 100×22 viewBox: the series is scaled to fill the
+ * height with a small top/bottom inset. Renders an empty spacer for < 2 points
+ * so the tile keeps a stable height whether or not history has loaded.
+ */
+@Composable
+fun MkSparkline(
+    values: List<Float>,
+    color: Color,
+    modifier: Modifier = Modifier,
+    height: Dp = 20.dp,
+) {
+    if (values.size < 2) {
+        Spacer(modifier.height(height))
+        return
+    }
+    Canvas(modifier = modifier.fillMaxWidth().height(height)) {
+        val mn = values.min()
+        val mx = values.max()
+        val rg = (mx - mn).let { if (it == 0f) 1f else it }
+        val inset = 2.dp.toPx()
+        val usableH = size.height - inset * 2
+        val stepX = size.width / (values.size - 1)
+        val path = Path()
+        values.forEachIndexed { i, v ->
+            val x = i * stepX
+            val y = inset + (1f - (v - mn) / rg) * usableH
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(
+            path = path,
+            color = color,
+            style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+        )
+    }
+}
 
 // ---------------------------------------------------------------------------
 // LineChart
@@ -80,6 +135,8 @@ fun MkLineChart(
     grid: Int = 4,
     showLegend: Boolean = true,
     showYAxis: Boolean = true,
+    /** Drag across the chart to read each sample: crosshair + value tooltip. */
+    scrubbable: Boolean = false,
 ) {
     val colors = MkTheme.colors
     val allValues = series.flatMap { it.values }
@@ -87,6 +144,9 @@ fun MkLineChart(
     val hiRaw = max ?: (allValues.maxOrNull() ?: 1f)
     val span = (hiRaw - lo).let { if (it == 0f) 1f else it }
     val yAxisWidth = 34.dp
+    // Fraction (0..1) of the chart width the finger is at, or null when not scrubbing.
+    var scrubFraction by remember { mutableStateOf<Float?>(null) }
+    val textMeasurer = rememberTextMeasurer()
 
     Column(modifier = modifier.fillMaxWidth()) {
         if (showLegend && series.any { it.name != null }) {
@@ -124,7 +184,26 @@ fun MkLineChart(
             Canvas(
                 modifier = Modifier
                     .weight(1f)
-                    .height(height),
+                    .height(height)
+                    .then(
+                        if (scrubbable && series.any { it.values.size > 1 }) {
+                            Modifier.pointerInput(series) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown()
+                                    scrubFraction = (down.position.x / size.width).coerceIn(0f, 1f)
+                                    down.consume()
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        event.changes.firstOrNull()?.let { c ->
+                                            scrubFraction = (c.position.x / size.width).coerceIn(0f, 1f)
+                                            c.consume()
+                                        }
+                                    } while (event.changes.any { it.pressed })
+                                    scrubFraction = null
+                                }
+                            }
+                        } else Modifier,
+                    ),
             ) {
             val w = size.width
             val h = size.height
@@ -183,6 +262,34 @@ fun MkLineChart(
                         join = StrokeJoin.Round,
                     ),
                 )
+            }
+
+            // Scrub crosshair + value tooltip at the nearest sample.
+            val frac = scrubFraction
+            val n = series.maxOfOrNull { it.values.size } ?: 0
+            if (frac != null && n > 1) {
+                val idx = (frac * (n - 1)).roundToInt().coerceIn(0, n - 1)
+                val cx = px(idx, n)
+                drawLine(colors.inkLo.copy(alpha = 0.45f), Offset(cx, 0f), Offset(cx, h), 1.dp.toPx())
+                series.forEach { s ->
+                    s.values.getOrNull(idx)?.let { v -> drawCircle(s.color, 4.dp.toPx(), Offset(cx, py(v))) }
+                }
+                val text = series.mapNotNull { s -> s.values.getOrNull(idx)?.let { formatDecimals(it, 1) } }
+                    .joinToString("  ")
+                if (text.isNotEmpty()) {
+                    val layout = textMeasurer.measure(text, style = TextStyle(fontSize = 11.sp, color = colors.inkHi))
+                    val pad = 6.dp.toPx()
+                    val boxW = layout.size.width + pad * 2
+                    val boxH = layout.size.height + pad
+                    val bx = (cx - boxW / 2).coerceIn(0f, (w - boxW).coerceAtLeast(0f))
+                    drawRoundRect(
+                        color = colors.surfaceRaised,
+                        topLeft = Offset(bx, 0f),
+                        size = Size(boxW, boxH),
+                        cornerRadius = CornerRadius(6.dp.toPx()),
+                    )
+                    drawText(layout, topLeft = Offset(bx + pad, pad / 2))
+                }
             }
             }
         }
@@ -295,6 +402,7 @@ fun MkPriceBars(
                     BarState.Past -> colors.accent.copy(alpha = 0.38f)
                     BarState.Future -> colors.accent
                     BarState.Exp -> colors.warm
+                    BarState.Cheap -> colors.statusOk
                 }
                 val frac = (bar.value / maxVal).coerceIn(0f, 1f)
                 val barHeight = (height * frac).coerceAtLeast(2.dp)
@@ -433,6 +541,8 @@ fun MkMetricDetail(
     // Optional: only a metric with real range-dependent history shows the picker.
     range: TimeRangeOption? = null,
     onRangeChange: ((TimeRangeOption) -> Unit)? = null,
+    /** When set, a "Takaisin" button rides the top row beside the range picker. */
+    onBack: (() -> Unit)? = null,
 ) {
     val colors = MkTheme.colors
     // Note: MetricDetail alarm is the ink variant, unlike Gauge's --status-alarm.
@@ -444,11 +554,11 @@ fun MkMetricDetail(
         else -> colors.accent
     }
 
-    MkCard(modifier = modifier, padding = MkCardPadding.PadLg) {
+    // Reusable pieces so the portrait (stacked) and landscape (side-by-side)
+    // layouts share one definition.
+    val header: @Composable () -> Unit = {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 14.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.Top,
         ) {
@@ -456,9 +566,7 @@ fun MkMetricDetail(
                 imageVector = icon,
                 contentDescription = null,
                 tint = lineColor,
-                modifier = Modifier
-                    .padding(top = 2.dp)
-                    .size(24.dp),
+                modifier = Modifier.padding(top = 2.dp).size(24.dp),
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -471,44 +579,33 @@ fun MkMetricDetail(
                     color = colors.inkMid,
                 )
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = value,
-                        style = MkTheme.type.readout(38),
-                        color = lineColor,
-                    )
-                    Text(
-                        text = unit,
-                        style = MkTheme.type.readout(20),
-                        color = colors.inkLo,
-                        modifier = Modifier.padding(start = 3.dp),
-                    )
+                    Text(text = value, style = MkTheme.type.readout(38), color = lineColor)
+                    // Only pair a unit with a numeric readout — a state word like
+                    // "Käy" / "Seis" / "Ei tietoa" must not read "Käy kW".
+                    val numeric = value.trimStart('-', '+', ' ').firstOrNull()?.isDigit() == true
+                    if (numeric && unit.isNotBlank()) {
+                        Text(
+                            text = unit,
+                            style = MkTheme.type.readout(20),
+                            color = colors.inkLo,
+                            modifier = Modifier.padding(start = 3.dp),
+                        )
+                    }
                 }
             }
         }
-
-        // Only when the metric actually has multiple windows to switch between;
-        // full-width on its own row so it never crushes the title.
+    }
+    val rangePicker: @Composable () -> Unit = {
         if (range != null && onRangeChange != null) {
-            MkTimeRange(
-                value = range,
-                onChange = onRangeChange,
-                modifier = Modifier.padding(bottom = 12.dp),
-            )
+            MkTimeRange(value = range, onChange = onRangeChange, modifier = Modifier.fillMaxWidth())
         }
-
-        MkLineChart(
-            series = series,
-            labels = labels,
-            showLegend = false,
-        )
-
+    }
+    val statsRow: @Composable (Boolean) -> Unit = { hairline ->
         if (stats.isNotEmpty()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 14.dp)
-                    .drawTopHairline(colors.borderSubtle)
-                    .padding(top = 12.dp),
+                    .then(if (hairline) Modifier.drawTopHairline(colors.borderSubtle).padding(top = 12.dp) else Modifier),
                 horizontalArrangement = Arrangement.spacedBy(22.dp),
             ) {
                 stats.forEach { stat ->
@@ -518,11 +615,83 @@ fun MkMetricDetail(
                             style = MkTheme.type.readout(10).copy(letterSpacing = 0.1.em),
                             color = colors.inkLo,
                         )
-                        Text(
-                            text = stat.v,
-                            style = MkTheme.type.readout(17),
-                            color = colors.inkHi,
+                        Text(text = stat.v, style = MkTheme.type.readout(17), color = colors.inkHi)
+                    }
+                }
+            }
+        }
+    }
+
+    MkCard(modifier = modifier, padding = MkCardPadding.PadLg) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            // Landscape / kiosk: put the readout + range + stats in a left column
+            // and give the chart the whole right side, so rotating actually makes
+            // the chart bigger instead of pushing it off the bottom.
+            val wide = maxWidth >= 560.dp
+            if (wide) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // Back button (left) + range selector (right) share the top row,
+                    // above the chart, so the whole detail fits without scrolling.
+                    if (onBack != null || (range != null && onRangeChange != null)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (onBack != null) {
+                                MkButton(
+                                    text = "Takaisin",
+                                    onClick = onBack,
+                                    variant = MkButtonVariant.Ghost,
+                                    size = MkButtonSize.Sm,
+                                    icon = MkIcons.CaretLeft,
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            if (range != null && onRangeChange != null) {
+                                MkTimeRange(value = range, onChange = onRangeChange)
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                        Column(
+                            modifier = Modifier.weight(0.38f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            header()
+                            statsRow(false)
+                        }
+                        MkLineChart(
+                            series = series,
+                            labels = labels,
+                            height = 180.dp,
+                            showLegend = false,
+                            scrubbable = true,
+                            modifier = Modifier.weight(0.62f),
                         )
+                    }
+                }
+            } else {
+                Column {
+                    if (onBack != null) {
+                        MkButton(
+                            text = "Takaisin",
+                            onClick = onBack,
+                            variant = MkButtonVariant.Ghost,
+                            size = MkButtonSize.Sm,
+                            icon = MkIcons.CaretLeft,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    header()
+                    Spacer(Modifier.height(14.dp))
+                    if (range != null && onRangeChange != null) {
+                        rangePicker()
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    MkLineChart(series = series, labels = labels, showLegend = false, scrubbable = true)
+                    if (stats.isNotEmpty()) {
+                        Spacer(Modifier.height(14.dp))
+                        statsRow(true)
                     }
                 }
             }

@@ -2,6 +2,7 @@ package fi.marmorikatu.core.transport.mqtt
 
 import fi.marmorikatu.core.fixtures.MqttFixtures
 import fi.marmorikatu.core.model.Floor
+import fi.marmorikatu.core.model.HeatPumpAlarm
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -162,6 +163,24 @@ class PlcPayloadsTest {
         // −40 is the Thermia "sensor not connected" value; must read as null.
         val hp = PlcPayloads.parseThermiq("""{"d7":50,"d0":-40}""")!!
         assertEquals(null, hp.outdoorC)
+    }
+
+    @Test
+    fun thermiqDecodesAuxHeaterAndFaultCodes() {
+        // d13 bit0 = 3 kW aux; d19 bit3 = low brine flow; d20 bit0 = outdoor sensor.
+        val hp = PlcPayloads.parseThermiq("""{"d7":50,"d13":1,"d19":8,"d20":1}""")!!
+        assertTrue(hp.auxHeaterActive)
+        assertTrue(HeatPumpAlarm.LowBrineFlow in hp.alarms)
+        assertTrue(HeatPumpAlarm.OutdoorSensor in hp.alarms)
+        assertEquals(2, hp.alarms.size)
+        assertEquals("d19:3", HeatPumpAlarm.LowBrineFlow.code)
+    }
+
+    @Test
+    fun thermiqClearWhenNoAuxOrAlarms() {
+        val hp = PlcPayloads.parseThermiq("""{"d7":50,"d13":0,"d19":0,"d20":0}""")!!
+        assertTrue(!hp.auxHeaterActive)
+        assertTrue(hp.alarms.isEmpty())
     }
 
     @Test

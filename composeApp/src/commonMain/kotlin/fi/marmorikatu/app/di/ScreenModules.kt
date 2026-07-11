@@ -3,6 +3,7 @@ package fi.marmorikatu.app.di
 import fi.marmorikatu.app.screens.BussitViewModel
 import fi.marmorikatu.app.screens.EnergiaViewModel
 import fi.marmorikatu.app.screens.IlmastoViewModel
+import fi.marmorikatu.app.screens.KalenteriViewModel
 import fi.marmorikatu.app.screens.KotiViewModel
 import fi.marmorikatu.app.screens.TapahtumatViewModel
 import fi.marmorikatu.app.screens.ValotViewModel
@@ -20,6 +21,7 @@ val kotiModule = module {
             lightsRepo = get(),
             infoRepo = get(),
             tts = get(named("platformTts")),
+            startupProgress = get(),
             announcementsRepo = get(),
         )
     }
@@ -41,6 +43,10 @@ val bussitModule = module {
     viewModel { BussitViewModel(infoRepo = get()) }
 }
 
+val kalenteriModule = module {
+    viewModel { KalenteriViewModel(infoRepo = get()) }
+}
+
 val tapahtumatModule = module {
     viewModel { TapahtumatViewModel(announcementsRepo = get()) }
 }
@@ -52,5 +58,6 @@ val screenModules: List<Module> = listOf(
     ilmastoModule,
     energiaModule,
     bussitModule,
+    kalenteriModule,
     tapahtumatModule,
 )

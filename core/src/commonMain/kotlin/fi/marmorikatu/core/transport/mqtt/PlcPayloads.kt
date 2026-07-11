@@ -7,6 +7,7 @@ import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.PlcStatus
 import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Rooms
+import fi.marmorikatu.core.model.VentAlarm
 import fi.marmorikatu.core.model.Ventilation
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -108,6 +109,22 @@ object PlcPayloads {
         fun pick(vararg candidates: String): Double? =
             candidates.firstNotNullOfOrNull { numbers[it.lowercase()] }
 
+        fun alarm(key: String): Boolean = lowered[key.lowercase()]?.let(::toBool) ?: false
+
+        val alarms = buildSet {
+            if (alarm("AlarmFreezingDanger")) add(VentAlarm.FreezingDanger)
+            if (alarm("AlarmFilterGuard")) add(VentAlarm.FilterGuard)
+            if (alarm("AlarmOverheatAfter")) add(VentAlarm.AfterheaterOverheat)
+            if (alarm("AlarmIRSensor")) add(VentAlarm.IrSensor)
+            if (alarm("AlarmTempDeviation")) add(VentAlarm.TempDeviation)
+            if (alarm("AlarmEfficiency")) add(VentAlarm.LowEfficiency)
+            if (alarm("AlarmFanFailureSA")) add(VentAlarm.SupplyFanFailure)
+            if (alarm("AlarmFanFailureEA")) add(VentAlarm.ExhaustFanFailure)
+            if (alarm("AlarmServiceReminder")) add(VentAlarm.ServiceReminder)
+            // AlarmTempSensor is a numeric fault code — non-zero means a fault.
+            if ((numbers["alarmtempsensor"] ?: 0.0) != 0.0) add(VentAlarm.TempSensor)
+        }
+
         return Ventilation(
             outdoorC = pick("OutdoorTemp", "Ulkolampotila"),
             supplyC = pick("SupplyTempPostHeat", "Tuloilma"),
@@ -115,7 +132,8 @@ object PlcPayloads {
             extractC = pick("ExtractTemp", "Poistoilma"),
             exhaustC = pick("ExhaustTemp", "Jateilma"),
             relativeHumidity = pick("RelativeHumidity", "IndoorRH"),
-            freezingDanger = lowered["alarmfreezingdanger"]?.let(::toBool) ?: false,
+            freezingDanger = VentAlarm.FreezingDanger in alarms,
+            alarms = alarms,
             raw = numbers,
         )
     }
@@ -187,6 +205,27 @@ object PlcPayloads {
         }
         val bits = reg(16)?.toInt() ?: 0
         fun bit(n: Int): Boolean = (bits shr n) and 1 == 1
+        // Register d13: bit 0 = 3 kW aux heater, bit 1 = 6 kW aux heater.
+        val auxHeaterActive = ((reg(13)?.toInt() ?: 0) and 0b11) != 0
+        // Alarm bitfields d19 (pressure/flow/brine/motor) and d20 (sensor faults).
+        val d19 = reg(19)?.toInt() ?: 0
+        val d20 = reg(20)?.toInt() ?: 0
+        fun d19bit(n: Int) = (d19 shr n) and 1 == 1
+        fun d20bit(n: Int) = (d20 shr n) and 1 == 1
+        val hpAlarms = buildSet {
+            if (d19bit(0)) add(fi.marmorikatu.core.model.HeatPumpAlarm.HighPressure)
+            if (d19bit(1)) add(fi.marmorikatu.core.model.HeatPumpAlarm.LowPressure)
+            if (d19bit(2)) add(fi.marmorikatu.core.model.HeatPumpAlarm.MotorBreaker)
+            if (d19bit(3)) add(fi.marmorikatu.core.model.HeatPumpAlarm.LowBrineFlow)
+            if (d19bit(4)) add(fi.marmorikatu.core.model.HeatPumpAlarm.LowBrineTemp)
+            if (d20bit(0)) add(fi.marmorikatu.core.model.HeatPumpAlarm.OutdoorSensor)
+            if (d20bit(1)) add(fi.marmorikatu.core.model.HeatPumpAlarm.SupplySensor)
+            if (d20bit(2)) add(fi.marmorikatu.core.model.HeatPumpAlarm.ReturnSensor)
+            if (d20bit(3)) add(fi.marmorikatu.core.model.HeatPumpAlarm.HotWaterSensor)
+            if (d20bit(4)) add(fi.marmorikatu.core.model.HeatPumpAlarm.IndoorSensor)
+            if (d20bit(5)) add(fi.marmorikatu.core.model.HeatPumpAlarm.PhaseOrder)
+            if (d20bit(6)) add(fi.marmorikatu.core.model.HeatPumpAlarm.Overheating)
+        }
 
         val hotWater = temp(7)
         val target = combined(3, 4)
@@ -194,19 +233,34 @@ object PlcPayloads {
         if (hotWater == null && target == null) return null
 
         val current = reg(12)
+        val running = bit(1) || (current ?: 0.0) > 0.5
+        val supply = temp(5)
+        val ret = temp(6)
+        // Compressor-only COP with the previous kiosk's formula (Thermia Diplomat
+        // 8, 2.3 kW fixed-speed compressor): P_heat = 1.965·(supply − return) kW,
+        // COP = P_heat / 2.3. Only meaningful while the compressor is running and
+        // actually delivering heat (supply > return); otherwise it is undefined.
+        val cop = if (running && supply != null && ret != null && supply > ret) {
+            1.965 * (supply - ret) / 2.3
+        } else {
+            null
+        }
         return fi.marmorikatu.core.model.HeatPumpStatus(
             available = true,
-            running = bit(1) || (current ?: 0.0) > 0.5,
+            running = running,
             hotWaterActive = bit(3),
             hotWaterC = hotWater,
             indoorTargetC = target,
             indoorC = combined(1, 2),
             outdoorC = temp(0),
-            supplyC = temp(5),
-            returnC = temp(6),
+            supplyC = supply,
+            returnC = ret,
             brineInC = temp(9),
             brineOutC = temp(8),
             currentA = current,
+            cop = cop,
+            auxHeaterActive = auxHeaterActive,
+            alarms = hpAlarms,
             updatedAtEpochSeconds = (obj["timestamp"] as? JsonPrimitive)?.longOrNull,
         )
     }

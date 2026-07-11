@@ -22,6 +22,8 @@ enum class Tab(
     Ilmasto("ilmasto", "Ilmasto", title = "Ilmasto", icon = MkIcons.Thermometer, iconActive = MkIcons.ThermometerFill),
     Energia("energia", "Energia", title = "Energia", icon = MkIcons.Lightning, iconActive = MkIcons.LightningFill),
     Bussit("bussit", "Bussit", title = "Bussit", icon = MkIcons.Bus, iconActive = MkIcons.BusFill),
+    // MkIcons has no calendar glyph yet; Clock stands in until one is added.
+    Kalenteri("kalenteri", "Kalenteri", title = "Kalenteri", icon = MkIcons.Clock),
     Tapahtumat("loki", "Tapahtumat", railLabel = "Loki", title = "Tapahtumat", icon = MkIcons.Bell, iconActive = MkIcons.BellFill),
 }
 

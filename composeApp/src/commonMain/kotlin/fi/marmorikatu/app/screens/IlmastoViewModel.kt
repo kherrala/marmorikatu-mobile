@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.core.model.AirQuality
+import fi.marmorikatu.core.model.Cooling
 import fi.marmorikatu.core.model.HeatPumpStatus
+import fi.marmorikatu.core.model.RuuviReading
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.HvacSummary
 import fi.marmorikatu.core.model.RoomTemperature
@@ -43,7 +45,9 @@ class IlmastoViewModel(
     val roomTemperatures: StateFlow<List<RoomTemperature>> = climate.roomTemperatures
     val heatingDemand: StateFlow<List<HeatingDemand>> = climate.heatingDemand
     val ventilation: StateFlow<Ventilation> = climate.ventilation
+    val cooling: StateFlow<Cooling> = climate.cooling
     val heatPump: StateFlow<HeatPumpStatus> = climate.heatPump
+    val ruuvi: StateFlow<Map<String, RuuviReading>> = climate.ruuvi
 
     private val _snapshot = MutableStateFlow(IlmastoSnapshot())
     val snapshot: StateFlow<IlmastoSnapshot> = _snapshot.asStateFlow()
@@ -53,6 +57,49 @@ class IlmastoViewModel(
 
     private val _updatedAt = MutableStateFlow<Long?>(null)
     val updatedAt: StateFlow<Long?> = _updatedAt.asStateFlow()
+
+    // Focus view: a single readout's 24 h history, loaded on demand when a tile
+    // is tapped.
+    private val _focusSeries = MutableStateFlow<List<Float>>(emptyList())
+    val focusSeries: StateFlow<List<Float>> = _focusSeries.asStateFlow()
+
+    private val _focusLoading = MutableStateFlow(false)
+    val focusLoading: StateFlow<Boolean> = _focusLoading.asStateFlow()
+
+    // The focused readout lives here (not in the composable) so it survives the
+    // phone turning to landscape for the chart — see KotiViewModel for why.
+    private val _focus = MutableStateFlow<FocusMetric?>(null)
+    val focus: StateFlow<FocusMetric?> = _focus.asStateFlow()
+
+    fun openFocus(metric: FocusMetric) {
+        _focus.value = metric
+        loadFocus(metric.measurement, metric.field, metric.tagKey, metric.tagValue)
+    }
+
+    fun closeFocus() {
+        _focus.value = null
+        clearFocus()
+    }
+
+    /** Load a readout's 24 h InfluxDB history for the focus chart. */
+    fun loadFocus(measurement: String, field: String, tagKey: String? = null, tagValue: String? = null) {
+        _focusSeries.value = emptyList()
+        _focusLoading.value = true
+        viewModelScope.launch {
+            // "hvac_lto" is a computed efficiency series, not a stored field.
+            _focusSeries.value = if (measurement == "hvac_lto") {
+                climate.recoveryEfficiencyHistory("-24h", "30m")
+            } else {
+                climate.metricHistory(measurement, field, "-24h", "30m", tagKey, tagValue)
+            }
+            _focusLoading.value = false
+        }
+    }
+
+    fun clearFocus() {
+        _focusSeries.value = emptyList()
+        _focusLoading.value = false
+    }
 
     init {
         // Room temperatures are a live PLC StateFlow; stamp freshness whenever a

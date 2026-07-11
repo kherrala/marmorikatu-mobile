@@ -21,13 +21,19 @@ import kotlin.time.ExperimentalTime
 /** Rendered state of the whole Valot screen. */
 data class ValotUiState(
     val loading: Boolean = true,
+    /** Every area currently on, house-wide — the permanent "Aktiiviset" section. */
+    val activeAreas: List<AreaUi> = emptyList(),
     val floors: List<FloorSection> = emptyList(),
     /** How many areas have at least one light on — the header count. */
     val areasOn: Int = 0,
+    /** The preset whose exact light set is live, if any — highlights its chip. */
+    val activePreset: KotiScene? = null,
+    /** Additive area presets whose lights are all currently on. */
+    val activeAreaPresets: Set<LightAreaPreset> = emptySet(),
 )
 
-/** One floor's section: a header label and the areas under it. */
-data class FloorSection(val label: String, val areas: List<AreaUi>)
+/** One floor's section: the floor, a header label, and the areas under it. */
+data class FloorSection(val floor: Floor, val label: String, val areas: List<AreaUi>)
 
 /** Whether an area has any light on. */
 internal fun AreaUi.isOn(): Boolean = when (this) {
@@ -86,11 +92,27 @@ class ValotViewModel(
 
     val uiState: StateFlow<ValotUiState> =
         combine(lights.lights, loaded) { list, isLoaded ->
-            val floors = buildFloors(list)
+            val floors = buildFloorSections(list)
+            val active = floors.flatMap { it.areas }.filter { it.isOn() }
+            // A preset is "active" when the live common-on set exactly equals its
+            // target — so its chip highlights, and Kaikki pois when all are off.
+            val onCommon = list
+                .filterNot { isBedroomLight(it.name) }
+                .filter { it.displayedOn }.map { it.id }.toSet()
+            val activePreset = KotiScene.entries.firstOrNull { sceneOnLightIds(it, list) == onCommon }
+            // An additive area preset is "on" when every one of its lights is on.
+            val onIds = list.filter { it.displayedOn }.map { it.id }.toSet()
+            val activeAreaPresets = LightAreaPreset.entries.filter { preset ->
+                val ids = areaPresetLightIds(preset, list)
+                ids.isNotEmpty() && ids.all { it in onIds }
+            }.toSet()
             ValotUiState(
                 loading = !isLoaded && list.isEmpty(),
+                activeAreas = active,
                 floors = floors,
-                areasOn = floors.sumOf { section -> section.areas.count { it.isOn() } },
+                areasOn = active.size,
+                activePreset = activePreset,
+                activeAreaPresets = activeAreaPresets,
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, ValotUiState())
 
@@ -182,7 +204,50 @@ class ValotViewModel(
         viewModelScope.launch { runCatching { lights.setAll(false) } }
     }
 
-    private fun buildFloors(list: List<Light>): List<FloorSection> =
+    /**
+     * Apply a lighting preset: its named areas come on (per the house rules),
+     * every other common light goes off. Bedrooms are never touched.
+     */
+    fun applyPreset(scene: KotiScene) {
+        viewModelScope.launch {
+            val list = lights.lights.value
+            val onIds = sceneOnLightIds(scene, list)
+            list.filterNot { isBedroomLight(it.name) }
+                .forEach { l ->
+                    val target = l.id in onIds
+                    if (l.displayedOn != target) runCatching { lights.setLight(l.id, target) }
+                }
+        }
+    }
+
+    /**
+     * Toggle an additive area preset: if all its lights are already on, turn the
+     * whole area off; otherwise turn it on. The rest of the house is untouched.
+     */
+    fun toggleAreaPreset(preset: LightAreaPreset) {
+        viewModelScope.launch {
+            val list = lights.lights.value
+            val ids = areaPresetLightIds(preset, list)
+            if (ids.isEmpty()) return@launch
+            val byId = list.associateBy { it.id }
+            val allOn = ids.all { byId[it]?.displayedOn == true }
+            val target = !allOn
+            ids.forEach { id ->
+                if (byId[id]?.displayedOn != target) runCatching { lights.setLight(id, target) }
+            }
+        }
+    }
+
+    /** Turn off every light on one floor (the floor header's "Sammuta"). */
+    fun floorOff(floor: Floor) {
+        viewModelScope.launch {
+            lights.lights.value
+                .filter { it.floor == floor && it.displayedOn }
+                .forEach { runCatching { lights.setLight(it.id, false) } }
+        }
+    }
+
+    private fun buildFloorSections(list: List<Light>): List<FloorSection> =
         FLOOR_ORDER.mapNotNull { floor ->
             val floorLights = list.filter { it.floor == floor }
             if (floorLights.isEmpty()) return@mapNotNull null
@@ -212,7 +277,7 @@ class ValotViewModel(
 
             // Dimmable rooms first for clarity, then plain on/off groups, then
             // lone fixtures; the decorative window group always sits last.
-            FloorSection(label = floor.label, areas = items.sortedBy { tierOf(it) })
+            FloorSection(floor = floor, label = floor.label, areas = items.sortedBy { tierOf(it) })
         }
 
     private companion object {
@@ -243,6 +308,10 @@ class ValotViewModel(
                 n.contains("Ruokailu", ignoreCase = true) -> "Keittiö"
                 first.equals("Sauna", ignoreCase = true) || first.equals("Saunan", ignoreCase = true) -> "Sauna"
                 saunaFloor && (first.startsWith("Kylpy", ignoreCase = true) || first.startsWith("Kylpu", ignoreCase = true)) -> "Sauna"
+                // Fold the upstairs hall into one card: "Yläkerta aula …" and
+                // "Aula …" would otherwise split into a floor-named area + a lone
+                // "Aula" (see audit #8).
+                n.contains("aula", ignoreCase = true) -> "Aula"
                 else -> first
             }
         }

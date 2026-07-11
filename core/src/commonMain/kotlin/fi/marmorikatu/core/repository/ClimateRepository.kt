@@ -8,6 +8,7 @@ import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.PlcStatus
 import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Rooms
+import fi.marmorikatu.core.model.RuuviReading
 import fi.marmorikatu.core.model.Ventilation
 import fi.marmorikatu.core.transport.influx.FluxClient
 import fi.marmorikatu.core.transport.influx.FluxPoint
@@ -16,14 +17,17 @@ import fi.marmorikatu.core.transport.mqtt.MqttClient
 import fi.marmorikatu.core.transport.mqtt.MqttConnectionState
 import fi.marmorikatu.core.transport.mqtt.MqttTopics
 import fi.marmorikatu.core.transport.mqtt.PlcPayloads
+import fi.marmorikatu.core.transport.mqtt.RuuviPayloads
 import com.russhwolf.settings.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlin.time.Instant
 
 /**
  * Rooms, ventilation, and heat pump — READ ONLY in v1 by design.
@@ -40,6 +44,15 @@ interface ClimateRepository {
     val ventilation: StateFlow<Ventilation>
     val cooling: StateFlow<Cooling>
     val plcStatus: StateFlow<PlcStatus>
+
+    /**
+     * Live Ruuvi tag readings keyed by sensor name (Keittiö, Sauna, Pakastin, …),
+     * pushed by the gateway as each tag reports. Carries CO₂/PM/VOC for the air
+     * sensor, temperature/humidity/battery for the rest, and each reading's real
+     * timestamp — the source for live air-quality/sauna/outdoor values, per-tile
+     * freshness, and the Ruuvi alerts. Empty until the first message arrives.
+     */
+    val ruuvi: StateFlow<Map<String, RuuviReading>>
 
     /**
      * Live heat-pump view, decoded from the retained-less `ThermIQ/marmorikatu/data`
@@ -69,7 +82,49 @@ interface ClimateRepository {
      * @param range Flux duration, e.g. `-24h`.
      */
     suspend fun temperatureHistory(range: String, every: String): Map<String, List<FluxPoint>>
+
+    /**
+     * Downsampled history of a single InfluxDB measurement field, oldest→newest,
+     * for the KPI sparklines. Returns an empty list on any failure so a missing
+     * series just hides the trend rather than surfacing an error.
+     */
+    suspend fun metricHistory(
+        measurement: String,
+        field: String,
+        range: String = "-24h",
+        every: String = "30m",
+        tagKey: String? = null,
+        tagValue: String? = null,
+    ): List<Float>
+
+    /** Computed heat-recovery efficiency history (%) — see [FluxClient.recoveryEfficiencyHistory]. */
+    suspend fun recoveryEfficiencyHistory(range: String = "-24h", every: String = "30m"): List<Float>
+
+    /** Latest outdoor temperature from the local Ruuvi sensor (`sensor_name = "Ulkolämpötila"`), or null. */
+    suspend fun outdoorRuuviTemp(): Double?
+
+    /**
+     * The sauna's current heat state, read from its Ruuvi temperature history:
+     * the ignition time ([SaunaHeatState.startEpoch] — when the temperature left
+     * its idle baseline and began the climb that is still standing) and whether
+     * it is [SaunaHeatState.holding] hot at setpoint rather than cooling down.
+     *
+     * Together these let the caller show the sauna as "on" through the whole
+     * session — the climb *and* the plateau — counting the elapsed time from a
+     * once-latched ignition, and clear it only once the sauna actually cools.
+     */
+    suspend fun saunaHeatState(): SaunaHeatState
 }
+
+/**
+ * The sauna's heat state derived from its temperature history.
+ *
+ * @param startEpoch epoch-seconds of the current heat-up's ignition, or null if
+ *   it can't be pinned (already hot across the whole window, or no clear rise).
+ * @param holding true while the sauna is hot and holding at setpoint (the
+ *   heater cycling), false when idle or coasting down after being switched off.
+ */
+data class SaunaHeatState(val startEpoch: Long?, val holding: Boolean)
 
 class DefaultClimateRepository(
     private val mqtt: MqttClient,
@@ -102,13 +157,36 @@ class DefaultClimateRepository(
     private val _heatPump = MutableStateFlow(loadPersistedHeatPump())
     override val heatPump: StateFlow<HeatPumpStatus> = _heatPump.asStateFlow()
 
+    private val _ruuvi = MutableStateFlow<Map<String, RuuviReading>>(emptyMap())
+    override val ruuvi: StateFlow<Map<String, RuuviReading>> = _ruuvi.asStateFlow()
+
     init {
         scope.launch {
             mqtt.messages.collect { msg ->
+                // Ruuvi topics are per-tag (ruuvi/<gw>/<mac>), so match by prefix
+                // before the exact-topic dispatch below. A message that isn't a
+                // decoded, mapped tag parses to null and is ignored.
+                if (msg.topic.startsWith(MqttTopics.RUUVI_PREFIX)) {
+                    RuuviPayloads.parse(msg.text())?.let { reading ->
+                        _ruuvi.update { it + (reading.sensorName to reading) }
+                    }
+                    return@collect
+                }
                 when (msg.topic) {
                     MqttTopics.TEMPERATURES -> {
                         val text = msg.text()
                         _roomTemperatures.value = PlcPayloads.parseTemperatures(text)
+                        // The cooling-coil coolant PT100s ride on this topic, not
+                        // `cooling`; merge them in without clobbering pump state.
+                        val extras = PlcPayloads.parseExtraTemperatures(text)
+                        fun coil(key: String) =
+                            extras.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
+                        _cooling.update {
+                            it.copy(
+                                coilTemp1 = coil("jaahdpatteri_1") ?: it.coilTemp1,
+                                coilTemp2 = coil("jaahdpatteri_2") ?: it.coilTemp2,
+                            )
+                        }
                         cache(KEY_TEMPS, text)
                     }
                     MqttTopics.HEATING -> {
@@ -118,8 +196,14 @@ class DefaultClimateRepository(
                     }
                     MqttTopics.VENTILATION ->
                         _ventilation.value = PlcPayloads.parseVentilation(msg.text())
-                    MqttTopics.COOLING ->
-                        _cooling.value = PlcPayloads.parseCooling(msg.text())
+                    MqttTopics.COOLING -> {
+                        // Only the pump states live here; keep the coil temps the
+                        // temperatures topic merged in.
+                        val parsed = PlcPayloads.parseCooling(msg.text())
+                        _cooling.update {
+                            it.copy(pumpCooling = parsed.pumpCooling, coolingPump = parsed.coolingPump)
+                        }
+                    }
                     MqttTopics.STATUS ->
                         _plcStatus.value = PlcPayloads.parseStatus(msg.text())
                     MqttTopics.THERMIQ ->
@@ -127,6 +211,19 @@ class DefaultClimateRepository(
                             _heatPump.value = it
                             persistHeatPump(it)
                         }
+                }
+            }
+        }
+        // The ThermIQ heat-pump topic isn't retained, so a fresh connection
+        // replays nothing and the Maalämpö/Käyttövesi/Sisäilma tiles would read
+        // "Ei tietoa" until the bridge next publishes on its own. Ask it to
+        // publish the instant we (re)connect — subscriptions are already live by
+        // the time the state is Connected — so the tiles fill within a second or
+        // two instead of waiting out the refresh timer.
+        scope.launch {
+            mqtt.connectionState.collect { state ->
+                if (state is MqttConnectionState.Connected) {
+                    runCatching { requestHeatPumpRead() }
                 }
             }
         }
@@ -170,6 +267,10 @@ class DefaultClimateRepository(
                 "hvac",
                 listOf(
                     "Ulkolampotila", "LTO_hyotysuhde", "Suhteellinen_kosteus",
+                    // Inputs for the computed heat-recovery efficiency.
+                    "Tuloilma_ennen_lammitysta", "Tuloilma_asetusarvo",
+                    // MVHR duct temps for the ventilation diagram.
+                    "Poistoilma", "Jateilma", "Tuloilma_jalkeen_lammityksen",
                     FIELD_HEAT_PUMP_POWER, "Alarm_freezing_danger",
                     "Alarm_filter_guard", "Alarm_fan_failure_supply",
                     "Alarm_fan_failure_extract", "Alarm_service_reminder",
@@ -182,13 +283,31 @@ class DefaultClimateRepository(
             "Alarm_fan_failure_supply", "Alarm_fan_failure_extract",
             "Alarm_service_reminder",
         )
+        // The LTO_hyotysuhde field is a not-connected sensor that pins to 0, so
+        // compute recovery efficiency the way the Grafana dashboard /
+        // get_heat_recovery_efficiency do:
+        //   η = (supply_after_HRU − outdoor) / (setpoint − outdoor) × 100
+        // valid only when setpoint ≠ outdoor and the result is in (0, 100].
+        val outdoor = values["Ulkolampotila"]
+        val supplyAfterHru = values["Tuloilma_ennen_lammitysta"]
+        val setpoint = values["Tuloilma_asetusarvo"]
+        val recoveryEfficiency = if (outdoor != null && supplyAfterHru != null && setpoint != null && setpoint != outdoor) {
+            ((supplyAfterHru - outdoor) / (setpoint - outdoor) * 100.0).takeIf { it > 0.0 && it <= 100.0 }
+        } else {
+            null
+        }
+
         return HvacSummary(
             outdoorC = values["Ulkolampotila"],
-            recoveryEfficiencyPct = values["LTO_hyotysuhde"],
+            recoveryEfficiencyPct = recoveryEfficiency,
             humidityPct = values["Suhteellinen_kosteus"],
             heatPumpPowerKw = values[FIELD_HEAT_PUMP_POWER],
             freezingDanger = (values["Alarm_freezing_danger"] ?: 0.0) > 0.0,
             anyAlarm = alarmFields.any { (values[it] ?: 0.0) > 0.0 },
+            extractC = values["Poistoilma"],
+            exhaustC = values["Jateilma"],
+            supplyPreHeatC = values["Tuloilma_ennen_lammitysta"],
+            supplyPostHeatC = values["Tuloilma_jalkeen_lammityksen"],
         )
     }
 
@@ -212,10 +331,118 @@ class DefaultClimateRepository(
         }
     }
 
+    override suspend fun metricHistory(
+        measurement: String,
+        field: String,
+        range: String,
+        every: String,
+        tagKey: String?,
+        tagValue: String?,
+    ): List<Float> = runCatching {
+        flux.history(measurement, listOf(field), range, every, tagKey, tagValue)[field]?.map { it.value.toFloat() }
+    }.getOrNull().orEmpty()
+
+    override suspend fun recoveryEfficiencyHistory(range: String, every: String): List<Float> =
+        runCatching { flux.recoveryEfficiencyHistory(range, every).map { it.value.toFloat() } }.getOrNull().orEmpty()
+
+    override suspend fun outdoorRuuviTemp(): Double? =
+        runCatching { flux.latest("ruuvi", "temperature", "sensor_name", "Ulkolämpötila") }.getOrNull()
+
+    override suspend fun saunaHeatState(): SaunaHeatState = runCatching {
+        // A 16 h window comfortably brackets any real sauna session (electric,
+        // heats fast), so the cold start before the current climb is captured;
+        // 5 min resolution pins the onset closely without a huge point count.
+        val points = flux.history(
+            measurement = "ruuvi",
+            fields = listOf("temperature"),
+            range = "-16h",
+            every = "5m",
+            tagKey = "sensor_name",
+            tagValue = "Sauna",
+        )["temperature"].orEmpty()
+        SaunaHeatState(
+            startEpoch = saunaHeatingOnsetIso(points)?.let { Instant.parse(it).epochSeconds },
+            holding = saunaHolding(points),
+        )
+    }.getOrDefault(SaunaHeatState(startEpoch = null, holding = false))
+
     private companion object {
         const val FIELD_HEAT_PUMP_POWER = "Lampopumppu_teho"
         const val KEY_HEAT_PUMP = "climate.heatpump"
         const val KEY_TEMPS = "climate.temperatures"
         const val KEY_HEATING = "climate.heating"
     }
+}
+
+/**
+ * How far above the window's idle baseline the Sauna reading must climb to mark
+ * the ignition point. Kept small (just clear of sensor noise, ~±0.5 °C, and the
+ * few tenths of idle drift) so the *start* of the ramp is caught, not a point a
+ * quarter-hour into it — measured idle sits rock-steady at 24 °C, so +3 °C
+ * cleanly separates heating from rest. This is only ever computed when the sauna
+ * is already confirmed heating, so a low margin can't be a false positive; it
+ * only decides *when* the confirmed heat-up began.
+ */
+private const val SAUNA_ONSET_DELTA_C = 3.0
+
+/**
+ * The ISO time the current sauna heat-up began, from a Sauna temperature series
+ * ([points], oldest→newest). Walks back from the newest sample through the
+ * contiguous run that sits above `baseline + [deltaC]` and returns that run's
+ * earliest sample — the ignition point. A within-session door-opening dip stays
+ * above the threshold, so the run isn't split; a separate earlier session is
+ * ignored when the sauna cooled to idle between them (the common case). Returns
+ * null when the newest sample is already back at idle or the series is too short.
+ *
+ * Known limitation: two back-to-back sessions whose valley never drops below
+ * `baseline + deltaC` (a re-light within an hour or two while the room stays
+ * warm) merge into one run, so the reported ignition can be too early.
+ */
+internal fun saunaHeatingOnsetIso(points: List<FluxPoint>, deltaC: Double = SAUNA_ONSET_DELTA_C): String? {
+    if (points.size < 3) return null
+    val threshold = points.minOf { it.value } + deltaC
+    var startIso: String? = null
+    for (i in points.indices.reversed()) {
+        if (points[i].value >= threshold) startIso = points[i].timeIso else break
+    }
+    return startIso
+}
+
+/** A Sauna reading at least this warm counts as a hot sauna, not cool ambient. */
+private const val SAUNA_HOT_FLOOR_C = 50.0
+
+/** Recent samples the plateau peak is taken over (≈ this many × the 5-min step). */
+private const val SAUNA_PEAK_WINDOW = 8
+
+/** How far below the recent peak the latest reading must sit to look like cooling. */
+private const val SAUNA_FALL_MARGIN_C = 3.0
+
+/** Samples back the "still declining" check compares against (≈ ×5-min). */
+private const val SAUNA_DECLINE_LOOKBACK = 3
+
+/**
+ * Whether the Sauna series ([points], oldest→newest) shows the sauna hot and
+ * *holding* — the thermostat cycling around a setpoint — rather than cooling
+ * after being switched off. A single temperature can't tell 65 °C climbing,
+ * holding, and cooling apart, so this reads the recent trend: it is cooling only
+ * when the latest reading has dropped clearly below the recent-window peak AND is
+ * still lower than it was ~15 min ago. That catches a slow late-stage cooldown
+ * (which a fixed drop-rate threshold misses as it nears ambient), while a löyly
+ * dip that recovers and normal setpoint jitter both stay "holding". Below
+ * [hotFloor] it is off outright. Pure, so it's unit-tested.
+ */
+internal fun saunaHolding(
+    points: List<FluxPoint>,
+    hotFloor: Double = SAUNA_HOT_FLOOR_C,
+    peakWindow: Int = SAUNA_PEAK_WINDOW,
+    fallMargin: Double = SAUNA_FALL_MARGIN_C,
+    declineLookback: Int = SAUNA_DECLINE_LOOKBACK,
+): Boolean {
+    val current = points.lastOrNull()?.value ?: return false
+    if (current < hotFloor) return false
+    val recentPeak = points.takeLast(peakWindow).maxOf { it.value }
+    val belowPeak = current <= recentPeak - fallMargin
+    val earlier = points.getOrNull(points.size - 1 - declineLookback)?.value
+    val stillFalling = earlier != null && current < earlier
+    return !(belowPeak && stillFalling)
 }
