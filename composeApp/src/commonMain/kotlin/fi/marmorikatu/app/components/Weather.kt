@@ -77,15 +77,12 @@ fun MkWeatherWidget(
             horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Condition glyph in a rounded accent tile.
+            // Condition glyph on its own — no tile background (design).
             Box(
                 contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(MkRadius.md))
-                    .background(c.accentDim),
+                modifier = Modifier.size(48.dp),
             ) {
-                Icon(icon, null, tint = c.accent, modifier = Modifier.size(26.dp))
+                Icon(icon, null, tint = c.accent, modifier = Modifier.size(40.dp))
             }
             // Big temperature with the condition beside it, then feels-like +
             // location and the on-site source badge underneath.

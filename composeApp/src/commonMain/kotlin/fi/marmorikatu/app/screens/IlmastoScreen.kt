@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -645,6 +646,34 @@ private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling) {
                     ClimTile("Kiertopumppu", if (active) "Päällä" else "Pois", null, MkIcons.FanFill),
                 ),
             )
+            // ASETUSARVOT — the PLC's cooling control setpoints (rMaxInAir /
+            // rMinInAir / outdoor-min / dew-point margin). These are persistent
+            // PLC config, not published live, so shown as the configured values.
+            val setpoints = listOf(
+                "Max sisäilma" to "23.0 °C",
+                "Min sisäilma" to "22.5 °C",
+                "Min ulkoilma" to "10.0 °C",
+                "Ero kastepisteeseen" to "0.0 °C",
+            )
+            Text(
+                "ASETUSARVOT",
+                style = MkTheme.type.label,
+                color = c.inkLo,
+                modifier = Modifier.padding(top = MkSpacing.x3, bottom = MkSpacing.x1),
+            )
+            setpoints.forEachIndexed { i, (label, value) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = MkSpacing.x2),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(label, style = MkTheme.type.body, color = c.inkMid)
+                    Text(value, style = MkTheme.type.readout(14), color = c.inkHi)
+                }
+                if (i < setpoints.lastIndex) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.borderSubtle))
+                }
+            }
         }
         MkCard {
             Row(

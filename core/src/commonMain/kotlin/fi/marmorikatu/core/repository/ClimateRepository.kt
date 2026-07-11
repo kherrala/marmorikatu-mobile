@@ -222,8 +222,17 @@ class DefaultClimateRepository(
         // two instead of waiting out the refresh timer.
         scope.launch {
             mqtt.connectionState.collect { state ->
-                if (state is MqttConnectionState.Connected) {
-                    runCatching { requestHeatPumpRead() }
+                when (state) {
+                    is MqttConnectionState.Connected -> runCatching { requestHeatPumpRead() }
+                    // Drop cached Ruuvi readings on disconnect. Otherwise, after the
+                    // app is backgrounded (connections stop), the stale timestamps
+                    // linger and the "sensor offline" alert fires on foreground until
+                    // fresh readings arrive — a false alarm, worst for a weak-signal
+                    // tag (fridge/freezer) that is slow to refresh. An empty map has
+                    // no tags to flag; they repopulate fresh within seconds.
+                    is MqttConnectionState.Disconnected,
+                    is MqttConnectionState.Failed -> _ruuvi.value = emptyMap()
+                    else -> {}
                 }
             }
         }
