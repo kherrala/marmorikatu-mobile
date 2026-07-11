@@ -747,10 +747,10 @@ private fun AnturitSection(ruuvi: Map<String, RuuviReading>) {
             add(Anturi("Takka", MkIcons.FlameFill, "${Fmt.int(it)} °C", false))
         }
         ruuvi[RuuviSensors.OUTDOOR]?.temperature?.let {
-            add(Anturi("Ulkoilma", MkIcons.Leaf, "${Fmt.oneDecimal(it)} °C", false))
+            add(Anturi("Ulkoilma", MkIcons.Tree, "${Fmt.oneDecimal(it)} °C", false))
         }
         pressureHpa?.let {
-            add(Anturi("Ilmanpaine", MkIcons.Wind, "${Fmt.int(it)} hPa", false))
+            add(Anturi("Ilmanpaine", MkIcons.Gauge, "${Fmt.int(it)} hPa", false))
         }
     }
     if (rows.isEmpty()) return

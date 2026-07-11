@@ -62,6 +62,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
@@ -408,7 +410,9 @@ class KotiViewModel(
         viewModelScope.launch {
             val el = runCatching { infoRepo.calendar(CalendarParsing.CALENDAR_DAYS) }.getOrNull()
             if (el == null) { startupProgress.mark(StartupProgress.KEY_CALENDAR, false); return@launch }
-            _nextGarbage.value = CalendarParsing.parseCalendar(el).garbage.firstOrNull()
+            val parsed = CalendarParsing.parseCalendar(el)
+            _nextGarbage.value = parsed.garbage.firstOrNull()
+            snapshots.update { it.copy(calendarReminders = calendarReminders(parsed.days)) }
             startupProgress.mark(StartupProgress.KEY_CALENDAR, true)
         }
     }
@@ -455,6 +459,8 @@ class KotiViewModel(
         val history: Map<String, List<Float>> = emptyMap(),
         /** 24 h room temperature series, keyed by room display name, for the climate-card trend. */
         val roomHistory: Map<String, List<Float>> = emptyMap(),
+        /** Today's + tomorrow's family calendar events, as "info" strip reminders. */
+        val calendarReminders: List<AttentionItem> = emptyList(),
         /** Epoch seconds of this fetch; drives the per-refresh KPI flash. */
         val fetchedAt: Long = 0L,
     )
@@ -650,6 +656,8 @@ class KotiViewModel(
                         // line doesn't collapse (and shift the layout) each refresh
                         // while the fresh series is still loading below.
                         roomHistory = snapshots.value.roomHistory,
+                        // Preserve calendar reminders (loaded on a separate cadence).
+                        calendarReminders = snapshots.value.calendarReminders,
                         fetchedAt = nowEpochSeconds(),
                     )
                 }
@@ -751,6 +759,49 @@ class KotiViewModel(
         // Every live MVHR alarm from the ventilation unit, each with its own label.
         for (alarm in vent.alarms) add(ventAlarmItem(alarm))
         addAll(ruuviAlerts(ruuvi))
+        // Today's / tomorrow's family calendar events, as info-tier rows (the strip
+        // sorts these last, below any real alarms/warnings).
+        addAll(snap.calendarReminders)
+    }
+
+    /**
+     * Today's still-upcoming and tomorrow's family calendar events, rendered as
+     * "info" strip rows (e.g. "Kesäjuhlat Sannalla" → "tänään 20:00"). Only the
+     * two imminent days feed the strip — anything further out belongs on the
+     * Kalenteri tab, not the attention row; today's already-passed events are
+     * dropped, and the list is capped so a busy day can't flood the strip.
+     */
+    @OptIn(ExperimentalTime::class)
+    private fun calendarReminders(days: List<CalendarDay>): List<AttentionItem> {
+        val nowMinutes = Clock.System.now()
+            .toLocalDateTime(TimeZone.currentSystemDefault())
+            .let { it.hour * 60 + it.minute }
+        return days
+            .filter { it.dayLabel.equals("Tänään", ignoreCase = true) || it.dayLabel.equals("Huomenna", ignoreCase = true) }
+            .flatMap { day ->
+                val isToday = day.dayLabel.equals("Tänään", ignoreCase = true)
+                day.events
+                    .filter { ev -> !isToday || (timeToMinutes(ev.time)?.let { it >= nowMinutes } ?: true) }
+                    .map { ev ->
+                        AttentionItem(
+                            status = "info",
+                            icon = MkIcons.Clock,
+                            // Lead with the event title; the long location/address is
+                            // left to the Kalenteri detail view.
+                            text = ev.title,
+                            value = "${day.dayLabel.lowercase()} ${ev.time}".trim(),
+                        )
+                    }
+            }
+            .take(3)
+    }
+
+    /** "HH:MM" → minutes-since-midnight, or null if it isn't a clock time. */
+    private fun timeToMinutes(hhmm: String): Int? {
+        val parts = hhmm.split(":")
+        val h = parts.getOrNull(0)?.toIntOrNull() ?: return null
+        val m = parts.getOrNull(1)?.toIntOrNull() ?: return null
+        return h * 60 + m
     }
 
     /** One attention item per active ThermIQ [HeatPumpAlarm], Finnish label + code. */
