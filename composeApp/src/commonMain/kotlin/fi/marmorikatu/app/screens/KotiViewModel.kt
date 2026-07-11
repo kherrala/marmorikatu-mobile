@@ -1328,12 +1328,15 @@ class KotiViewModel(
          * temperature, so no detail currently pulls history and this stays unused.
          */
         @Suppress("unused")
+        // Aggregation window per range, tuned for a smooth detail chart (~150–300
+        // points). FluxClient reads InfluxDB directly (no 100-row cap), so a fine
+        // grain is cheap and the blocky low-res look is gone.
         fun fluxRange(range: TimeRangeOption): Pair<String, String> = when (range) {
-            TimeRangeOption.H6 -> "-6h" to "15m"
-            TimeRangeOption.H24 -> "-24h" to "30m"
-            TimeRangeOption.D7 -> "-7d" to "3h"
-            TimeRangeOption.D30 -> "-30d" to "12h"
-            TimeRangeOption.Y1 -> "-365d" to "7d"
+            TimeRangeOption.H6 -> "-6h" to "2m"     // 180 pts
+            TimeRangeOption.H24 -> "-24h" to "5m"   // 288 pts
+            TimeRangeOption.D7 -> "-7d" to "1h"     // 168 pts
+            TimeRangeOption.D30 -> "-30d" to "4h"   // 180 pts
+            TimeRangeOption.Y1 -> "-365d" to "1d"   // 365 pts
         }
     }
 }

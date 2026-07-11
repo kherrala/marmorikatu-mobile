@@ -86,11 +86,13 @@ class IlmastoViewModel(
         _focusSeries.value = emptyList()
         _focusLoading.value = true
         viewModelScope.launch {
-            // "hvac_lto" is a computed efficiency series, not a stored field.
+            // Fine-grained 24 h window (same as the H24 chart) so the focus line is
+            // smooth, not blocky. "hvac_lto" is a computed efficiency series.
+            val (flux, every) = TimeRangeOption.H24.fluxWindow()
             _focusSeries.value = if (measurement == "hvac_lto") {
-                climate.recoveryEfficiencyHistory("-24h", "30m")
+                climate.recoveryEfficiencyHistory(flux, every)
             } else {
-                climate.metricHistory(measurement, field, "-24h", "30m", tagKey, tagValue)
+                climate.metricHistory(measurement, field, flux, every, tagKey, tagValue)
             }
             _focusLoading.value = false
         }
@@ -162,10 +164,12 @@ class IlmastoViewModel(
 }
 
 /** Maps a UI time range onto a Flux `range` / `every` pair. */
+// Aggregation window per range, tuned for smooth charts (~150–300 points).
+// FluxClient reads InfluxDB directly (no 100-row cap), so a fine grain is cheap.
 private fun TimeRangeOption.fluxWindow(): Pair<String, String> = when (this) {
-    TimeRangeOption.H6 -> "-6h" to "5m"
-    TimeRangeOption.H24 -> "-24h" to "30m"
-    TimeRangeOption.D7 -> "-7d" to "3h"
-    TimeRangeOption.D30 -> "-30d" to "12h"
-    TimeRangeOption.Y1 -> "-1y" to "1w"
+    TimeRangeOption.H6 -> "-6h" to "2m"     // 180 pts
+    TimeRangeOption.H24 -> "-24h" to "5m"   // 288 pts
+    TimeRangeOption.D7 -> "-7d" to "1h"     // 168 pts
+    TimeRangeOption.D30 -> "-30d" to "4h"   // 180 pts
+    TimeRangeOption.Y1 -> "-1y" to "1d"     // 365 pts
 }
