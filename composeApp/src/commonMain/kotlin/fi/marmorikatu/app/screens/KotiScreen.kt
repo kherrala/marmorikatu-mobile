@@ -316,8 +316,6 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 )
             }
 
-            nextGarbage?.let { g -> GarbageNextCard(next = g) }
-
             SectionLabel("Valaistus")
             SceneRow(active = activePreset, onScene = viewModel::applyPreset)
 
@@ -333,6 +331,10 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     onTempClick = { viewModel.openRoomDetail(safeIndex) },
                 )
             }
+
+            // Next garbage pickup sits between the temperatures card and the news,
+            // matching the design's calendar/waste slot.
+            nextGarbage?.let { g -> GarbageNextCard(next = g) }
 
             // News sits directly under the climate card, above the KPI grid (design).
             news.firstOrNull()?.let { top ->
