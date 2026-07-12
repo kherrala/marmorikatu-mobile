@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fi.marmorikatu.core.model.Floor
+import fi.marmorikatu.core.model.Light
 import fi.marmorikatu.core.repository.LightsRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -84,11 +85,7 @@ class ValotViewModel(
             // A preset chip highlights when the live light set exactly matches it;
             // Elokuva's scope is basement-only (user rule) so it matches regardless
             // of the rest of the house.
-            val activePreset = KotiScene.entries.firstOrNull { scene ->
-                val scopeIds = sceneScopeLights(scene, list).map { it.id }.toSet()
-                val onInScope = list.filter { it.displayedOn && it.id in scopeIds }.map { it.id }.toSet()
-                sceneOnLightIds(scene, list) == onInScope
-            }
+            val activePreset = KotiScene.entries.firstOrNull { sceneMatches(it, list) }
             ValotUiState(
                 loading = !isLoaded && list.isEmpty(),
                 floors = floors,
@@ -168,15 +165,29 @@ class ValotViewModel(
      * Apply a scene preset: its lights come on and every other light in the
      * scene's scope goes off. Bedrooms are never touched, and Elokuva's scope is
      * the basement only (user rule), so it leaves the rest of the house alone.
+     * Pressing a preset that is already active toggles it off — every light in
+     * its scope goes dark.
      */
     fun applyPreset(scene: KotiScene) {
         viewModelScope.launch {
             val list = lights.lights.value
-            val onIds = sceneOnLightIds(scene, list)
+            // Toggle: an already-active preset clears its scope instead of re-applying.
+            val onIds = if (sceneMatches(scene, list)) emptySet() else sceneOnLightIds(scene, list)
             sceneScopeLights(scene, list).forEach { l ->
                 val target = l.id in onIds
                 if (l.displayedOn != target) runCatching { lights.setLight(l.id, target) }
             }
         }
+    }
+
+    /**
+     * Whether the live light state within [scene]'s scope exactly matches the
+     * scene — the same test that highlights its chip, reused so the toggle and
+     * the highlight can never disagree.
+     */
+    private fun sceneMatches(scene: KotiScene, list: List<Light>): Boolean {
+        val scopeIds = sceneScopeLights(scene, list).map { it.id }.toSet()
+        val onInScope = list.filter { it.displayedOn && it.id in scopeIds }.map { it.id }.toSet()
+        return sceneOnLightIds(scene, list) == onInScope
     }
 }
