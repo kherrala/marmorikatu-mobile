@@ -108,13 +108,13 @@ private val SCENES_SERIALIZER =
  */
 enum class KotiScene(val label: String, val icon: ImageVector) {
     /** Morning: kitchen + living-room ceiling, staircase, foyer. LED strips stay off. */
-    Aamuvalot("Aamuvalot", MkIcons.Sun),
+    Aamuvalot("Aamuvalot", MkIcons.SunHorizon),
     /** Evening: living-room ceiling, kitchen, front yard, foyer. LED strips stay off. */
-    Iltavalot("Iltavalot", MkIcons.Moon),
+    Iltavalot("Iltavalot", MkIcons.MoonStars),
     /** Movie: only the basement billiard light; everything else in the common areas goes dark. */
-    Elokuva("Elokuva", MkIcons.Television),
+    Elokuva("Elokuva", MkIcons.FilmSlate),
     /** Everything in the common areas off (bedrooms untouched). */
-    KaikkiPois("Kaikki pois", MkIcons.EyeSlash),
+    KaikkiPois("Kaikki pois", MkIcons.Power),
 }
 
 /**

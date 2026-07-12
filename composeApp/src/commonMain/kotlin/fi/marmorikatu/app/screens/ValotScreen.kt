@@ -1,48 +1,65 @@
 package fi.marmorikatu.app.screens
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import fi.marmorikatu.app.components.MkAreaLightCard
 import fi.marmorikatu.app.components.MkBanner
-import fi.marmorikatu.app.components.MkButton
-import fi.marmorikatu.app.components.MkButtonSize
-import fi.marmorikatu.app.components.MkButtonVariant
-import fi.marmorikatu.app.components.MkLight
-import fi.marmorikatu.app.components.MkLightMode
-import fi.marmorikatu.app.components.MkLightRow
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.icons.MkIcons
+import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.core.model.Floor
-import fi.marmorikatu.core.model.Light
+import kotlinx.coroutines.launch
 import org.koin.compose.viewmodel.koinViewModel
 
 /**
- * Valot: control every light in the house. Lights are grouped by floor and, within
- * a floor, by area (the first word of their name). Areas with several lights get a
- * scene ladder; lone fixtures get a plain toggle row.
+ * Valot: the whole house's lighting, matching the Claude design — one-tap scene
+ * presets on top, a sticky floor-tab bar that scroll-anchors to each floor, and
+ * every floor stacked as a section of collapsible area cards. Tapping a card
+ * expands it to per-fixture toggles.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ValotScreen(
     modifier: Modifier = Modifier,
@@ -51,17 +68,39 @@ fun ValotScreen(
     val state by viewModel.uiState.collectAsState()
     val failure by viewModel.failure.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
-    val updatedAt by viewModel.updatedAt.collectAsState()
     val colors = MkTheme.colors
 
     LaunchedEffect(Unit) { viewModel.refresh() }
 
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var expanded by remember { mutableStateOf(setOf<String>()) }
+
+    // Item index of each floor header, so the tab bar can scroll to it. Layout is
+    // presets(0), tab bar(1), then per floor: header + one item per area.
+    val floors = state.floors
+    val headerIndex = remember(floors) {
+        val map = LinkedHashMap<Floor, Int>()
+        var idx = 2
+        floors.forEach { f -> map[f.floor] = idx; idx += 1 + f.areas.size }
+        map
+    }
+    val stickyOffsetPx = with(LocalDensity.current) { -64.dp.roundToPx() }
+    val activeFloor by remember(floors) {
+        derivedStateOf {
+            // +1 so a floor counts as "current" once its header reaches the sticky
+            // bar, even while the previous floor's last card still peeks below it.
+            val i = (listState.firstVisibleItemIndex + 1).coerceAtLeast(2)
+            floors.lastOrNull { (headerIndex[it.floor] ?: Int.MAX_VALUE) <= i }?.floor
+                ?: floors.firstOrNull()?.floor
+        }
+    }
+
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
         LazyColumn(
-            modifier = modifier
-                .fillMaxSize()
-                .background(colors.appBg),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            state = listState,
+            modifier = modifier.fillMaxSize().background(colors.appBg),
+            contentPadding = PaddingValues(
                 start = MkSpacing.pagePad,
                 end = MkSpacing.pagePad,
                 top = MkSpacing.x4,
@@ -69,21 +108,20 @@ fun ValotScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(11.dp),
         ) {
+            item(key = "presets") {
+                PresetRow(active = state.activePreset, onApply = viewModel::applyPreset)
+            }
 
-            // Whole-house off — the redesign's single global control, pinned top.
-            item(key = "allOff") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    MkButton(
-                        text = "Kaikki pois",
-                        onClick = viewModel::allOff,
-                        variant = MkButtonVariant.Secondary,
-                        size = MkButtonSize.Sm,
-                        icon = MkIcons.Power,
-                    )
-                }
+            stickyHeader(key = "tabs") {
+                FloorTabs(
+                    floors = floors,
+                    active = activeFloor,
+                    onSelect = { floor ->
+                        headerIndex[floor]?.let { idx ->
+                            scope.launch { listState.animateScrollToItem(idx, stickyOffsetPx) }
+                        }
+                    },
+                )
             }
 
             if (failure) {
@@ -99,118 +137,237 @@ fun ValotScreen(
 
             if (state.loading) {
                 item(key = "loading") { CenteredNote("Haetaan valoja…") }
-            } else if (state.floors.isEmpty()) {
+            } else if (floors.isEmpty()) {
                 item(key = "empty") { CenteredNote("Ei tietoa valoista") }
             }
 
-            // Every floor stacked under its own heading (design: no pager).
-            state.floors.forEach { section ->
-                item(key = "floor:${section.floor.name}") { FloorHeading(section) }
-                items(section.areas, key = { "flr:${section.floor.name}:${it.key}" }) { area ->
-                    AreaCard(area, viewModel)
+            floors.forEach { floor ->
+                item(key = "fh:${floor.floor.name}") {
+                    FloorHeader(floor = floor, onFloorOff = { viewModel.floorOff(floor.floor) })
+                }
+                items(floor.areas, key = { "a:${it.key}" }) { area ->
+                    AreaGroupCard(
+                        area = area,
+                        expanded = area.key in expanded,
+                        onToggleExpand = {
+                            expanded = if (area.key in expanded) expanded - area.key else expanded + area.key
+                        },
+                        onToggleLight = { id, on -> viewModel.toggle(id, on) },
+                    )
                 }
             }
         }
     }
 }
 
-/** A floor separator heading (design's `mk-floor`): icon + floor name + on-count. */
+/** The four scene presets (Aamuvalot / Iltavalot / Elokuva / Kaikki pois). */
 @Composable
-private fun FloorHeading(section: FloorSection) {
+private fun PresetRow(active: KotiScene?, onApply: (KotiScene) -> Unit) {
     val c = MkTheme.colors
-    val onCount = section.areas.count { it.isOn() }
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        androidx.compose.material3.Icon(
-            floorIcon(section.floor), null,
-            tint = c.inkMid,
-            modifier = Modifier.size(17.dp),
-        )
-        Text(section.label, style = MkTheme.type.heading, color = c.inkHi, modifier = Modifier.weight(1f))
-        if (onCount > 0) {
-            Text("$onCount päällä", style = MkTheme.type.readout(11), color = c.accent)
+    val shape = RoundedCornerShape(MkRadius.md)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        KotiScene.entries.forEach { s ->
+            val on = s == active
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(84.dp)
+                    .clip(shape)
+                    .background(if (on) c.accent else c.surfaceCard)
+                    .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
+                    .clickable { onApply(s) }
+                    .padding(vertical = 12.dp, horizontal = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(s.icon, null, tint = if (on) c.inkOnAccent else c.inkMid, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.height(7.dp))
+                Text(
+                    text = s.label,
+                    style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (on) c.inkOnAccent else c.inkMid,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }
 
-/** Render one area as its matching card/row. */
+/** Sticky floor tabs that scroll-anchor to each floor section. */
 @Composable
-private fun AreaCard(area: AreaUi, viewModel: ValotViewModel) {
-    when (area) {
-        is AreaUi.SceneArea -> SceneAreaCard(area, viewModel)
-        is AreaUi.ToggleGroup -> ToggleGroupCard(area, viewModel)
-        is AreaUi.SingleLight -> SingleLightRow(area.light, viewModel)
+private fun FloorTabs(
+    floors: List<ValotFloor>,
+    active: Floor?,
+    onSelect: (Floor) -> Unit,
+) {
+    val c = MkTheme.colors
+    // A solid strip so content doesn't show through the sticky bar as it scrolls.
+    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(vertical = 2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            floors.forEach { floor ->
+                val on = floor.floor == active
+                val shape = RoundedCornerShape(MkRadius.round)
+                Row(
+                    modifier = Modifier
+                        .clip(shape)
+                        .background(if (on) c.accentDim else c.surfaceCard)
+                        .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
+                        .clickable { onSelect(floor.floor) }
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = floor.name,
+                        style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (on) c.accent else c.inkMid,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
     }
 }
 
-private fun floorIcon(floor: Floor): ImageVector = when (floor) {
-    Floor.ALAKERTA -> MkIcons.HouseFill
-    Floor.YLAKERTA -> MkIcons.House
-    Floor.KELLARI -> MkIcons.Stairs
-    Floor.ULKO -> MkIcons.Door
+/** A floor section heading: icon + name + on-count, with a "Sammuta" action. */
+@Composable
+private fun FloorHeader(floor: ValotFloor, onFloorOff: () -> Unit) {
+    val c = MkTheme.colors
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(floor.icon, null, tint = c.inkMid, modifier = Modifier.size(18.dp))
+        Text(floor.name, style = MkTheme.type.heading, color = c.inkHi)
+        Text(
+            text = "${floor.areasOn} päällä",
+            style = MkTheme.type.readout(11),
+            color = if (floor.areasOn > 0) c.accent else c.inkLo,
+            modifier = Modifier.weight(1f),
+        )
+        if (floor.areasOn > 0) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(MkRadius.sm))
+                    .clickable { onFloorOff() }
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Icon(MkIcons.Power, null, tint = c.inkLo, modifier = Modifier.size(15.dp))
+                Text("Sammuta", style = MkTheme.type.readout(12), color = c.inkLo)
+            }
+        }
+    }
 }
 
+/** A collapsible area card: header (icon + name + count + chevron), expands to per-fixture rows. */
 @Composable
-private fun SceneAreaCard(area: AreaUi.SceneArea, viewModel: ValotViewModel) {
-    val chips = area.lights.map { light ->
-        MkLight(
-            name = if (light.pendingOn != null) "${light.name}…" else light.name,
-            on = light.displayedOn,
+private fun AreaGroupCard(
+    area: ValotArea,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onToggleLight: (Int, Boolean) -> Unit,
+) {
+    val c = MkTheme.colors
+    val shape = RoundedCornerShape(MkRadius.lg)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(c.surfaceCard)
+            .border(1.dp, c.borderSubtle, shape)
+            .animateContentSize()
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable { onToggleExpand() },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(MkRadius.sm))
+                    .background(if (area.isOn) c.accent else c.surfaceInset),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    area.icon, null,
+                    tint = if (area.isOn) c.inkOnAccent else c.inkLo,
+                    modifier = Modifier.size(19.dp),
+                )
+            }
+            Text(
+                text = area.name,
+                style = MkTheme.type.heading,
+                color = c.inkHi,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = if (area.isOn) "${area.onCount}/${area.total} valoa" else "Pois",
+                style = MkTheme.type.readout(13),
+                color = if (area.isOn) c.accent else c.inkLo,
+            )
+            Icon(
+                if (expanded) MkIcons.CaretUp else MkIcons.CaretDown,
+                null,
+                tint = c.inkLo,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+
+        if (expanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                area.lights.forEach { light -> LightToggleRow(light, onToggleLight) }
+            }
+        }
+    }
+}
+
+/** One fixture row: state dot + label + a lightbulb toggle, tinted when on. */
+@Composable
+private fun LightToggleRow(light: ValotLight, onToggle: (Int, Boolean) -> Unit) {
+    val c = MkTheme.colors
+    val shape = RoundedCornerShape(MkRadius.sm)
+    val name = if (light.pending) "${light.label}…" else light.label
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(if (light.on) c.accentDim else c.surfaceInset)
+            .border(1.dp, if (light.on) c.accent else c.borderSubtle, shape)
+            .clickable { onToggle(light.id, !light.on) }
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(if (light.on) c.accent else c.inkLo),
+        )
+        Text(
+            text = name,
+            style = MkTheme.type.body,
+            color = if (light.on) c.inkHi else c.inkLo,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            if (light.on) MkIcons.LightbulbFill else MkIcons.Lightbulb,
+            null,
+            tint = if (light.on) c.accent else c.inkLo,
+            modifier = Modifier.size(18.dp),
         )
     }
-    val orderedIds = area.lights.map { it.id }
-    MkAreaLightCard(
-        name = area.name,
-        modifier = Modifier.fillMaxWidth(),
-        icon = areaIcon(area.name),
-        mode = MkLightMode.Scene,
-        level = area.level,
-        onLevelChange = { level -> viewModel.setAreaLevel(orderedIds, level) },
-        lights = chips,
-        showLights = true,
-        // A scene ladder cannot say "just this one light"; tapping a chip can.
-        onLightToggle = { index, on ->
-            area.lights.getOrNull(index)?.let { viewModel.toggle(it.id, on) }
-        },
-    )
-}
-
-@Composable
-private fun ToggleGroupCard(area: AreaUi.ToggleGroup, viewModel: ValotViewModel) {
-    val chips = area.lights.map { light ->
-        MkLight(
-            name = if (light.pendingOn != null) "${light.name}…" else light.name,
-            on = light.displayedOn,
-        )
-    }
-    MkAreaLightCard(
-        name = area.name,
-        modifier = Modifier.fillMaxWidth(),
-        icon = areaIcon(area.name),
-        mode = MkLightMode.Switch,
-        lights = chips,
-        showLights = true,
-        on = area.lights.firstOrNull()?.displayedOn ?: false,
-        onToggle = { on -> area.lights.firstOrNull()?.let { viewModel.toggle(it.id, on) } },
-        onLightToggle = { index, on ->
-            area.lights.getOrNull(index)?.let { viewModel.toggle(it.id, on) }
-        },
-    )
-}
-
-@Composable
-private fun SingleLightRow(light: Light, viewModel: ValotViewModel) {
-    MkLightRow(
-        name = light.name,
-        modifier = Modifier.fillMaxWidth(),
-        meta = if (light.pendingOn != null) "odottaa…" else null,
-        icon = areaIcon(light.name.trim().substringBefore(' ')),
-        on = light.displayedOn,
-        onToggle = { on -> viewModel.toggle(light.id, on) },
-    )
 }
 
 @Composable
@@ -219,26 +376,6 @@ private fun CenteredNote(text: String) {
         modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            style = MkTheme.type.body.copy(fontWeight = FontWeight.Medium, fontSize = 14.sp),
-            color = MkTheme.colors.inkLo,
-        )
-    }
-}
-
-/** Map an area name to its glyph; falls back to a lightbulb. */
-private fun areaIcon(name: String): ImageVector {
-    val n = name.lowercase()
-    return when {
-        n.contains("keittiö") -> MkIcons.CookingPot
-        n.contains("olohuone") -> MkIcons.Armchair
-        n.contains("makuu") || n == "mh" || n.startsWith("mh ") -> MkIcons.Bed
-        n.contains("kellari") -> MkIcons.Stairs
-        n.contains("sauna") -> MkIcons.Flame
-        n.contains("ulko") || n.contains("terassi") ||
-            n.contains("autokatos") || n.contains("piha") -> MkIcons.Door
-        n.contains("wc") || n.contains("kylpy") -> MkIcons.Drop
-        else -> MkIcons.Lightbulb
+        Text(text = text, style = MkTheme.type.body.copy(fontWeight = FontWeight.Medium), color = MkTheme.colors.inkLo)
     }
 }
