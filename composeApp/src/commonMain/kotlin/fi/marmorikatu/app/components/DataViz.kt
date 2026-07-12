@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -185,6 +186,9 @@ fun MkLineChart(
                 modifier = Modifier
                     .weight(1f)
                     .height(height)
+                    // Keep the plot inside its box: an out-of-range value must never
+                    // draw up over the legend or down past the axis.
+                    .clipToBounds()
                     .then(
                         if (scrubbable && series.any { it.values.size > 1 }) {
                             Modifier.pointerInput(series) {

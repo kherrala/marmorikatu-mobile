@@ -151,8 +151,9 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                         MkLineChart(
                             series = series,
                             labels = TEMP_LABELS,
-                            min = 8f,
-                            max = 24f,
+                            // Auto-scale to the data (rooms/outdoor routinely pass
+                            // 24 °C in summer); a fixed ceiling pushed the line off
+                            // the top and over the legend.
                             height = (maxHeight - CHART_LEGEND_ALLOWANCE).coerceAtLeast(96.dp),
                             showLegend = true,
                             showYAxis = true,
