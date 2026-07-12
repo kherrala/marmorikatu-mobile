@@ -1,204 +1,311 @@
 # Marmorikatu Mobile
 
-Kotlin Multiplatform app (Android + iOS, Compose Multiplatform) for the
-[Marmorikatu home automation system](../marmorikatu-home-automation). Family
-phones get vital diagnostics plus control of lights, HVAC status, and the TV;
-the same app will later run on the shelf tablet as the kiosk replacement.
+A Kotlin Multiplatform (Android + iOS) home-automation client for the
+"Marmorikatu" house, with a shared Compose Multiplatform UI in Finnish.
 
-The UI implements the design system from the Claude Design session (see below).
-A developer diagnostics screen still lives behind a long-press on the
-"Marmorikatu" kicker, and under Asetukset → Diagnostiikka.
+## What it is
+
+Marmorikatu Mobile is the family-facing app for a self-hosted home-automation
+stack. It shows live house state (lights, temperatures, air quality, heat pump,
+energy, electricity price) and lets the family control lights and the TV, talk
+to a voice assistant, and read a live announcement feed.
+
+The same binary drives three surfaces, chosen automatically from the window
+size (plus one explicit mode):
+
+- **Phone** — the default portrait layout with a bottom tab bar.
+- **Tablet / kiosk** — a wide landscape dashboard (`TabletKotiDashboard`) with a
+  left navigation rail, intended for an always-on shelf tablet.
+- **Kid mode** — a deliberately reduced surface (a greeting, the child's own
+  light, shared rooms, and a big voice button); a parent switches it on and it
+  survives a reboot.
+
+A hidden developer diagnostics screen is reachable by long-pressing the
+"Marmorikatu" kicker in the header, and from **Asetukset → Diagnostiikka**.
+
+## Screens
+
+The app has seven destinations. On the phone the tab bar shows six of them and
+reaches **Tapahtumat** through the header bell (with an unread badge); the
+tablet rail reaches **Koti** through the brand tile and **Tapahtumat** through
+the bell.
+
+| Screen | Contents |
+|---|---|
+| **Koti** | Home dashboard: greeting, weather, an attention strip, waste-pickup schedule, light scene presets, room temperatures, KPI readouts, news, door camera, and the voice dock. |
+| **Valot** | Lighting grouped by floor: scene presets plus collapsible per-fixture group cards and single toggles. |
+| **Ilmasto** | Climate, in sub-tabs: room temperatures, air quality, Ruuvi sensors, heat pump (Maalämpö), and ventilation. |
+| **Energia** | Spot electricity price and energy meters. |
+| **Bussit** | Nysse bus departures. |
+| **Kalenteri** | Family calendar and waste pickup. |
+| **Tapahtumat** | Live announcement feed with camera stills. |
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/01-koti-home.png" width="210"><br><sub>Koti — weather, alerts, door camera</sub></td>
+    <td align="center"><img src="docs/screenshots/03-valot-lights.png" width="210"><br><sub>Valot — scene presets + floors</sub></td>
+    <td align="center"><img src="docs/screenshots/04-valot-expanded.png" width="210"><br><sub>Valot — per-fixture group card</sub></td>
+    <td align="center"><img src="docs/screenshots/05-ilmasto-temperatures.png" width="210"><br><sub>Ilmasto — temperatures</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/06-ilmasto-air-quality.png" width="210"><br><sub>Ilmasto — air quality</sub></td>
+    <td align="center"><img src="docs/screenshots/07-ilmasto-ruuvi-sensors.png" width="210"><br><sub>Ilmasto — Ruuvi sensors</sub></td>
+    <td align="center"><img src="docs/screenshots/08-ilmasto-heatpump.png" width="210"><br><sub>Ilmasto — heat pump</sub></td>
+    <td align="center"><img src="docs/screenshots/09-ilmasto-ventilation-cooling.png" width="210"><br><sub>Ilmasto — ventilation &amp; cooling</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/10-energia-price.png" width="210"><br><sub>Energia — spot price</sub></td>
+    <td align="center"><img src="docs/screenshots/11-energia-consumption.png" width="210"><br><sub>Energia — consumption</sub></td>
+    <td align="center"><img src="docs/screenshots/12-bussit.png" width="210"><br><sub>Bussit — departures</sub></td>
+    <td align="center"><img src="docs/screenshots/14-tapahtumat-camera.png" width="210"><br><sub>Tapahtumat — feed &amp; camera</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/13-kalenteri.png" width="210"><br><sub>Kalenteri — waste &amp; family calendar</sub></td>
+    <td align="center"><img src="docs/screenshots/02-koti-presets-temps.png" width="210"><br><sub>Koti — presets &amp; room temps</sub></td>
+    <td align="center"><img src="docs/screenshots/15-voice-assistant.png" width="210"><br><sub>Voice — listening + quick commands</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+<sub>The family-calendar entries are blurred in the capture; everything else is live house data.</sub>
+
+All captures live in [`docs/screenshots/`](docs/screenshots/) and are regenerated
+with [`scripts/capture-demo.sh`](scripts/capture-demo.sh).
 
 ## Architecture
 
-Two Gradle modules plus the Xcode wrapper:
+Two Gradle modules plus an Xcode wrapper (`settings.gradle.kts` includes only
+the first two; `iosApp` is a plain Xcode project, not a Gradle module):
 
-- **`core`** — everything below the UI: config, transports, repositories,
-  voice plumbing. Pure Kotlin, no Compose.
-- **`composeApp`** — Compose Multiplatform UI: theme, icons, the component
-  library, six screens, and the three surfaces. Builds the iOS framework.
-- **`iosApp`** — Xcode project embedding the framework.
+- **`core`** (`fi.marmorikatu.core`) — everything below the UI: config,
+  transports, repositories, models, connection lifecycle, audio, and voice.
+  Pure Kotlin, no Compose.
+- **`composeApp`** (`fi.marmorikatu.app`) — the Compose Multiplatform UI: theme,
+  icons, component library, the seven screens, and the three surfaces. It also
+  builds the static `ComposeApp` framework consumed by iOS.
+- **`iosApp`** — the Xcode project that embeds the framework and launches the
+  Compose UI (bundle id `fi.marmorikatu.app`).
 
-### Transports (hybrid by design)
+Repositories in `fi.marmorikatu.core.repository` hide the transport mix behind
+plain interfaces and `Flow`s; the UI only ever sees repositories, never a
+socket or an HTTP call. Dependency injection is wired with Koin
+(`core/di/CoreModule.kt` plus the app-side modules).
 
-| Transport | Used for | Endpoint |
+### Transport map (hybrid by design)
+
+The app deliberately mixes a live MQTT feed with several request/response HTTP
+services:
+
+| Transport | Library | Used for |
 |---|---|---|
-| MQTT (MQTTastic, TCP) | Live state (retained topics, instant snapshot) + single light commands + live ThermIQ heat-pump registers | `freenas.kherrala.fi:1883` |
-| MCP (official Kotlin SDK, streamable HTTP) | Light catalog + batch commands, TV (Harmony), sauna/energy/prices/air reads, weather/news/calendar | `http://192.168.1.160:3001/mcp/` |
-| claude-bridge (Ktor + hand-rolled SSE/NDJSON) | AI chat streaming, Whisper STT, Piper TTS, announcements feed | `http://192.168.1.160:3002` |
-| Direct HTTP | Nysse bus departures | `http://192.168.1.160:3010` |
+| **MQTT** | MQTTastic (TCP) | Live, retained device state (instant snapshot on connect), single light commands (fast path), the ThermIQ heat-pump register dump, and the Ruuvi Gateway sensor feed. |
+| **MCP** | MCP Kotlin SDK (streamable HTTP) | Light catalog + batched light commands, Harmony TV control, and reads for heat pump, room temperatures, sauna, electricity prices, air quality, energy, weather, news, calendar, and a daily report. |
+| **claude-bridge** | Ktor client (SSE + NDJSON) | Assistant chat streaming, voice transcription (Whisper) and speech (Piper), and the announcements push feed with `Last-Event-ID` resume. |
+| **InfluxDB** | Ktor client (Flux over HTTP) | Deep time-series history for the charts (the MCP data tool caps at 100 rows). |
+| **Direct HTTP** | Ktor client | Nysse bus departures. |
 
-Repositories (`fi.marmorikatu.core.repository.*`) hide the transport mix;
-the UI layer only ever sees interfaces and `Flow`s. Light toggles are
-optimistic: `Reconciler` shows the desired state immediately and reverts if
-the retained topic doesn't confirm within 20 s (PLC republishes ~13 s).
+MQTT state topics under `marmorikatu/*` are retained, so subscribing yields a
+full snapshot immediately; the PLC republishes roughly every 13 s. The ThermIQ
+register dump and the Ruuvi feed live on their own topic roots and are not
+retained, so their first value can lag a publish cycle after connect.
 
-Indices present in `marmorikatu/lights` but unnamed in
-`marmorikatu/names/lights` (e.g. 21, 27) are gaps in the PLC's `Controls[]`
-array and are deliberately never rendered or controllable — the backend
-skips them too.
+### Optimistic light control
 
-**Light commands are paced.** The PLC silently drops commands that arrive faster
-than its scan cycle: a measured burst of eight publishes landed as seven, with no
-error anywhere. `DefaultLightsRepository` therefore queues commands and spaces
-them 150 ms apart (the backend's own batch helper uses 100 ms). `LightsPacingTest`
-locks this in.
+Light toggles are optimistic. `Reconciler` shows the desired state immediately
+and reverts it if the retained state topic doesn't confirm within 20 s.
+Commands are also **paced**: the PLC silently drops commands that arrive faster
+than its scan cycle, so `DefaultLightsRepository` queues single commands and
+spaces them 150 ms apart. Batch commands (all lights / by floor) go through MCP
+so the server can pace them per PLC cycle. When MQTT is disconnected, a single
+command falls back to the MCP path.
 
-**Room identity lives in `Rooms`.** The PLC's MQTT keys and the legacy InfluxDB
-field names disagree — `yk_aatu` is stored as `MH_Seela` — so labelling a chart
-from an Influx field name would show the wrong child's bedroom.
-
-### Networking model
-
-Plain HTTP everywhere. On the LAN it just works; away from home the UniFi
-gateway VPN puts the phone on the LAN — the app is deliberately unaware of
-the difference. The LAN is the security boundary (the backend services have
-no authentication by design). Android allows cleartext via
-`network_security_config.xml`; iOS via ATS local-networking exceptions.
-
-If `freenas.kherrala.fi` doesn't resolve over the VPN, override the MQTT host
-with the NAS LAN IP in the diagnostics screen.
-
-Announcements can keep arriving while the app is closed: **Asetukset → Kuuntele
-taustalla** starts an Android foreground service that posts a notification per
-event. Priority-0 alerts always vibrate, regardless of the haptics preference.
+Indices present in the raw light state but without a name are gaps in the PLC's
+control array; they are deliberately never rendered or made controllable.
 
 ### Voice
 
-Pluggable engines behind `SpeechToText` / `SpeechOutput`:
+<p align="center"><img src="docs/screenshots/voice-assistant.gif" width="260" alt="Voice assistant: tap the mic, quick commands appear, and it listens"></p>
 
-- **Server** (default-quality path): record m4a → `POST /transcribe`
-  (faster-whisper on the GPU box) → `POST /chat/stream` → per-sentence Piper
-  WAV clips played through `AudioPlayer`. Same Finnish "house voice" as the
-  kiosk.
-- **Native**: Android `SpeechRecognizer`/`TextToSpeech`; iOS `SFSpeechRecognizer`
-  streaming AVAudioEngine buffers, plus `AVSpeechSynthesizer`. Runtime capability
-  checks decide the fallback (Finnish STT is not guaranteed on every iOS device).
-  Native engines are the default; both are switchable in Asetukset. Listening
-  times out after 12 s, and recording is capped at 30 s.
+Tapping the mic opens the voice dock — a quick-command menu plus a live
+"listening" state — and speaks the assistant's reply back.
 
-### Heat pump: live but read-only on purpose
+Voice I/O is pluggable behind two interfaces (`SpeechToText` / `SpeechOutput`),
+with two interchangeable implementations each, A/B-switchable in settings:
 
-Heat-pump state is decoded live from the `ThermIQ/marmorikatu/data` register
-dump (`PlcPayloads.parseThermiq`): outdoor/indoor/target/supply/return/hot-water
-and brine temperatures, plus the compressor and hot-water-production bits from
-the `d16` bitfield. This drives the Maalämpö and Käyttövesi tiles and the single
-house-wide indoor target shown on every room. Power (kW) is merged in from the
-pump's own energy meter, which the `hvac` measurement carries separately. The
-feed isn't retained, so it can lag a publish cycle after connect; a reading older
-than 30 min falls back to "Ei tietoa" rather than freezing a stale number.
+- **Native** (default): Android `SpeechRecognizer` / `TextToSpeech`, iOS
+  `SFSpeechRecognizer` / `AVSpeechSynthesizer`. Native STT reports whether it can
+  transcribe Finnish on the device; when it can't, the app falls back to the
+  server path.
+- **Server**: record audio → transcribe via faster-whisper on the bridge →
+  stream the assistant reply → speak it with Piper (the same Finnish "house
+  voice" as the kiosk). Recording is capped at 30 s.
 
-Writes are deliberately absent: the backend `indoor` service republishes
-`INDR_T` to the Thermia every 60 s, and persistent register writes wear the
-pump's flash. The app therefore ships **no HVAC write path** until a safe
-setpoint/bias knob exists server-side (see backend follow-ups below).
+### Connection lifecycle & background
 
-## Building
+A `ConnectionManager` ties MQTT, the bridge, the announcements stream, and the
+lights repository to app foreground/background transitions and to host-config
+changes, reconnecting as needed.
+
+On Android, opting into **Asetukset → Kuuntele taustalla** starts a foreground
+service (`AnnouncementService`) that keeps the announcements stream alive and
+posts a notification per event. iOS suspends sockets in the background and has
+no server push, so background announcement delivery is not available there —
+the settings sheet says so rather than offering a dead switch.
+
+## Tech stack
+
+| Area | Choice | Version |
+|---|---|---|
+| Language | Kotlin (Multiplatform) | 2.4.0 |
+| UI | Compose Multiplatform | 1.11.1 |
+| Android Gradle Plugin | AGP | 8.13.2 |
+| Android SDK | compileSdk / targetSdk / minSdk | 37 / 36 / 26 |
+| JVM target | JDK | 17 |
+| HTTP | Ktor client (OkHttp on Android, Darwin on iOS) | 3.5.1 |
+| DI | Koin | 4.2.2 |
+| Async | kotlinx-coroutines | 1.10.2 |
+| Serialization | kotlinx-serialization | 1.9.0 |
+| Date/time | kotlinx-datetime | 0.8.0 |
+| MCP | MCP Kotlin SDK (client) | 0.14.0 |
+| MQTT | MQTTastic (`org.meshtastic:mqtt-client`) | 0.4.0 |
+| Settings | multiplatform-settings | 1.3.0 |
+| Logging | Kermit | 2.0.6 |
+| Testing | kotlin-test, coroutines-test, Turbine, Ktor mock | Turbine 1.2.0 |
+
+Bundled fonts: Space Grotesk (display), Hanken Grotesk (UI/body), and IBM Plex
+Mono (numeric readouts). Icons are a Phosphor-derived vector set (`MkIcons`).
+Exact versions are pinned in [`gradle/libs.versions.toml`](gradle/libs.versions.toml).
+
+## Project layout
+
+```
+marmorikatu-mobile/
+├── core/                         # KMP library: transports, repositories, models
+│   └── src/
+│       ├── commonMain/kotlin/fi/marmorikatu/core/
+│       │   ├── config/           # AppConfig + ConfigStore (persisted overrides)
+│       │   ├── di/               # Koin CoreModule
+│       │   ├── model/            # Domain models (Light, Climate, Energy, …)
+│       │   ├── transport/        # mqtt, mcp, bridge, influx, widgets, http
+│       │   ├── repository/       # Repositories + Reconciler
+│       │   ├── lifecycle/        # ConnectionManager, reconnect, foreground
+│       │   ├── background/       # Background announcement mode
+│       │   ├── audio/            # Recorder / player (expect/actual)
+│       │   ├── haptics/          # Haptics (expect/actual)
+│       │   └── speech/           # SpeechToText / SpeechOutput engines
+│       ├── androidMain/ · iosMain/   # Platform actuals
+│       └── commonTest/           # Shared unit tests + captured fixtures
+├── composeApp/                   # Compose Multiplatform app + iOS framework
+│   └── src/commonMain/kotlin/fi/marmorikatu/app/
+│       ├── screens/              # Koti, Valot, Ilmasto, Energia, Bussit,
+│       │                         #   Kalenteri, Tapahtumat, TabletKotiDashboard
+│       ├── shell/                # App shell, surfaces, settings, view models
+│       ├── components/           # Reusable UI component library
+│       ├── theme/  · icons/      # Design tokens, type, effects, MkIcons
+│       └── di/  · format/  · debug/
+├── iosApp/                       # Xcode project (scheme: iosApp)
+├── docs/screenshots/             # Reference captures of each view
+└── gradle/libs.versions.toml     # Version catalog
+```
+
+## Build & run
+
+### Prerequisites
+
+- JDK 17
+- Android SDK (compileSdk 37; `local.properties` must point `sdk.dir` at it)
+- Xcode (for the iOS app)
+
+### Android
 
 ```bash
-# Android (requires Android SDK; JDK 17)
+# Build a debug APK
 ./gradlew :composeApp:assembleDebug
 
-# Unit tests (payload parsers vs live-captured fixtures, SSE/NDJSON, reconciler)
-./gradlew :core:testDebugUnitTest
+# Build and install on a running device/emulator
+./gradlew :composeApp:installDebug
+```
 
-# iOS framework compile check (requires Xcode for linking; klib compile works without)
-./gradlew :core:compileKotlinIosArm64
+### iOS
 
-# Full iOS app: open iosApp/iosApp.xcodeproj in Xcode and run.
-# From the CLI the arch must be pinned — Gradle declares only iosSimulatorArm64
-# (MQTTastic publishes no iosX64), so a generic simulator destination fails:
+Open `iosApp/iosApp.xcodeproj` in Xcode, select the **iosApp** scheme, and run.
+
+From the command line the architecture must be pinned to `arm64` — the project
+declares only `iosArm64` and `iosSimulatorArm64` (MQTTastic ships no `iosX64`),
+so a generic simulator destination fails:
+
+```bash
 xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp \
   -sdk iphonesimulator -configuration Debug ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build
 ```
 
-## Live verification checklist
-
-Pre-flight from a LAN machine:
+A framework-only compile check without Xcode:
 
 ```bash
-curl http://192.168.1.160:3002/health          # bridge + MCP + models
-curl http://192.168.1.160:3001/health          # MCP server
-curl -N http://192.168.1.160:3002/announcements/stream --max-time 25
-mosquitto_sub -h freenas.kherrala.fi -t 'marmorikatu/#' -v -C 12
+./gradlew :composeApp:compileKotlinIosSimulatorArm64
 ```
 
-App acceptance (emulator → simulator → physical → cellular+VPN):
+## Configuration
 
-1. Fresh launch → connection tiles green ≤ 5 s; room temps appear instantly
-   (retained snapshot).
-2. Toggle a light in-app → physical light switches, state confirms ≤ 15 s;
-   toggle externally (`mosquitto_pub -h freenas.kherrala.fi -t
-   'marmorikatu/light/51/set' -m 'true' -q 1`, idx 51 = Biljardipöytä) →
-   app reflects it.
-3. Kill Wi-Fi 30 s → tiles red → restore → auto-recovery without restart.
-4. Background 1 min → foreground → MQTT reconnects, announcements resume
-   via `Last-Event-ID`.
-5. Finnish voice round trip: "Sytytä biljardipöydän valo" → transcript →
-   tool call → audio reply → light on.
-6. TV tile lists Harmony activities (needs `HARMONY_HUB_HOST` server-side)
-   or shows a clean error.
-7. iPhone first run: Local Network + Microphone prompts appear with Finnish
-   rationale; a denial shows as red tiles, not silent hangs.
-8. Repeat 1–2 on cellular + UniFi VPN.
+Connection endpoints and UI preferences live in `AppConfig` and are persisted by
+`ConfigStore` (via multiplatform-settings). A host change from the settings UI
+takes effect on the next (re)connect, without an app restart. The overridable
+endpoints are:
 
-## Backend follow-ups (in ../marmorikatu-home-automation)
+- **`serverHost`** — the single host that serves the MCP, bridge, bus, and
+  InfluxDB services (each on its own port).
+- **`mqttHost`** / **`mqttPort`** — the MQTT broker, kept separate because it
+  runs on a different machine from the other services.
 
-1. Set `HARMONY_HUB_HOST` in `.env` + restart the `mcp` service (TV prereq).
-2. Add a safe HVAC setpoint/bias knob on the `indoor` service (REST or MCP
-   tool) — the app must never write `ThermIQ/marmorikatu/set` directly.
-3. Optional: `audio=false` flag on `/chat/stream` so native-TTS clients skip
-   unused base64 WAV payloads.
-4. Optional: publish weather/news/calendar ports if richer widget data than
-   the MCP tools provide is ever needed.
+Both are editable in the diagnostics screen — useful when the default broker
+name doesn't resolve over the VPN and you need to point it at a LAN address.
+Persisted UI preferences include theme, kid mode, native-vs-server STT/TTS,
+haptics, and background listening.
 
-## Design system
+## Security model — the LAN is the boundary
 
-The UI implements the Claude Design project *Mobile app design system integration*
-(`MarmorikatuApp.dc.html` + six screens). Tokens, type and motion come from that
-project's `_ds/` sources:
+**By design, none of the backend services authenticate.** All traffic is plain
+HTTP (and unencrypted MQTT) on the home LAN. Away from home, a UniFi gateway VPN
+puts the phone onto that same LAN, so the app needs no second set of URLs and is
+deliberately unaware of whether it is home or remote. The LAN — with the VPN as
+its only remote entry point — is the security boundary.
 
-- `theme/` — colour tokens (dark + daylight), the three families (Space Grotesk,
-  Hanken Grotesk, IBM Plex Mono, instanced from variable fonts and bundled), the
-  4px spacing grid, radii, and the signature glow/breathe/pulse motion.
-- `icons/MkIcons.kt` — 69 Phosphor glyphs generated from upstream SVG paths (no
-  Compose Phosphor library exists). Regenerate with `scratchpad/gen_icons.py`.
-- `components/` — the 33-component library (Card, StatTile, AreaLightCard,
-  ClimateCard, VoiceDock, NavRail, LineChart, PriceBars, …).
-- `screens/` + `shell/` — the six screens and the phone / kid / tablet surfaces.
+Because of this, the platforms are configured to permit cleartext to the local
+network:
 
-Every measured value is a mono, tabular readout; UPPERCASE is reserved for mono
-micro-labels. **The design's sample values are placeholders** — the app renders
-repository data or an honest "Ei tietoa".
+- **Android**: a blanket cleartext allowance in
+  `network_security_config.xml`, which also keeps the in-app host override
+  working.
+- **iOS**: App Transport Security local-networking and insecure-HTTP exceptions
+  in `Info.plist`, plus Finnish `NSLocalNetworkUsageDescription`,
+  `NSMicrophoneUsageDescription`, and `NSSpeechRecognitionUsageDescription`
+  rationales.
 
-## Known gaps
+This is intentional for a private, VPN-gated home network. No credentials or
+tokens should be added to this repository or documentation.
 
-- **iOS runs, but only on the simulator.** Launched on an iPhone 17 Pro
-  simulator (iOS 26.5) against the live house: MQTT, MCP, the announcements SSE
-  feed, fonts and icons all work. Not yet run on a physical iPhone, where the
-  Local Network prompt and the microphone are the things to watch.
-- **iOS native STT is unverified.** The `SFSpeechRecognizer` + `AVAudioEngine`
-  path compiles and links, but the simulator has no usable microphone, so it has
-  never transcribed anything. If Finnish is unsupported on the device it falls
-  back to server Whisper automatically.
-- **`AVAudioSession.recordPermission` is deprecated** on iOS 17+ in favour of
-  `AVAudioApplication`; still functional, worth migrating.
-- **iOS background mode is impossible** without server push. Android keeps the
-  announcements stream alive in a foreground service; iOS suspends sockets. The
-  settings sheet says so rather than offering a dead switch.
-- **Camera stills only arrive inside announcements.** There is no camera API, so
-  a card shows an image only when the announcer attached one. The bridge sends
-  the snapshot on the *live* SSE event and strips it from the history ring, so an
-  event the app didn't see live (opened after the fact) shows "Ei kuvaa" rather
-  than a picture. The door alert's "Katso" opens a full-screen [MkCameraViewer].
+## Testing
 
-## Test fixtures
+Shared unit tests live in `core/src/commonTest` and run on both platforms. They
+cover the PLC and Ruuvi payload parsers (against payloads captured verbatim from
+the live broker, in `fixtures/MqttFixtures.kt`), the SSE reader and bridge
+client, the InfluxDB Flux CSV parsing, the electricity-price model, the
+reconnect logic, and the lights repository — including its optimistic
+`Reconciler` and command pacing.
 
-`core/src/commonTest/.../fixtures/MqttFixtures.kt` contains retained payloads
-captured verbatim from the live broker (2026-07-09). If the PLC publisher
-schema changes, re-capture with any MQTT client subscribed to
-`marmorikatu/#` and update the constants.
+```bash
+# Android unit tests
+./gradlew :core:testDebugUnitTest
+
+# All targets (Android + iOS simulator)
+./gradlew :core:allTests
+```
+
+If the PLC publisher schema ever changes, re-capture the retained payloads with
+any MQTT client subscribed to `marmorikatu/#` and update the fixture constants.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+</content>
+</invoke>
