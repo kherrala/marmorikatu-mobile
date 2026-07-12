@@ -36,10 +36,12 @@ private const val TABLET_MIN_DP = 720f
 /**
  * The effective dp width the kiosk is scaled toward. A large tablet (e.g. the
  * iPad at ~1080 dp landscape) renders at full native point resolution, which
- * reads small from across a hallway; scaling the whole UI so it behaves like a
- * ~760 dp canvas enlarges the rail and every readout for at-a-distance viewing.
+ * reads small from across a hallway; scaling the whole UI so it behaves like
+ * this canvas enlarges the rail and every readout for at-a-distance viewing.
+ * On the 4:3 iPad this width also sets the height budget (≈0.75×), so it's a
+ * balance: smaller → bigger text but the dense Koti dashboard stops fitting.
  */
-private const val KIOSK_TARGET_DP = 760f
+private const val KIOSK_TARGET_DP = 880f
 
 /**
  * The boot splash always stays up at least this long, so a near-instant LAN

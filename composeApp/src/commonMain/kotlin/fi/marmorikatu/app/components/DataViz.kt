@@ -366,15 +366,18 @@ fun MkPriceBars(
 
     Column(modifier = modifier.fillMaxWidth()) {
         if (nowValue != null) {
-            Row(
+            // FlowRow so a narrow kiosk column drops the tag onto its own line
+            // instead of squeezing (and clipping) it beside the value.
+            FlowRow(
                 modifier = Modifier.padding(bottom = 9.dp),
-                verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(9.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
                     text = "$nowValue $nowUnit",
                     style = MkTheme.type.readout(24, FontWeight.SemiBold),
                     color = colors.inkHi,
+                    maxLines = 1,
                 )
                 if (nowTag != null) {
                     PriceTag(text = nowTag, status = nowStatus)
@@ -432,6 +435,9 @@ private fun PriceTag(text: String, status: String) {
         text = text,
         style = MkTheme.type.tag.copy(letterSpacing = 0.04.em),
         color = colors.status(status),
+        // A tag is a single pill; never let a narrow column wrap it letter-by-letter.
+        maxLines = 1,
+        softWrap = false,
         modifier = Modifier
             .clip(RoundedCornerShape(MkRadius.xs))
             .background(colors.statusDim(status))

@@ -445,7 +445,7 @@ fun MkTag(
 // ── StatTile ──────────────────────────────────────────────────────────────
 
 enum class MkStatStatus { None, Warn, Alarm }
-enum class MkStatSize { Md, Lg }
+enum class MkStatSize { Sm, Md, Lg }
 
 /** "Quiet until it matters": a labelled mono readout that only tints on warn / alarm. */
 @Composable
@@ -518,9 +518,13 @@ fun MkStatTile(
             .mkPressScale(source, pressed = 0.99f)
             .clickable(interactionSource = source, indication = null, onClick = onClick)
     }
-    box = box.padding(MkSpacing.x3)
+    box = box.padding(if (size == MkStatSize.Sm) MkSpacing.x2 else MkSpacing.x3)
 
-    val valueSize = if (size == MkStatSize.Lg) 30 else 24
+    val valueSize = when (size) {
+        MkStatSize.Lg -> 30
+        MkStatSize.Sm -> 19
+        MkStatSize.Md -> 24
+    }
 
     Column(modifier = box) {
         // __top: icon left, optional tag right (min-height 20dp)

@@ -4,10 +4,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -45,6 +47,7 @@ import fi.marmorikatu.app.components.MkLineChart
 import fi.marmorikatu.app.components.MkPriceBar
 import fi.marmorikatu.app.components.MkPriceBars
 import fi.marmorikatu.app.components.MkSeries
+import fi.marmorikatu.app.components.MkStatSize
 import fi.marmorikatu.app.components.MkStatStatus
 import fi.marmorikatu.app.components.MkStatTile
 import fi.marmorikatu.app.components.rememberBase64Painter
@@ -78,12 +81,14 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
     LaunchedEffect(Unit) { viewModel.refresh() }
 
     Box(modifier = Modifier.fillMaxSize()) {
+    // The kiosk is a fixed dashboard — it fills the landscape viewport without
+    // scrolling (design), so the three-column body claims the height left over
+    // after the KPI strip and every panel flexes to fit.
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(horizontal = MkSpacing.pagePadTablet, vertical = MkSpacing.x4),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // The design's climate stat tiles, each carrying its 24 h sparkline
         // where a history series exists. Laid out as the design's single
@@ -105,6 +110,9 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                                 status = kpi.statStatus,
                                 tag = kpi.tag,
                                 tagStatus = kpi.tagStatus,
+                                // Seven across a scaled kiosk canvas is tight; the
+                                // compact size keeps value + unit from clipping.
+                                size = MkStatSize.Sm,
                                 spark = kpi.seriesValues,
                                 pulseKey = kpi.freshAsOf,
                                 dimmed = kpi.stale,
@@ -122,12 +130,14 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
         // Lighting presets were removed from the kiosk home to save vertical
         // space (design); they remain reachable on the Valot screen.
 
-        // The three-column body: chart · price + rooms · camera + events.
+        // The three-column body: chart · price + rooms · camera + events. It
+        // takes weight(1f) so it fills the height left below the KPI strip, and
+        // each panel flexes within its column — nothing scrolls.
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().weight(1f),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            DashCard("Ulko- ja huonelämpötilat", modifier = Modifier.weight(1.5f)) {
+            DashCard("Ulko- ja huonelämpötilat", modifier = Modifier.weight(1.5f).fillMaxHeight()) {
                 if (tempSeries.isEmpty()) {
                     DashEmpty("Ei lämpötilahistoriaa")
                 } else {
@@ -135,20 +145,24 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                     val series = tempSeries.mapIndexed { i, s ->
                         MkSeries(name = s.name, values = s.values, color = palette[i % palette.size])
                     }
-                    MkLineChart(
-                        series = series,
-                        labels = TEMP_LABELS,
-                        min = 8f,
-                        max = 24f,
-                        height = 240.dp,
-                        showLegend = true,
-                        showYAxis = true,
-                    )
+                    // Fill the card: the chart canvas takes the space left after
+                    // its legend (which can wrap to two rows on a narrow column).
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                        MkLineChart(
+                            series = series,
+                            labels = TEMP_LABELS,
+                            min = 8f,
+                            max = 24f,
+                            height = (maxHeight - CHART_LEGEND_ALLOWANCE).coerceAtLeast(96.dp),
+                            showLegend = true,
+                            showYAxis = true,
+                        )
+                    }
                 }
             }
 
             Column(
-                modifier = Modifier.weight(1.1f),
+                modifier = Modifier.weight(1.1f).fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 DashCard("Sähkön hinta tänään") {
@@ -169,7 +183,7 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                                 )
                             },
                             labels = priceLabels,
-                            height = 108.dp,
+                            height = 96.dp,
                             nowValue = sahko?.value?.takeIf { it != "Ei tietoa" },
                             nowUnit = "c/kWh",
                             nowTag = sahko?.tag,
@@ -177,13 +191,13 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                         )
                     }
                 }
-                DashCard("Huoneet") {
+                DashCard("Huoneet", modifier = Modifier.weight(1f).fillMaxHeight()) {
                     if (state.rooms.isEmpty()) DashEmpty("Ei tietoa") else RoomsGrid(state.rooms)
                 }
             }
 
             Column(
-                modifier = Modifier.weight(0.95f),
+                modifier = Modifier.weight(0.95f).fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 val door = state.door
@@ -192,15 +206,18 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                     camera = "Etupiha",
                     title = "Etupiha",
                     subtitle = door?.subtitle ?: "Ei liikettä",
-                    shotHeight = 128.dp,
+                    shotHeight = 112.dp,
                     live = false,
                 )
-                DashCard("Tapahtumat") {
+                DashCard("Tapahtumat", modifier = Modifier.weight(1f).fillMaxHeight()) {
                     if (events.isEmpty()) {
                         DashEmpty("Ei tapahtumia")
                     } else {
+                        // Only as many events as the panel's height affords, so the
+                        // feed never spills past the card in the no-scroll layout.
                         MkEventFeed(
-                            events = events.map { EventEntry(it.priority, it.text, it.time) },
+                            events = events.take(KIOSK_EVENT_COUNT)
+                                .map { EventEntry(it.priority, it.text, it.time) },
                             live = true,
                         )
                     }
@@ -339,6 +356,12 @@ private fun RoomChip(room: MkClimateRoom, modifier: Modifier = Modifier) {
 
 /** Kiosk stat tiles per row: the design's single row of seven (repeat(7,1fr)). */
 private const val STATS_PER_ROW = 7
+
+/** Height reserved for the temperature chart's legend so the canvas fills the rest. */
+private val CHART_LEGEND_ALLOWANCE = 48.dp
+
+/** Events shown in the kiosk feed — bounded so it never spills past its panel. */
+private const val KIOSK_EVENT_COUNT = 4
 
 /** Rolling 24 h axis ticks for the temperature chart. */
 private val TEMP_LABELS = listOf("-24 h", "-18", "-12", "-6", "nyt")
