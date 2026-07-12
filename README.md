@@ -89,7 +89,9 @@ the first two; `iosApp` is a plain Xcode project, not a Gradle module):
 Repositories in `fi.marmorikatu.core.repository` hide the transport mix behind
 plain interfaces and `Flow`s; the UI only ever sees repositories, never a
 socket or an HTTP call. Dependency injection is wired with Koin
-(`core/di/CoreModule.kt` plus the app-side modules).
+(`core/di/CoreModule.kt` plus the app-side modules). The full data-flow model —
+repositories, the three auto-selected UI surfaces, optimistic light control, and
+the connection lifecycle — is in **[docs/architecture.md](docs/architecture.md)**.
 
 ### Transport map (hybrid by design)
 
@@ -104,23 +106,10 @@ services:
 | **InfluxDB** | Ktor client (Flux over HTTP) | Deep time-series history for the charts (the MCP data tool caps at 100 rows). |
 | **Direct HTTP** | Ktor client | Nysse bus departures. |
 
-MQTT state topics under `marmorikatu/*` are retained, so subscribing yields a
-full snapshot immediately; the PLC republishes roughly every 13 s. The ThermIQ
-register dump and the Ruuvi feed live on their own topic roots and are not
-retained, so their first value can lag a publish cycle after connect.
-
-### Optimistic light control
-
-Light toggles are optimistic. `Reconciler` shows the desired state immediately
-and reverts it if the retained state topic doesn't confirm within 20 s.
-Commands are also **paced**: the PLC silently drops commands that arrive faster
-than its scan cycle, so `DefaultLightsRepository` queues single commands and
-spaces them 150 ms apart. Batch commands (all lights / by floor) go through MCP
-so the server can pace them per PLC cycle. When MQTT is disconnected, a single
-command falls back to the MCP path.
-
-Indices present in the raw light state but without a name are gaps in the PLC's
-control array; they are deliberately never rendered or made controllable.
+The retained `marmorikatu/*` state topics (instant snapshot on connect, ~13 s
+republish), the single-light command path, the ThermIQ register dump, the Ruuvi
+feed, and the SSE/NDJSON stream formats are all documented in
+**[docs/protocols.md](docs/protocols.md)**.
 
 ### Voice
 
@@ -129,28 +118,23 @@ control array; they are deliberately never rendered or made controllable.
 Tapping the mic opens the voice dock — a quick-command menu plus a live
 "listening" state — and speaks the assistant's reply back.
 
-Voice I/O is pluggable behind two interfaces (`SpeechToText` / `SpeechOutput`),
-with two interchangeable implementations each, A/B-switchable in settings:
+Voice I/O is pluggable behind **native** on-device engines (Android
+`SpeechRecognizer` / `TextToSpeech`, iOS `SFSpeechRecognizer` /
+`AVSpeechSynthesizer`) and a **server** pipeline (Whisper transcription + Piper
+TTS, the same Finnish "house voice" as the kiosk). It defaults to native and
+falls back to the server for Finnish when the device can't transcribe it — see
+**[docs/cross-platform.md](docs/cross-platform.md)**, which also covers
+background announcement delivery (an Android foreground service; not available on
+iOS).
 
-- **Native** (default): Android `SpeechRecognizer` / `TextToSpeech`, iOS
-  `SFSpeechRecognizer` / `AVSpeechSynthesizer`. Native STT reports whether it can
-  transcribe Finnish on the device; when it can't, the app falls back to the
-  server path.
-- **Server**: record audio → transcribe via faster-whisper on the bridge →
-  stream the assistant reply → speak it with Piper (the same Finnish "house
-  voice" as the kiosk). Recording is capped at 30 s.
+## Documentation
 
-### Connection lifecycle & background
+Deeper references live in [`docs/`](docs/):
 
-A `ConnectionManager` ties MQTT, the bridge, the announcements stream, and the
-lights repository to app foreground/background transitions and to host-config
-changes, reconnecting as needed.
-
-On Android, opting into **Asetukset → Kuuntele taustalla** starts a foreground
-service (`AnnouncementService`) that keeps the announcements stream alive and
-posts a notification per event. iOS suspends sockets in the background and has
-no server push, so background announcement delivery is not available there —
-the settings sheet says so rather than offering a dead switch.
+- **[Architecture](docs/architecture.md)** — the module split, repositories-over-transport, the three UI surfaces, optimistic light control, and the connection lifecycle.
+- **[Protocols](docs/protocols.md)** — MQTT / MCP / claude-bridge / InfluxDB / HTTP: topics, payload shapes, and stream formats.
+- **[Alarms](docs/alarms.md)** — every heat-pump, ventilation, Ruuvi-sensor and sauna alert, its source, and the exact threshold.
+- **[Cross-platform](docs/cross-platform.md)** — the `expect`/`actual` seams, the native-vs-server voice engines, and Android-vs-iOS build/runtime config.
 
 ## Tech stack
 
@@ -204,7 +188,9 @@ marmorikatu-mobile/
 │       ├── theme/  · icons/      # Design tokens, type, effects, MkIcons
 │       └── di/  · format/  · debug/
 ├── iosApp/                       # Xcode project (scheme: iosApp)
-├── docs/screenshots/             # Reference captures of each view
+├── docs/                         # architecture / protocols / alarms / cross-platform guides
+│   └── screenshots/              # reference captures of each view + voice GIF
+├── scripts/capture-demo.sh       # regenerates docs/screenshots (+ voice GIF)
 └── gradle/libs.versions.toml     # Version catalog
 ```
 
