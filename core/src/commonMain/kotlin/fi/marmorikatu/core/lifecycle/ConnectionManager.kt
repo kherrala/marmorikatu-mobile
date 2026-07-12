@@ -102,7 +102,14 @@ class ConnectionManager(
         log.i { "background: dropping connections" }
         jobs.forEach { it.cancel() }
         jobs.clear()
-        announcements.stop()
+        // Keep the announcements SSE open when the background service owns it: the
+        // service shares this singleton repo, so stopping the stream here would
+        // leave it with a dead feed — the reason background notifications never
+        // arrived. MQTT and the health poll still drop to spare the radio; the
+        // stream's own away-backoff keeps it cheap when home is unreachable.
+        if (!configStore.config.value.backgroundEnabled) {
+            announcements.stop()
+        }
         // Teardown must finish even if the app comes back and cancels us.
         withContext(NonCancellable) { mqtt.disconnect() }
         _bridgeHealthy.value = null
