@@ -141,6 +141,17 @@ class DefaultLightsRepository(
     }
 
     private suspend fun deliver(id: Int, on: Boolean) {
+        // Drop a command a newer press already superseded: the reconciler's pending
+        // value is this light's latest desired state, so if it no longer matches,
+        // a quick on→off (or off→on) has queued the opposite. Sending the stale
+        // flip would make the PLC reconcile two conflicting commands in one scan —
+        // it can drop one, leaving the light in the wrong state and the (opposite)
+        // pending unconfirmed until it times out with a "not updated" warning.
+        val superseded = stateLock.withLock {
+            val latest = reconciler.pendingValue(id)
+            latest != null && latest != on
+        }
+        if (superseded) return
         try {
             if (mqtt.connectionState.value is MqttConnectionState.Connected) {
                 mqtt.publish(MqttTopics.lightSet(id), MqttTopics.lightSetPayload(on), qos = 1)
