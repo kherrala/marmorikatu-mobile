@@ -22,6 +22,7 @@ import fi.marmorikatu.core.model.HeatPumpAlarm
 import fi.marmorikatu.core.model.HeatPumpStatus
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.HvacSummary
+import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.Light
 import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Rooms
@@ -145,11 +146,26 @@ internal fun sceneOnLightIds(scene: KotiScene, lights: List<Light>): Set<Int> {
     return when (scene) {
         KotiScene.Aamuvalot -> common.filter { !it.isLed() && (it.kitchenCeiling() || it.livingCeiling() || it.stairs() || it.foyer()) }
         KotiScene.Iltavalot -> common.filter { !it.isLed() && (it.livingCeiling() || it.kitchenCeiling() || it.has("Sisäänkäynti") || it.foyer()) }
-        // Design's Elokuva = Teatteri (biljard) + Portaikko; its "Etupiha dim"
-        // has no real front-yard light (and scenes are on/off), so it's omitted.
-        KotiScene.Elokuva -> common.filter { it.has("biljard") || it.stairs() }
+        // Elokuva is basement-only (see [sceneScopeLights]): the theater/biljard
+        // light comes on, every other basement light goes off, and nothing
+        // elsewhere in the house is touched.
+        KotiScene.Elokuva -> common.filter { it.floor == Floor.KELLARI && it.has("biljard") }
         KotiScene.KaikkiPois -> emptyList()
     }.map { it.id }.toSet()
+}
+
+/**
+ * The lights a [scene] is allowed to switch. Most scenes own the whole common
+ * (non-bedroom) set — applying one turns its members on and every other common
+ * light off. Elokuva is the exception: it governs only the basement, so starting
+ * a movie never disturbs lights elsewhere in the house.
+ */
+internal fun sceneScopeLights(scene: KotiScene, lights: List<Light>): List<Light> {
+    val common = lights.filterNot { isBedroomLight(it.name) }
+    return when (scene) {
+        KotiScene.Elokuva -> common.filter { it.floor == Floor.KELLARI }
+        else -> common
+    }
 }
 
 /**
@@ -285,21 +301,23 @@ class KotiViewModel(
      */
     val activePreset: StateFlow<KotiScene?> =
         lightsRepo.lights.map { list ->
-            val onCommon = list
-                .filterNot { isBedroomLight(it.name) }
-                .filter { it.displayedOn }.map { it.id }.toSet()
-            KotiScene.entries.firstOrNull { sceneOnLightIds(it, list) == onCommon }
+            KotiScene.entries.firstOrNull { scene ->
+                val scopeIds = sceneScopeLights(scene, list).map { it.id }.toSet()
+                val onInScope = list.filter { it.displayedOn && it.id in scopeIds }.map { it.id }.toSet()
+                sceneOnLightIds(scene, list) == onInScope
+            }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
-     * Apply a lighting preset: its named areas come on (per the house rules),
-     * every other common light goes off. Bedrooms are never touched.
+     * Apply a lighting preset: its named lights come on and every other light in
+     * the scene's scope goes off. Bedrooms are never touched, and Elokuva's scope
+     * is the basement only, so it leaves the rest of the house alone.
      */
     fun applyPreset(scene: KotiScene) {
         viewModelScope.launch {
             val list = lightsRepo.lights.value
             val onIds = sceneOnLightIds(scene, list)
-            list.filterNot { isBedroomLight(it.name) }
+            sceneScopeLights(scene, list)
                 .forEach { l ->
                     val target = l.id in onIds
                     if (l.displayedOn != target) runCatching { lightsRepo.setLight(l.id, target) }

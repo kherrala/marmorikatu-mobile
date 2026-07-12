@@ -94,12 +94,15 @@ class ValotViewModel(
         combine(lights.lights, loaded) { list, isLoaded ->
             val floors = buildFloorSections(list)
             val active = floors.flatMap { it.areas }.filter { it.isOn() }
-            // A preset is "active" when the live common-on set exactly equals its
+            // A preset is "active" when the lights in its scope exactly match its
             // target — so its chip highlights, and Kaikki pois when all are off.
-            val onCommon = list
-                .filterNot { isBedroomLight(it.name) }
-                .filter { it.displayedOn }.map { it.id }.toSet()
-            val activePreset = KotiScene.entries.firstOrNull { sceneOnLightIds(it, list) == onCommon }
+            // Elokuva's scope is basement-only, so it can highlight regardless of
+            // what the rest of the house is doing.
+            val activePreset = KotiScene.entries.firstOrNull { scene ->
+                val scopeIds = sceneScopeLights(scene, list).map { it.id }.toSet()
+                val onInScope = list.filter { it.displayedOn && it.id in scopeIds }.map { it.id }.toSet()
+                sceneOnLightIds(scene, list) == onInScope
+            }
             // An additive area preset is "on" when every one of its lights is on.
             val onIds = list.filter { it.displayedOn }.map { it.id }.toSet()
             val activeAreaPresets = LightAreaPreset.entries.filter { preset ->
@@ -212,7 +215,7 @@ class ValotViewModel(
         viewModelScope.launch {
             val list = lights.lights.value
             val onIds = sceneOnLightIds(scene, list)
-            list.filterNot { isBedroomLight(it.name) }
+            sceneScopeLights(scene, list)
                 .forEach { l ->
                     val target = l.id in onIds
                     if (l.displayedOn != target) runCatching { lights.setLight(l.id, target) }
