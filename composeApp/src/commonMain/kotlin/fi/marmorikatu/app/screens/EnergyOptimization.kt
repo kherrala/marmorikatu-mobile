@@ -123,8 +123,9 @@ fun tierTone(t: HeatTier): OptiTone = when (t) {
  * `heating_optimizer`: cheap ≤ its cheap threshold, expensive ≥ its expensive
  * threshold, else normal; then the [PRE_HEAT_HOURS] hours immediately before
  * each expensive block are promoted to "pre-heat" (charge the thermal mass while
- * power is still cheap). The forecast covers the remaining hours of today (up to
- * 12) — tomorrow's curve isn't fetched, so late evening shows a shorter strip.
+ * power is still cheap). The strip covers the next 12 hours, continuing into
+ * tomorrow's curve once it's published so it never collapses to a lone bar late
+ * at night (it only shortens if tomorrow's prices aren't out yet).
  *
  * @param optimizer the latest `indoor_publisher` readings: `total_bias`,
  *        `cheap_threshold`, `expensive_threshold`.
@@ -136,22 +137,29 @@ fun buildHeatingOpti(prices: ElectricityPrices, optimizer: Map<String, Double>):
     val exp = (optimizer["expensive_threshold"] ?: prices.expensiveThreshold ?: return null)
         .let { if (it <= cheap) cheap + 1.0 else it }
 
-    // Mean price per local hour of today.
-    val byHour = prices.today
-        .mapNotNull { sp -> localHour(sp.time)?.let { it to sp.centsPerKwh } }
+    // Combine today + tomorrow into one hourly timeline keyed by each hour's start
+    // instant, then take the next 12 hours from now. Keying on the instant (not the
+    // hour-of-day) makes the strip cross midnight correctly however the backend
+    // splits the two days, and it only shortens when tomorrow's prices aren't out
+    // yet (published ~14:00) rather than collapsing to a lone bar late at night.
+    fun hourStart(i: Instant): Instant = Instant.fromEpochSeconds((i.epochSeconds / 3600) * 3600)
+    val byHour = (prices.today + prices.tomorrow)
+        .mapNotNull { sp -> runCatching { Instant.parse(sp.time) }.getOrNull()?.let { hourStart(it) to sp.centsPerKwh } }
         .groupBy({ it.first }, { it.second })
         .mapValues { (_, v) -> v.average() }
-
-    val nowHour = Clock.System.now().toLocalDateTime(HELSINKI).hour
-    val hours = (nowHour..23).filter { byHour.containsKey(it) }.take(12)
-    if (hours.isEmpty()) return null
+    val nowHourStart = hourStart(Clock.System.now())
+    val forecast = byHour.entries.sortedBy { it.key }
+        .filter { it.key >= nowHourStart }
+        .take(12)
+        .map { it.key.toLocalDateTime(HELSINKI).hour to it.value }
+    if (forecast.isEmpty()) return null
 
     fun classify(cents: Double): HeatTier = when {
         cents <= cheap -> HeatTier.Cheap
         cents >= exp -> HeatTier.Expensive
         else -> HeatTier.Normal
     }
-    val tiers = hours.map { classify(byHour.getValue(it)) }.toMutableList()
+    val tiers = forecast.map { classify(it.second) }.toMutableList()
     for (i in tiers.indices) {
         if (tiers[i] == HeatTier.Expensive) {
             for (j in (i - PRE_HEAT_HOURS until i)) {
@@ -161,7 +169,7 @@ fun buildHeatingOpti(prices: ElectricityPrices, optimizer: Map<String, Double>):
             }
         }
     }
-    val bars = hours.mapIndexed { i, h -> TierBar(pad2(h), tiers[i], current = i == 0) }
+    val bars = forecast.mapIndexed { i, (h, _) -> TierBar(pad2(h), tiers[i], current = i == 0) }
     val nowTier = tiers.first()
 
     val rows = buildList {
@@ -173,13 +181,13 @@ fun buildHeatingOpti(prices: ElectricityPrices, optimizer: Map<String, Double>):
         if (firstPre >= 0) {
             var last = firstPre
             while (last + 1 < tiers.size && tiers[last + 1] == HeatTier.PreHeat) last++
-            add(OptiRow("Esilämmitys", "${pad2(hours[firstPre])}–${pad2((hours[last] + 1) % 24)} · lataa massaa", OptiTone.Accent))
+            add(OptiRow("Esilämmitys", "${pad2(forecast[firstPre].first)}–${pad2((forecast[last].first + 1) % 24)} · lataa massaa", OptiTone.Accent))
         }
         // Next cheap hour ahead.
         val nextCheapIdx = tiers.indexOfFirst { it == HeatTier.Cheap }
         if (nextCheapIdx >= 0) {
-            val h = hours[nextCheapIdx]
-            val price = byHour.getValue(h)
+            val h = forecast[nextCheapIdx].first
+            val price = forecast[nextCheapIdx].second
             val whenLabel = if (nextCheapIdx == 0) "nyt" else "${pad2(h)}:00"
             add(OptiRow("Seuraava halpa", "$whenLabel · ${Fmt.comma(price, 1)} c/kWh", OptiTone.Ok))
         }

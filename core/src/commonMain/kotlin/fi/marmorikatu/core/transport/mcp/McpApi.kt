@@ -148,14 +148,18 @@ class DefaultMcpApi(private val connection: McpConnection) : McpApi {
             minCentsPerKwh = today?.get("min_c_kwh")?.jsonPrimitive?.doubleOrNull,
             maxCentsPerKwh = today?.get("max_c_kwh")?.jsonPrimitive?.doubleOrNull,
             avgCentsPerKwh = today?.get("avg_c_kwh")?.jsonPrimitive?.doubleOrNull,
-            today = obj["today_prices"]?.jsonArray.orEmpty().mapNotNull { entry ->
-                val e = entry as? JsonObject ?: return@mapNotNull null
-                val time = e["time"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                val price = e["price_c_kwh"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
-                SpotPrice(time, price)
-            },
+            today = parseSpotPrices(obj["today_prices"]),
+            tomorrow = parseSpotPrices(obj["tomorrow_prices"]),
         )
     }
+
+    private fun parseSpotPrices(array: kotlinx.serialization.json.JsonElement?): List<SpotPrice> =
+        array?.jsonArray.orEmpty().mapNotNull { entry ->
+            val e = entry as? JsonObject ?: return@mapNotNull null
+            val time = e["time"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val price = e["price_c_kwh"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+            SpotPrice(time, price)
+        }
 
     override suspend fun getAirQuality(): AirQuality {
         val obj = connection.callToolJson("get_air_quality").jsonObject

@@ -40,6 +40,8 @@ data class ElectricityPrices(
     val avgCentsPerKwh: Double? = null,
     /** 15-minute resolution across the day. */
     val today: List<SpotPrice> = emptyList(),
+    /** Tomorrow's prices once published (~14:00 the day before); empty until then. */
+    val tomorrow: List<SpotPrice> = emptyList(),
 ) {
     /**
      * Cheap/expensive thresholds derived the same way as the backend
