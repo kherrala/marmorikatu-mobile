@@ -64,7 +64,6 @@ import kotlinx.coroutines.launch
 import org.koin.compose.viewmodel.koinViewModel
 import kotlin.coroutines.coroutineContext
 
-private const val PRICE_LABELS = "00,06,12,18,24"
 private const val REFRESH_INTERVAL_MS = 5 * 60 * 1000L
 
 /** The scroll-anchored sub-sections of the Energia tab, in display order. */
@@ -188,8 +187,11 @@ private fun EnSubTabs(active: EnSection, onSelect: (EnSection) -> Unit) {
 
 @Composable
 private fun PriceCard(state: PriceState) {
+    // Drops "tänään" once the curve carries into tomorrow's prices, so the title
+    // stays honest when the chart spans two days.
+    val spansTomorrow = (state as? PriceState.Ready)?.model?.spansTomorrow == true
     MkCard {
-        MkCardHead("Sähkön hinta tänään")
+        MkCardHead(if (spansTomorrow) "Sähkön hinta" else "Sähkön hinta tänään")
         when (state) {
             is PriceState.Ready -> {
                 val m = state.model
@@ -201,7 +203,7 @@ private fun PriceCard(state: PriceState) {
                 }
                 MkPriceBars(
                     bars = m.bars,
-                    labels = PRICE_LABELS.split(","),
+                    labels = m.axisLabels,
                     height = 132.dp,
                     nowValue = m.currentCents?.let { Fmt.oneDecimal(it) },
                     nowUnit = "c/kWh",

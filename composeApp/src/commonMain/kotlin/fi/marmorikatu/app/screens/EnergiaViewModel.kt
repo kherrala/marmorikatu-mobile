@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
@@ -186,35 +187,90 @@ class EnergiaViewModel(
 
     @OptIn(ExperimentalTime::class)
     private fun ElectricityPrices.toModel(tier: PriceTier?): PriceModel {
-        // Past detection on the full slot timestamp, not the hour-of-day: the old
-        // `hour < nowHour` mislabeled the current hour's elapsed slots and — worse
-        // — would paint a whole stale (yesterday's) curve as "future". Now every
-        // slot before the one containing "now" is Past, so stale data shows up as
-        // an all-grey chart instead of hiding.
+        // Render from a combined today+tomorrow timeline keyed on each slot's real
+        // instant, windowed to the current local day forward. Anchoring the window
+        // to the device clock — not the backend's day split — is what lets the user
+        // "see prices past midnight": in the hours just after midnight the backend
+        // still reports the previous calendar day as `today` (its boundary is UTC,
+        // so 00–03 Helsinki lands in `tomorrow`), yet the chart shows the real
+        // current day; and once tomorrow's prices publish (~14:00) the curve carries
+        // straight on past midnight into them.
         val now = Clock.System.now()
-        val starts = today.map { runCatching { Instant.parse(it.time) }.getOrNull() }
-        val currentStart = starts.filterNotNull().filter { it <= now }.maxOrNull()
-        val bars = today.mapIndexed { i, sp ->
-            val start = starts[i]
+        val combined = (today + tomorrow)
+            .mapNotNull { sp -> runCatching { Instant.parse(sp.time) }.getOrNull()?.let { it to sp.centsPerKwh } }
+            .associate { it }                 // dedup by instant; a later array wins ties
+            .toList()
+            .sortedBy { it.first }
+        if (combined.isEmpty()) {
+            return PriceModel(emptyList(), currentCentsPerKwh, tier ?: currentTierFallback,
+                minCentsPerKwh, maxCentsPerKwh, avgCentsPerKwh, cheapestWindow(), PRICE_AXIS_DAY, false)
+        }
+        val startOfDay = now.toLocalDateTime(chartZone).date.atStartOfDayIn(chartZone)
+        val windowed = combined.filter { it.first >= startOfDay }.ifEmpty { combined }
+
+        // A day is 96 quarter-hours; once tomorrow extends the window past one day,
+        // collapse to hourly averages so ~2 days still fit legibly on a phone.
+        val hourly = windowed.size > 120
+        val points = if (hourly) {
+            windowed.groupBy { hourStart(it.first) }
+                .map { (h, v) -> h to v.map { it.second }.average() }
+                .sortedBy { it.first }
+        } else {
+            windowed
+        }
+        val slotSpan = if (hourly) 3_600L else 900L
+
+        val bars = points.map { (start, cents) ->
             val state = when {
-                start != null && currentStart != null && start < currentStart -> BarState.Past
-                tierOf(sp.centsPerKwh) == PriceTier.Expensive -> BarState.Exp
-                tierOf(sp.centsPerKwh) == PriceTier.Cheap -> BarState.Cheap
+                start.epochSeconds + slotSpan <= now.epochSeconds -> BarState.Past
+                tierOf(cents) == PriceTier.Expensive -> BarState.Exp
+                tierOf(cents) == PriceTier.Cheap -> BarState.Cheap
                 else -> BarState.Future
             }
-            MkPriceBar(sp.centsPerKwh.toFloat(), state)
+            MkPriceBar(cents.toFloat(), state)
         }
+
+        // The price of the slot containing "now" — the honest readout even when the
+        // backend's `current_price` is stale across the midnight boundary.
+        val nowCents = points.lastOrNull { it.first <= now }?.second ?: currentCentsPerKwh
+        val spansTomorrow =
+            points.last().first.toLocalDateTime(chartZone).date != now.toLocalDateTime(chartZone).date
         return PriceModel(
             bars = bars,
-            currentCents = currentCentsPerKwh,
-            // Backend tier wins; local classification is the offline fallback.
-            nowTier = tier ?: currentTierFallback,
+            currentCents = nowCents,
+            // Backend tier wins; local classification of the live slot is the fallback.
+            nowTier = tier ?: nowCents?.let { tierOf(it) },
             minCents = minCentsPerKwh,
             maxCents = maxCentsPerKwh,
             avgCents = avgCentsPerKwh,
             cheapestWindow = cheapestWindow(),
+            axisLabels = axisLabels(points, slotSpan),
+            spansTomorrow = spansTomorrow,
         )
     }
+
+    /**
+     * Five hour ticks spread evenly across the window's *time* span (not its bar
+     * index, which lands on ragged hours like 05/11/17 for a 96-slot day). A tick
+     * on a midnight boundary reads 24 rather than 00 so the day's end is clear.
+     */
+    @OptIn(ExperimentalTime::class)
+    private fun axisLabels(points: List<Pair<Instant, Double>>, slotSpan: Long): List<String> {
+        if (points.isEmpty()) return PRICE_AXIS_DAY
+        val startSec = points.first().first.epochSeconds
+        val endSec = points.last().first.epochSeconds + slotSpan
+        return (0..4).map { k ->
+            val sec = startSec + (endSec - startSec) * k / 4
+            val h = Instant.fromEpochSeconds(sec).toLocalDateTime(chartZone).hour
+            if (k == 4 && h == 0) "24" else h.toString().padStart(2, '0')
+        }
+    }
+
+    @OptIn(ExperimentalTime::class)
+    private fun hourStart(i: Instant): Instant = Instant.fromEpochSeconds((i.epochSeconds / 3600) * 3600)
+
+    /** The Finnish spot-price day is Helsinki-based, whatever the device's own zone. */
+    private val chartZone = TimeZone.of("Europe/Helsinki")
 
     /**
      * Cheapest contiguous [windowHours]-hour block in today's spot curve, for the
@@ -269,6 +325,9 @@ sealed interface PriceState {
     data class Ready(val model: PriceModel) : PriceState
 }
 
+/** Default single-day hour ticks, used before any prices arrive. */
+val PRICE_AXIS_DAY = listOf("00", "06", "12", "18", "24")
+
 /** Everything the price card renders, pre-computed from [ElectricityPrices]. */
 data class PriceModel(
     val bars: List<MkPriceBar>,
@@ -278,6 +337,10 @@ data class PriceModel(
     val maxCents: Double?,
     val avgCents: Double?,
     val cheapestWindow: CheapWindow?,
+    /** Hour ticks under the chart; five labels spanning the rendered window. */
+    val axisLabels: List<String> = PRICE_AXIS_DAY,
+    /** True when the window reaches into tomorrow, so the card drops "tänään". */
+    val spansTomorrow: Boolean = false,
 )
 
 /** Cheapest contiguous hour block found in today's prices (the "Halvimmat tunnit" tip). */

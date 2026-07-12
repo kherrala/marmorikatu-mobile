@@ -67,6 +67,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /** Top news headline for the home dashboard's news card, with its summary. */
 data class NewsHeadline(
@@ -1293,23 +1294,37 @@ class KotiViewModel(
     private data class HourBar(val timeIso: String, val cents: Double, val past: Boolean, val tier: PriceTier)
 
     /**
-     * Today's spot prices collapsed to whole-hour bars. The market moved to 15-min
-     * slots (96/day), which is far too many bars for the dashboard; averaging each
-     * hour's slots gives the 24 the design shows. Handles already-hourly data too
-     * (each bucket is then a single slot).
+     * The current local day's spot prices collapsed to whole-hour bars. The market
+     * moved to 15-min slots (96/day), which is far too many bars for the dashboard;
+     * averaging each hour's slots gives the 24 the design shows.
+     *
+     * The day is picked from `today + tomorrow` by real instant against the device
+     * clock, not from the backend's `today` array: that array's boundary is UTC, so
+     * in the hours just after Helsinki midnight it still holds *yesterday* while the
+     * current day sits in `tomorrow`. Keying on the instant and filtering to the
+     * device's local date shows the real current day — so the always-on kiosk never
+     * displays a full stale (all-grey) yesterday curve overnight.
      */
+    @OptIn(ExperimentalTime::class)
     private fun hourlyPrice(p: ElectricityPrices?): List<HourBar> {
-        val today = p?.today ?: return emptyList()
-        if (today.isEmpty()) return emptyList()
-        val nowHour = p.currentHour?.take(13)   // "2026-07-11T20"
-        return today.groupBy { it.time.take(13) }
+        p ?: return emptyList()
+        val slots = p.today + p.tomorrow
+        if (slots.isEmpty()) return emptyList()
+        val zone = TimeZone.of("Europe/Helsinki")
+        val now = Clock.System.now()
+        val today = now.toLocalDateTime(zone).date
+        return slots
+            .mapNotNull { sp -> runCatching { Instant.parse(sp.time) }.getOrNull()?.let { it to sp.centsPerKwh } }
+            .groupBy { Instant.fromEpochSeconds((it.first.epochSeconds / 3600) * 3600) }
+            .filterKeys { it.toLocalDateTime(zone).date == today }
             .entries.sortedBy { it.key }
-            .map { (hourKey, slots) ->
-                val avg = slots.map { it.centsPerKwh }.average()
+            .map { (hour, pairs) ->
+                val avg = pairs.map { it.second }.average()
                 HourBar(
-                    timeIso = slots.minByOrNull { it.time }?.time ?: hourKey,
+                    timeIso = hour.toString(),
                     cents = avg,
-                    past = nowHour != null && hourKey < nowHour,
+                    // Elapsed once the whole hour is behind real "now".
+                    past = hour.epochSeconds + 3600 <= now.epochSeconds,
                     tier = p.tierOf(avg),
                 )
             }
