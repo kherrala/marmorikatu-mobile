@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -426,7 +427,7 @@ private fun ConsumerRow(comp: EnergyComponent, max: Double) {
             text = comp.name,
             style = MkTheme.type.body,
             color = c.inkHi,
-            modifier = Modifier.width(92.dp),
+            modifier = Modifier.width(84.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -442,12 +443,15 @@ private fun ConsumerRow(comp: EnergyComponent, max: Double) {
             )
         }
         Text(
-            text = "${Fmt.oneDecimal(comp.kwh)} kWh",
+            // Drop the decimal on large values so the "kWh" unit always fits the column
+            // (a full year's consumer can be thousands of kWh).
+            text = "${if (comp.kwh >= 100) Fmt.int(comp.kwh) else Fmt.oneDecimal(comp.kwh)} kWh",
             style = MkTheme.type.readout(12),
             color = c.inkMid,
-            modifier = Modifier.width(64.dp),
+            modifier = Modifier.widthIn(min = 78.dp),
             textAlign = TextAlign.End,
             maxLines = 1,
+            softWrap = false,
         )
     }
 }

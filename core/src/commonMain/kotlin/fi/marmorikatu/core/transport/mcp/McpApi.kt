@@ -45,14 +45,6 @@ interface McpApi {
     suspend fun getAirQuality(): AirQuality
     suspend fun getEnergyConsumption(hours: Int = 24): JsonObject
 
-    /**
-     * Estimated electricity cost + consumption over a Flux [timeRange]
-     * (e.g. `-24h`, `-7d`, `-30d`, `-365d`): the `cost` block
-     * (`estimated_total_eur`, `total_price_c_kwh` average) and the
-     * `consumption_kwh` per-consumer breakdown.
-     */
-    suspend fun getEnergyCost(timeRange: String = "-24h"): JsonObject
-
     suspend fun getWeatherForecast(): WeatherForecast
     suspend fun getNewsHeadlines(count: Int = 5): JsonElement
     suspend fun getCalendarEvents(days: Int = 7): JsonElement
@@ -191,9 +183,6 @@ class DefaultMcpApi(private val connection: McpConnection) : McpApi {
         // The backend tool reads a Flux-style `time_range` string, not `hours` —
         // passing `hours` was silently ignored and it defaulted to a 7-day window.
         connection.callToolJson("get_energy_consumption", mapOf("time_range" to "-${hours}h")).jsonObject
-
-    override suspend fun getEnergyCost(timeRange: String): JsonObject =
-        connection.callToolJson("get_energy_cost", mapOf("time_range" to timeRange)).jsonObject
 
     // --- Info (weather/news/calendar proxied server-side) --------------------
 

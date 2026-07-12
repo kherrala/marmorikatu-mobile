@@ -8,17 +8,18 @@ import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.core.model.ElectricityPrices
 import fi.marmorikatu.core.model.EnergyReading
 import fi.marmorikatu.core.model.PriceTier
+import fi.marmorikatu.core.repository.EnergyBreakdown
 import fi.marmorikatu.core.repository.EnergyRepository
 import fi.marmorikatu.core.repository.LightsRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.doubleOrNull
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
@@ -34,8 +35,17 @@ class EnergiaViewModel(
     private val lightsRepo: LightsRepository,
 ) : ViewModel() {
 
-    /** Live meter power / cumulative readings, keyed `heatpump` | `extra`. */
-    val liveEnergy: StateFlow<Map<String, EnergyReading>> = energyRepo.liveEnergy
+    /** InfluxDB snapshot that seeds the meter card before the live MQTT topics arrive. */
+    private val _meterSnapshot = MutableStateFlow<Map<String, EnergyReading>>(emptyMap())
+
+    /**
+     * Live meter readings, keyed `heatpump` | `extra`. The MQTT stream is
+     * authoritative; the InfluxDB snapshot backfills each meter so the card shows
+     * values immediately on cold start, before the retained topics land.
+     */
+    val liveEnergy: StateFlow<Map<String, EnergyReading>> =
+        combine(energyRepo.liveEnergy, _meterSnapshot) { live, snap -> snap + live }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, energyRepo.liveEnergy.value)
 
     private val _prices = MutableStateFlow<PriceState>(PriceState.Loading)
     val prices: StateFlow<PriceState> = _prices.asStateFlow()
@@ -80,16 +90,18 @@ class EnergiaViewModel(
                     // the price card, the heating-optimization card, and the light-usage
                     // card. Each source degrades on its own — a missing one just leaves
                     // its part of a card empty.
-                    val consumptionD = async { runCatching { energyRepo.energyConsumption() }.getOrNull() }
                     val pricesD = async { runCatching { energyRepo.electricityPrices() }.getOrNull() }
                     val tierD = async { runCatching { energyRepo.priceTier() }.getOrNull() }
                     val optimizerD = async { runCatching { energyRepo.heatingOptimizer() }.getOrNull() }
                     val onTimeD = async { runCatching { energyRepo.lightOnTimeByFloor() }.getOrNull() }
                     val autoOffD = async { runCatching { energyRepo.lightAutoOffCounts() }.getOrNull() }
-
                     // The light card's "kWh tänään" is always today's lighting, kept
                     // independent of the Kulutus range selector.
-                    val lightingKwh = consumptionD.await()?.let { (it["lighting_kwh"] as? JsonPrimitive)?.doubleOrNull }
+                    val lightingKwhD = async { runCatching { energyRepo.lightingKwh("-24h") }.getOrNull() }
+                    // Seed the meter card from InfluxDB so it isn't blank until MQTT connects.
+                    val snapshotD = async { runCatching { energyRepo.latestMeterSnapshot() }.getOrNull() }
+
+                    snapshotD.await()?.takeIf { it.isNotEmpty() }?.let { _meterSnapshot.value = it }
 
                     val prices = pricesD.await()
                     if (prices != null) {
@@ -106,7 +118,7 @@ class EnergiaViewModel(
 
                     _lightUsage.value = buildLightUsage(
                         lights = lightsRepo.lights.value,
-                        lightingKwh = lightingKwh,
+                        lightingKwh = lightingKwhD.await(),
                         onTimeByFloor = onTimeD.await() ?: emptyMap(),
                         autoOffCounts = autoOffD.await() ?: emptyMap(),
                     )
@@ -131,10 +143,9 @@ class EnergiaViewModel(
         _costLoading.value = true
         try {
             coroutineScope {
-                val costD = async { runCatching { energyRepo.energyCost(range.flux) }.getOrNull() }
+                val breakdownD = async { runCatching { energyRepo.energyBreakdown(range.flux) }.getOrNull() }
                 val trendD = async { runCatching { energyRepo.energyCostTrend(range.flux, range.every) }.getOrNull() }
-                val saunaD = async { runCatching { energyRepo.saunaEstimateKwh(range.flux) }.getOrNull() }
-                val built = buildCost(range, costD.await(), latestPrices, trendD.await() ?: emptyList(), saunaD.await())
+                val built = buildCost(range, breakdownD.await(), latestPrices, trendD.await() ?: emptyList())
                 // Guard against a stale write if the user tapped another range mid-fetch.
                 if (_range.value == range) _cost.value = built
             }
@@ -143,43 +154,29 @@ class EnergiaViewModel(
         }
     }
 
-    /** Fold `get_energy_cost` + the derived kWh trend into the [CostView] for [range]. */
+    /** Fold the local [EnergyBreakdown] + the derived kWh trend into the [CostView]. */
     private fun buildCost(
         range: EnergyRange,
-        cost: JsonObject?,
+        breakdown: EnergyBreakdown?,
         prices: ElectricityPrices?,
         trend: List<Double>,
-        saunaKwh: Double?,
     ): CostView {
-        fun nested(group: String, key: String): Double? =
-            ((cost?.get(group) as? JsonObject)?.get(key) as? JsonPrimitive)?.doubleOrNull
-        // The backend's sauna estimate over-counts (see FluxClient.saunaHeatingHours);
-        // swap in the corrected figure and adjust the total + cost accordingly, but
-        // keep the backend value when the sensor is dark.
-        val backendSauna = nested("consumption_kwh", "sauna") ?: 0.0
-        val sauna = saunaKwh ?: backendSauna
-        val consumers = listOf(
-            EnergyComponent("Maalämpö", nested("consumption_kwh", "heat_pump") ?: 0.0),
-            EnergyComponent("Sauna", sauna),
-            EnergyComponent("Valaistus", nested("consumption_kwh", "lighting") ?: 0.0),
-            EnergyComponent("Ilmanvaihto", nested("consumption_kwh", "hvac_fan") ?: 0.0),
-        ).filter { it.kwh > 0.0 }.sortedByDescending { it.kwh }
-        val total = nested("consumption_kwh", "total")?.let { it - backendSauna + sauna }
-        val totalPrice = nested("cost", "total_price_c_kwh")
-        // Recompute cost from the corrected total when we changed sauna and know the
-        // per-kWh price; otherwise keep the backend euro figure.
-        val eur = if (saunaKwh != null && total != null && totalPrice != null) {
-            total * totalPrice / 100.0
-        } else {
-            nested("cost", "estimated_total_eur")
-        }
+        val consumers = breakdown?.let {
+            listOf(
+                EnergyComponent("Maalämpö", it.heatPumpKwh),
+                EnergyComponent("Sauna", it.saunaKwh),
+                EnergyComponent("Valaistus", it.lightingKwh),
+                EnergyComponent("Ilmanvaihto", it.fanKwh),
+            ).filter { c -> c.kwh > 0.0 }.sortedByDescending { c -> c.kwh }
+        }.orEmpty()
+        val total = breakdown?.totalKwh
         // Peak/cheap only for today — the longer windows have no per-hour price curve.
         val (peak, cheap) = if (range == EnergyRange.H24) priceExtremes(prices?.today.orEmpty()) else null to null
         return CostView(
             window = range.window,
             kwh = total?.let { if (it >= 100) Fmt.int(it) else Fmt.oneDecimal(it) },
-            cost = eur?.let { Fmt.comma(it, 2) },
-            avg = nested("cost", "avg_spot_price_c_kwh")?.let { Fmt.oneDecimal(it) },
+            cost = breakdown?.estimatedEur?.let { Fmt.comma(it, 2) },
+            avg = breakdown?.avgSpotCents?.let { Fmt.oneDecimal(it) },
             peak = peak,
             cheap = cheap,
             consumers = consumers,

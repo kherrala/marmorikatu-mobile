@@ -211,6 +211,137 @@ class FluxClient(
         return parseAnnotatedCsv(csv)["kwh"].orEmpty().map { it.value }
     }
 
+    // ── Energy-cost components (local port of the backend get_energy_cost) ───────
+    // Each mirrors one of `scripts/mcp_tools/energy.py`'s queries so the Energia
+    // tab can compute cost/consumption straight from InfluxDB instead of the slow
+    // MCP round-trip. All validated to match the backend on real ranges.
+
+    /**
+     * Total metered heating energy (kWh) over [range]: the increase of the
+     * heat-pump and aux meters' cumulative `Total_Active_Energy` counters, i.e.
+     * `spread` (max − min) per meter summed. Whole-range spread (not per-window)
+     * so inter-window gaps aren't dropped. Null → caller treats as 0. Like the
+     * backend, this over-reads if a meter ever resets; the counters are monotonic
+     * in practice.
+     */
+    suspend fun meteredHeatingKwh(range: String): Double? {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: $range)
+              |> filter(fn: (r) => r._measurement == "hvac" and r.sensor_group == "energy" and r._field == "Total_Active_Energy")
+              |> filter(fn: (r) => r.meter == "heatpump" or r.meter == "extra")
+              |> group(columns: ["meter"])
+              |> spread()
+              |> group()
+              |> sum()
+              |> keep(columns: ["_value"])
+        """.trimIndent()
+        return lastStringValue(postFlux(flux))?.toDoubleOrNull()
+    }
+
+    /**
+     * Estimated lighting energy (kWh) over [range]: per-light hourly mean of
+     * `is_on` summed across all fixtures and hours (≈ fixture-hours) × 10 W,
+     * matching the backend's `_query_lighting_kwh`. Null → 0.
+     */
+    suspend fun lightingKwh(range: String): Double? {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: $range)
+              |> filter(fn: (r) => r._measurement == "lights" and r._field == "is_on")
+              |> toFloat()
+              |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+              |> group()
+              |> sum()
+              |> map(fn: (r) => ({ _value: r._value * 10.0 / 1000.0, _field: "kwh" }))
+        """.trimIndent()
+        return lastStringValue(postFlux(flux))?.toDoubleOrNull()
+    }
+
+    /**
+     * Number of populated hourly ventilation buckets over [range] — the count of
+     * hours the kitchen Ruuvi reported (a continuous-fan proxy), matching the
+     * backend's `_query_fan_kwh` `len(...)`. Multiply by 0.3 kWh (300 W) for
+     * energy. Null → 0. Counting real buckets (not `0.3 × hours`) matters over
+     * long windows, since the sensor's history is shorter than a year.
+     */
+    suspend fun ventilationBucketHours(range: String): Double? {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: $range)
+              |> filter(fn: (r) => r._measurement == "ruuvi" and (r.sensor_name == "Keittio" or r.sensor_name == "Keittiö"))
+              |> filter(fn: (r) => r._field == "pressure")
+              |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+              |> count()
+              |> group()
+              |> sum()
+              |> keep(columns: ["_value"])
+        """.trimIndent()
+        return lastStringValue(postFlux(flux))?.toDoubleOrNull()
+    }
+
+    /**
+     * Mean spot price incl. VAT (c/kWh) over [range], from `electricity`
+     * `price_with_tax`. Adds `group()` before `mean()` so both price-source tags
+     * are averaged together — the backend omits it and silently keeps only one
+     * source on long ranges. Null → caller uses the backend's 5.0 fallback.
+     */
+    suspend fun avgSpotPriceCents(range: String): Double? {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: $range)
+              |> filter(fn: (r) => r._measurement == "electricity" and r._field == "price_with_tax")
+              |> group()
+              |> mean()
+        """.trimIndent()
+        return lastStringValue(postFlux(flux))?.toDoubleOrNull()
+    }
+
+    /**
+     * Latest reading of every electricity-meter field, per meter — a fast
+     * InfluxDB snapshot to seed the meter card instantly on cold start, before
+     * the retained MQTT topics arrive. Keyed by meter (`heatpump` | `extra`);
+     * each inner map is field → value. Empty on failure.
+     */
+    suspend fun latestMeterFields(): Map<String, Map<String, Double>> {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: -30m)
+              |> filter(fn: (r) => r._measurement == "hvac" and (r.meter == "heatpump" or r.meter == "extra"))
+              |> filter(fn: (r) => r._field == "Total_Active_Power" or r._field == "Total_Active_Energy" or r._field == "Grid_Frequency" or r._field == "L1_Voltage" or r._field == "L2_Voltage" or r._field == "L3_Voltage" or r._field == "Forward_Active_Energy" or r._field == "Reverse_Active_Energy")
+              |> last()
+              |> keep(columns: ["meter", "_field", "_value"])
+        """.trimIndent()
+        return parseMeterFields(postFlux(flux))
+    }
+
+    /** Parse a `meter, _field, _value` snapshot CSV into meter → (field → value). */
+    internal fun parseMeterFields(csv: String?): Map<String, Map<String, Double>> {
+        if (csv == null) return emptyMap()
+        val result = mutableMapOf<String, MutableMap<String, Double>>()
+        var meterIdx = -1
+        var fieldIdx = -1
+        var valueIdx = -1
+        csv.lineSequence().forEach { rawLine ->
+            val line = rawLine.trim('\r', '\n')
+            if (line.isBlank()) return@forEach
+            if (line.startsWith("#")) { meterIdx = -1; return@forEach }
+            val cells = line.split(",")
+            if (meterIdx < 0) {
+                meterIdx = cells.indexOf("meter")
+                fieldIdx = cells.indexOf("_field")
+                valueIdx = cells.indexOf("_value")
+                return@forEach
+            }
+            if (meterIdx < 0 || fieldIdx < 0 || valueIdx < 0 || cells.size <= maxOf(meterIdx, fieldIdx, valueIdx)) return@forEach
+            val meter = cells[meterIdx].takeIf { it.isNotBlank() } ?: return@forEach
+            val field = cells[fieldIdx].takeIf { it.isNotBlank() } ?: return@forEach
+            val value = cells[valueIdx].toDoubleOrNull() ?: return@forEach
+            result.getOrPut(meter) { mutableMapOf() }[field] = value
+        }
+        return result
+    }
+
     /**
      * Estimated sauna heating-hours over [range] — the hours the sauna room is
      * genuinely hot. The sauna is unmetered, so consumption is inferred from its

@@ -13,6 +13,8 @@ import fi.marmorikatu.core.transport.mqtt.MqttTopics
 import fi.marmorikatu.core.transport.mqtt.PlcPayloads
 import fi.marmorikatu.core.transport.widgets.BusApi
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,12 +32,15 @@ interface EnergyRepository {
     suspend fun energyConsumption(hours: Int = 24): JsonObject
 
     /**
-     * Estimated cost + consumption for a Flux time range (`-24h`, `-7d`, `-30d`,
-     * `-365d`): the backend `get_energy_cost` block with `estimated_total_eur`,
-     * the average `total_price_c_kwh`, and a per-consumer `consumption_kwh`
-     * breakdown. Drives the range-selectable Kulutus section.
+     * Cost + per-consumer consumption for a Flux time range (`-24h`, `-7d`,
+     * `-30d`, `-365d`), computed straight from InfluxDB — a local port of the
+     * backend `get_energy_cost` (which is slow over the MCP round-trip and
+     * over-counts sauna). Drives the range-selectable Kulutus section.
      */
-    suspend fun energyCost(range: String): JsonObject
+    suspend fun energyBreakdown(range: String): EnergyBreakdown
+
+    /** Estimated lighting energy (kWh) over a Flux [range]. Null on failure. */
+    suspend fun lightingKwh(range: String): Double?
 
     /**
      * Per-bucket metered energy (kWh, heat-pump + aux) over a Flux [range], for
@@ -44,12 +49,11 @@ interface EnergyRepository {
     suspend fun energyCostTrend(range: String, every: String): List<Double>
 
     /**
-     * A corrected sauna consumption estimate (kWh) over [range], replacing the
-     * backend's over-counting `sauna_kwh`. Derived from Ruuvi temperature —
-     * heating-hours (room > 60 °C) × the heater's ~6 kW. Null when the sensor
-     * has no data (caller keeps the backend figure).
+     * Latest electricity-meter readings from InfluxDB, keyed by meter — a fast
+     * snapshot to seed the meter card before the live MQTT topics arrive on cold
+     * start. Empty on failure.
      */
-    suspend fun saunaEstimateKwh(range: String): Double?
+    suspend fun latestMeterSnapshot(): Map<String, EnergyReading>
 
     /**
      * The authoritative current price band from the backend
@@ -74,6 +78,32 @@ interface EnergyRepository {
     /** Today's automatic light-off counts, keyed by optimizer category. Empty on failure. */
     suspend fun lightAutoOffCounts(): Map<String, Double>
 }
+
+/**
+ * The Energia tab's cost/consumption for one window, computed locally from
+ * InfluxDB. Consumers are the four categories the design breaks out; [totalKwh]
+ * and [estimatedEur] mirror the backend's cost model (avg spot price + a fixed
+ * margin and transfer fee, applied to the summed kWh).
+ */
+data class EnergyBreakdown(
+    val heatPumpKwh: Double,
+    val saunaKwh: Double,
+    val lightingKwh: Double,
+    val fanKwh: Double,
+    /** Mean spot price over the window, c/kWh incl. VAT (no margin/transfer). */
+    val avgSpotCents: Double,
+) {
+    val totalKwh: Double get() = heatPumpKwh + saunaKwh + lightingKwh + fanKwh
+    val totalPriceCents: Double get() = avgSpotCents + ENERGY_MARGIN_CENTS + ENERGY_TRANSFER_CENTS
+    val estimatedEur: Double get() = totalKwh * totalPriceCents / 100.0
+}
+
+// Backend cost-model constants (scripts/mcp_tools/energy.py) + estimate factors.
+private const val ENERGY_MARGIN_CENTS = 0.49
+private const val ENERGY_TRANSFER_CENTS = 6.09
+private const val PRICE_FALLBACK_CENTS = 5.0
+private const val SAUNA_KW = 6.0
+private const val FAN_KWH_PER_HOUR = 0.3
 
 class DefaultEnergyRepository(
     mqtt: MqttClient,
@@ -102,16 +132,39 @@ class DefaultEnergyRepository(
     override suspend fun electricityPrices(): ElectricityPrices = mcp.getElectricityPrices()
     override suspend fun energyConsumption(hours: Int): JsonObject = mcp.getEnergyConsumption(hours)
 
-    override suspend fun energyCost(range: String): JsonObject = mcp.getEnergyCost(range)
+    override suspend fun energyBreakdown(range: String): EnergyBreakdown = coroutineScope {
+        // The four consumption components + the price mean, straight from InfluxDB
+        // and in parallel — replaces the slow MCP get_energy_cost. heat_pump is
+        // metered; sauna/lighting/fan are estimates (sauna corrected from the
+        // backend's 30 °C over-count to genuine >60 °C heating × ~6 kW).
+        val heatPump = async { flux.meteredHeatingKwh(range) }
+        val sauna = async { flux.saunaHeatingHours(range) }
+        val lighting = async { flux.lightingKwh(range) }
+        val fanHours = async { flux.ventilationBucketHours(range) }
+        val price = async { flux.avgSpotPriceCents(range) }
+        EnergyBreakdown(
+            heatPumpKwh = heatPump.await() ?: 0.0,
+            saunaKwh = (sauna.await() ?: 0.0) * SAUNA_KW,
+            lightingKwh = lighting.await() ?: 0.0,
+            fanKwh = (fanHours.await() ?: 0.0) * FAN_KWH_PER_HOUR,
+            avgSpotCents = price.await() ?: PRICE_FALLBACK_CENTS,
+        )
+    }
+
+    override suspend fun lightingKwh(range: String): Double? = flux.lightingKwh(range)
 
     override suspend fun energyCostTrend(range: String, every: String): List<Double> =
         flux.energyKwhBuckets(range, every)
 
-    override suspend fun saunaEstimateKwh(range: String): Double? =
-        // ~6 kW heater; the room stays above 60 °C for roughly the heat-up +
-        // maintenance span of a session, which offsets the heater's thermostatic
-        // cycling well enough for an unmetered estimate.
-        flux.saunaHeatingHours(range)?.let { it * 6.0 }
+    override suspend fun latestMeterSnapshot(): Map<String, EnergyReading> =
+        flux.latestMeterFields().mapValues { (meter, fields) ->
+            EnergyReading(
+                meter = meter,
+                powerKw = fields["Total_Active_Power"],
+                energyKwh = fields["Total_Active_Energy"],
+                raw = fields,
+            )
+        }
 
     override suspend fun priceTier(): PriceTier? =
         when (flux.latestString("heating_optimizer", "tier")?.trim()?.uppercase()) {
