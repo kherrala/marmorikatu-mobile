@@ -36,7 +36,7 @@ val ilmastoModule = module {
 }
 
 val energiaModule = module {
-    viewModel { EnergiaViewModel(energyRepo = get()) }
+    viewModel { EnergiaViewModel(energyRepo = get(), lightsRepo = get()) }
 }
 
 val bussitModule = module {

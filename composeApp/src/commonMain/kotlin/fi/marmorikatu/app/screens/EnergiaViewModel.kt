@@ -4,10 +4,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fi.marmorikatu.app.components.BarState
 import fi.marmorikatu.app.components.MkPriceBar
+import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.core.model.ElectricityPrices
 import fi.marmorikatu.core.model.EnergyReading
 import fi.marmorikatu.core.model.PriceTier
 import fi.marmorikatu.core.repository.EnergyRepository
+import fi.marmorikatu.core.repository.LightsRepository
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +31,7 @@ import kotlin.time.Instant
  */
 class EnergiaViewModel(
     private val energyRepo: EnergyRepository,
+    private val lightsRepo: LightsRepository,
 ) : ViewModel() {
 
     /** Live meter power / cumulative readings, keyed `heatpump` | `extra`. */
@@ -35,23 +40,34 @@ class EnergiaViewModel(
     private val _prices = MutableStateFlow<PriceState>(PriceState.Loading)
     val prices: StateFlow<PriceState> = _prices.asStateFlow()
 
+    /** Heating optimization: the price-tier forecast + heat-pump bias. Null until loaded. */
+    private val _heatingOpti = MutableStateFlow<HeatingOpti?>(null)
+    val heatingOpti: StateFlow<HeatingOpti?> = _heatingOpti.asStateFlow()
+
+    /** Light usage: on/total, kWh, per-floor on-time, automation counts. Null until loaded. */
+    private val _lightUsage = MutableStateFlow<LightUsage?>(null)
+    val lightUsage: StateFlow<LightUsage?> = _lightUsage.asStateFlow()
+
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
 
     private val _updatedAt = MutableStateFlow<Long?>(null)
     val updatedAt: StateFlow<Long?> = _updatedAt.asStateFlow()
 
-    /** Estimated consumption by component (kWh), largest first. Null until loaded. */
-    private val _consumption = MutableStateFlow<List<EnergyComponent>?>(null)
-    val consumption: StateFlow<List<EnergyComponent>?> = _consumption.asStateFlow()
+    /** The selected cost/consumption window (design: 24h / 7d / 30d / 12kk tabs). */
+    private val _range = MutableStateFlow(EnergyRange.H24)
+    val range: StateFlow<EnergyRange> = _range.asStateFlow()
 
-    /**
-     * Backend's own `total_kwh` for the window (design: "Kulutus tänään"). Can
-     * exceed the sum of [consumption]'s named components, since it also covers
-     * load that isn't attributed to any of them. Null until loaded.
-     */
-    private val _totalConsumptionKwh = MutableStateFlow<Double?>(null)
-    val totalConsumptionKwh: StateFlow<Double?> = _totalConsumptionKwh.asStateFlow()
+    /** Cost + consumption for [range]: euros, average, extremes, consumers, trend. Null until loaded. */
+    private val _cost = MutableStateFlow<CostView?>(null)
+    val cost: StateFlow<CostView?> = _cost.asStateFlow()
+
+    /** True while the cost/consumption for a range is being fetched (the backend call is slow on long windows). */
+    private val _costLoading = MutableStateFlow(false)
+    val costLoading: StateFlow<Boolean> = _costLoading.asStateFlow()
+
+    /** Today's spot curve, cached so a range change can label peak/cheap without re-fetching prices. */
+    private var latestPrices: ElectricityPrices? = null
 
     /** Pull today's spot curve. The screen also re-invokes this every 5 min. */
     @OptIn(ExperimentalTime::class)
@@ -59,43 +75,116 @@ class EnergiaViewModel(
         viewModelScope.launch {
             _refreshing.value = true
             try {
-                launch {
-                    runCatching { energyRepo.energyConsumption() }
-                        .getOrNull()
-                        ?.let { obj ->
-                            _consumption.value = parseConsumption(obj)
-                            _totalConsumptionKwh.value = (obj["total_kwh"] as? JsonPrimitive)?.doubleOrNull
-                        }
-                }
-                runCatching { energyRepo.electricityPrices() }
-                    .onSuccess { prices ->
-                        // Authoritative band from the backend optimizer; fall back
-                        // to a local clamped-percentile classification when
-                        // InfluxDB is unreachable.
-                        val tier = runCatching { energyRepo.priceTier() }.getOrNull()
-                        _prices.value = PriceState.Ready(prices.toModel(tier))
+                coroutineScope {
+                    // Fetch the independent sources concurrently, then fold them into
+                    // the price card, the heating-optimization card, and the light-usage
+                    // card. Each source degrades on its own — a missing one just leaves
+                    // its part of a card empty.
+                    val consumptionD = async { runCatching { energyRepo.energyConsumption() }.getOrNull() }
+                    val pricesD = async { runCatching { energyRepo.electricityPrices() }.getOrNull() }
+                    val tierD = async { runCatching { energyRepo.priceTier() }.getOrNull() }
+                    val optimizerD = async { runCatching { energyRepo.heatingOptimizer() }.getOrNull() }
+                    val onTimeD = async { runCatching { energyRepo.lightOnTimeByFloor() }.getOrNull() }
+                    val autoOffD = async { runCatching { energyRepo.lightAutoOffCounts() }.getOrNull() }
+
+                    // The light card's "kWh tänään" is always today's lighting, kept
+                    // independent of the Kulutus range selector.
+                    val lightingKwh = consumptionD.await()?.let { (it["lighting_kwh"] as? JsonPrimitive)?.doubleOrNull }
+
+                    val prices = pricesD.await()
+                    if (prices != null) {
+                        // Authoritative band from the backend optimizer; fall back to a
+                        // local clamped-percentile classification when InfluxDB is down.
+                        latestPrices = prices
+                        _prices.value = PriceState.Ready(prices.toModel(tierD.await()))
                         _updatedAt.value = Clock.System.now().epochSeconds
+                        _heatingOpti.value = buildHeatingOpti(prices, optimizerD.await() ?: emptyMap())
+                    } else if (_prices.value !is PriceState.Ready) {
+                        // Keep prior data on a transient failure; only flag when we have none.
+                        _prices.value = PriceState.Failed
                     }
-                    .onFailure {
-                        // Keep any prior data on a transient failure; only flag error
-                        // when we have nothing to show yet.
-                        if (_prices.value !is PriceState.Ready) _prices.value = PriceState.Failed
-                    }
+
+                    _lightUsage.value = buildLightUsage(
+                        lights = lightsRepo.lights.value,
+                        lightingKwh = lightingKwh,
+                        onTimeByFloor = onTimeD.await() ?: emptyMap(),
+                        autoOffCounts = autoOffD.await() ?: emptyMap(),
+                    )
+                }
+                // Cost + trend for the current window; factored out so a range switch
+                // reloads just this part instead of the whole screen.
+                loadCost(_range.value)
             } finally {
                 _refreshing.value = false
             }
         }
     }
 
-    /** Fold the MCP `get_energy_consumption` breakdown into display components. */
-    private fun parseConsumption(obj: JsonObject): List<EnergyComponent> {
-        fun kwh(key: String) = (obj[key] as? JsonPrimitive)?.doubleOrNull ?: 0.0
-        return listOf(
-            EnergyComponent("Maalämpö", kwh("heat_pump_compressor_kwh") + kwh("heat_pump_aux_heaters_kwh")),
-            EnergyComponent("Valaistus", kwh("lighting_kwh")),
-            EnergyComponent("Sauna", kwh("sauna_kwh")),
-            EnergyComponent("Ilmanvaihto", kwh("hvac_fan_kwh")),
+    /** Switch the Kulutus/cost window and reload just its cost + trend. */
+    fun setRange(range: EnergyRange) {
+        if (range == _range.value && _cost.value != null) return
+        _range.value = range
+        viewModelScope.launch { loadCost(range) }
+    }
+
+    private suspend fun loadCost(range: EnergyRange) {
+        _costLoading.value = true
+        try {
+            coroutineScope {
+                val costD = async { runCatching { energyRepo.energyCost(range.flux) }.getOrNull() }
+                val trendD = async { runCatching { energyRepo.energyCostTrend(range.flux, range.every) }.getOrNull() }
+                val saunaD = async { runCatching { energyRepo.saunaEstimateKwh(range.flux) }.getOrNull() }
+                val built = buildCost(range, costD.await(), latestPrices, trendD.await() ?: emptyList(), saunaD.await())
+                // Guard against a stale write if the user tapped another range mid-fetch.
+                if (_range.value == range) _cost.value = built
+            }
+        } finally {
+            if (_range.value == range) _costLoading.value = false
+        }
+    }
+
+    /** Fold `get_energy_cost` + the derived kWh trend into the [CostView] for [range]. */
+    private fun buildCost(
+        range: EnergyRange,
+        cost: JsonObject?,
+        prices: ElectricityPrices?,
+        trend: List<Double>,
+        saunaKwh: Double?,
+    ): CostView {
+        fun nested(group: String, key: String): Double? =
+            ((cost?.get(group) as? JsonObject)?.get(key) as? JsonPrimitive)?.doubleOrNull
+        // The backend's sauna estimate over-counts (see FluxClient.saunaHeatingHours);
+        // swap in the corrected figure and adjust the total + cost accordingly, but
+        // keep the backend value when the sensor is dark.
+        val backendSauna = nested("consumption_kwh", "sauna") ?: 0.0
+        val sauna = saunaKwh ?: backendSauna
+        val consumers = listOf(
+            EnergyComponent("Maalämpö", nested("consumption_kwh", "heat_pump") ?: 0.0),
+            EnergyComponent("Sauna", sauna),
+            EnergyComponent("Valaistus", nested("consumption_kwh", "lighting") ?: 0.0),
+            EnergyComponent("Ilmanvaihto", nested("consumption_kwh", "hvac_fan") ?: 0.0),
         ).filter { it.kwh > 0.0 }.sortedByDescending { it.kwh }
+        val total = nested("consumption_kwh", "total")?.let { it - backendSauna + sauna }
+        val totalPrice = nested("cost", "total_price_c_kwh")
+        // Recompute cost from the corrected total when we changed sauna and know the
+        // per-kWh price; otherwise keep the backend euro figure.
+        val eur = if (saunaKwh != null && total != null && totalPrice != null) {
+            total * totalPrice / 100.0
+        } else {
+            nested("cost", "estimated_total_eur")
+        }
+        // Peak/cheap only for today — the longer windows have no per-hour price curve.
+        val (peak, cheap) = if (range == EnergyRange.H24) priceExtremes(prices?.today.orEmpty()) else null to null
+        return CostView(
+            window = range.window,
+            kwh = total?.let { if (it >= 100) Fmt.int(it) else Fmt.oneDecimal(it) },
+            cost = eur?.let { Fmt.comma(it, 2) },
+            avg = nested("cost", "avg_spot_price_c_kwh")?.let { Fmt.oneDecimal(it) },
+            peak = peak,
+            cheap = cheap,
+            consumers = consumers,
+            trend = trend.map { it.toFloat() },
+        )
     }
 
     @OptIn(ExperimentalTime::class)

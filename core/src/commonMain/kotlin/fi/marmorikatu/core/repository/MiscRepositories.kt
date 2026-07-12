@@ -30,12 +30,49 @@ interface EnergyRepository {
     suspend fun energyConsumption(hours: Int = 24): JsonObject
 
     /**
+     * Estimated cost + consumption for a Flux time range (`-24h`, `-7d`, `-30d`,
+     * `-365d`): the backend `get_energy_cost` block with `estimated_total_eur`,
+     * the average `total_price_c_kwh`, and a per-consumer `consumption_kwh`
+     * breakdown. Drives the range-selectable Kulutus section.
+     */
+    suspend fun energyCost(range: String): JsonObject
+
+    /**
+     * Per-bucket metered energy (kWh, heat-pump + aux) over a Flux [range], for
+     * the cost-trend sparkline. [every] is the bucket width. Empty on failure.
+     */
+    suspend fun energyCostTrend(range: String, every: String): List<Double>
+
+    /**
+     * A corrected sauna consumption estimate (kWh) over [range], replacing the
+     * backend's over-counting `sauna_kwh`. Derived from Ruuvi temperature —
+     * heating-hours (room > 60 °C) × the heater's ~6 kW. Null when the sensor
+     * has no data (caller keeps the backend figure).
+     */
+    suspend fun saunaEstimateKwh(range: String): Double?
+
+    /**
      * The authoritative current price band from the backend
      * `heating_optimizer.tier` (same source the announcements use), or null
      * when InfluxDB is unreachable — callers then fall back to classifying the
      * MCP price locally.
      */
     suspend fun priceTier(): PriceTier?
+
+    /**
+     * The heat-pump optimizer's current telemetry, read from the
+     * `indoor_publisher` measurement: `total_bias` (the °C indoor-setpoint
+     * correction it is applying) and its seasonal `cheap_threshold` /
+     * `expensive_threshold` price boundaries. Read-only telemetry; empty on
+     * failure.
+     */
+    suspend fun heatingOptimizer(): Map<String, Double>
+
+    /** Light on-time today (hours) per floor name. Empty on failure. */
+    suspend fun lightOnTimeByFloor(): Map<String, Double>
+
+    /** Today's automatic light-off counts, keyed by optimizer category. Empty on failure. */
+    suspend fun lightAutoOffCounts(): Map<String, Double>
 }
 
 class DefaultEnergyRepository(
@@ -65,6 +102,17 @@ class DefaultEnergyRepository(
     override suspend fun electricityPrices(): ElectricityPrices = mcp.getElectricityPrices()
     override suspend fun energyConsumption(hours: Int): JsonObject = mcp.getEnergyConsumption(hours)
 
+    override suspend fun energyCost(range: String): JsonObject = mcp.getEnergyCost(range)
+
+    override suspend fun energyCostTrend(range: String, every: String): List<Double> =
+        flux.energyKwhBuckets(range, every)
+
+    override suspend fun saunaEstimateKwh(range: String): Double? =
+        // ~6 kW heater; the room stays above 60 °C for roughly the heat-up +
+        // maintenance span of a session, which offsets the heater's thermostatic
+        // cycling well enough for an unmetered estimate.
+        flux.saunaHeatingHours(range)?.let { it * 6.0 }
+
     override suspend fun priceTier(): PriceTier? =
         when (flux.latestString("heating_optimizer", "tier")?.trim()?.uppercase()) {
             "CHEAP" -> PriceTier.Cheap
@@ -72,6 +120,13 @@ class DefaultEnergyRepository(
             "NORMAL", "PRE_HEAT" -> PriceTier.Normal
             else -> null
         }
+
+    override suspend fun heatingOptimizer(): Map<String, Double> =
+        flux.latest("indoor_publisher", listOf("total_bias", "cheap_threshold", "expensive_threshold"))
+
+    override suspend fun lightOnTimeByFloor(): Map<String, Double> = flux.lightOnTimeByFloorToday()
+
+    override suspend fun lightAutoOffCounts(): Map<String, Double> = flux.lightAutoOffCountsToday()
 }
 
 // --- Sauna ---------------------------------------------------------------------

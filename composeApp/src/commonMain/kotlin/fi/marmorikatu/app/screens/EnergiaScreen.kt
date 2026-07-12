@@ -1,10 +1,16 @@
 package fi.marmorikatu.app.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,33 +19,37 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import fi.marmorikatu.app.components.MkCard
 import fi.marmorikatu.app.components.MkCardHead
-import fi.marmorikatu.app.components.MkFreshness
 import fi.marmorikatu.app.components.MkPriceBars
 import fi.marmorikatu.app.components.MkPullToRefresh
+import fi.marmorikatu.app.components.MkStatStatus
 import fi.marmorikatu.app.components.MkStatTile
+import fi.marmorikatu.app.components.MkTag
+import fi.marmorikatu.app.components.MkTagStatus
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkRadius
@@ -49,16 +59,28 @@ import fi.marmorikatu.core.model.EnergyReading
 import fi.marmorikatu.core.model.PriceTier
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.koin.compose.viewmodel.koinViewModel
 import kotlin.coroutines.coroutineContext
 
 private const val PRICE_LABELS = "00,06,12,18,24"
 private const val REFRESH_INTERVAL_MS = 5 * 60 * 1000L
 
+/** The scroll-anchored sub-sections of the Energia tab, in display order. */
+private enum class EnSection(val label: String) {
+    Hinta("Hinta"),
+    Mittari("Mittari"),
+    Kulutus("Kulutus"),
+    Optimointi("Optimointi"),
+    Valot("Valot"),
+}
+
 /**
- * Energia: pörssisähkön hinta tänään sekä lämpöpumpun ja lisävastuksen
- * reaaliaikainen teho ja mittarilukemat.
+ * Energia: pörssisähkön hinta, sähkömittari, kulutus ja kustannus valittavalla
+ * aikavälillä, sekä lämmityksen ja valojen optimointi. Yläreunan välilehdet
+ * vierittävät kuhunkin osioon (kuten Valot-näytön kerrospalkki).
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EnergiaScreen(
     modifier: Modifier = Modifier,
@@ -66,13 +88,13 @@ fun EnergiaScreen(
 ) {
     val priceState by viewModel.prices.collectAsState()
     val liveEnergy by viewModel.liveEnergy.collectAsState()
-    val consumption by viewModel.consumption.collectAsState()
-    val totalConsumptionKwh by viewModel.totalConsumptionKwh.collectAsState()
+    val range by viewModel.range.collectAsState()
+    val cost by viewModel.cost.collectAsState()
+    val costLoading by viewModel.costLoading.collectAsState()
+    val heatingOpti by viewModel.heatingOpti.collectAsState()
+    val lightUsage by viewModel.lightUsage.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
-    val updatedAt by viewModel.updatedAt.collectAsState()
 
-    // Refresh on entry, then re-poll while the screen stays composed (prices
-    // change hourly). The loop cancels when the screen leaves composition.
     LaunchedEffect(Unit) {
         while (coroutineContext.isActive) {
             viewModel.refresh()
@@ -80,27 +102,88 @@ fun EnergiaScreen(
         }
     }
 
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val sections = EnSection.entries
+    // Layout: sticky tabs = item 0, then one item per section (Hinta = 1 … Valot = 5).
+    val barPx = with(LocalDensity.current) { 56.dp.roundToPx() }
+    // The current section is the last one whose top has scrolled up to (or past) the
+    // sticky bar — read from layout offsets so it's correct even with the tab bar as
+    // the first (pinned) item.
+    val activeSection by remember {
+        derivedStateOf {
+            val secs = listState.layoutInfo.visibleItemsInfo.filter { it.index in 1..sections.size }
+            val current = secs.lastOrNull { it.offset <= barPx } ?: secs.firstOrNull()
+            current?.let { sections[it.index - 1] } ?: EnSection.Hinta
+        }
+    }
+
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(
-                    start = MkSpacing.pagePad,
-                    end = MkSpacing.pagePad,
-                    top = MkSpacing.pagePad,
-                    bottom = MkSpacing.pagePad + MkSpacing.scrollBottomGap,
-                ),
+        LazyColumn(
+            state = listState,
+            modifier = modifier.fillMaxSize().background(MkTheme.colors.appBg),
+            contentPadding = PaddingValues(
+                start = MkSpacing.pagePad,
+                end = MkSpacing.pagePad,
+                top = MkSpacing.x2,
+                bottom = MkSpacing.pagePad + MkSpacing.scrollBottomGap,
+            ),
             verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
         ) {
-            PriceCard(priceState)
-            MetersCard(liveEnergy)
-            TotalsRow(totalConsumptionKwh)
-            ConsumptionCard(consumption)
-            CheapestWindowTip(priceState)
+            stickyHeader(key = "tabs") {
+                EnSubTabs(
+                    active = activeSection,
+                    onSelect = { section ->
+                        scope.launch {
+                            listState.animateScrollToItem(sections.indexOf(section) + 1, -barPx)
+                        }
+                    },
+                )
+            }
+            item(key = "hinta") { PriceCard(priceState) }
+            item(key = "mittari") { MetersCard(liveEnergy) }
+            item(key = "kulutus") { KulutusSection(cost, range, costLoading, viewModel::setRange) }
+            item(key = "optimointi") { HeatingOptiCard(heatingOpti) }
+            item(key = "valot") { LightUsageCard(lightUsage) }
         }
     }
 }
+
+// ── Sub-tab bar ──────────────────────────────────────────────────────────────
+
+@Composable
+private fun EnSubTabs(active: EnSection, onSelect: (EnSection) -> Unit) {
+    val c = MkTheme.colors
+    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(vertical = 2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            EnSection.entries.forEach { section ->
+                val on = section == active
+                val shape = RoundedCornerShape(MkRadius.round)
+                Row(
+                    modifier = Modifier
+                        .clip(shape)
+                        .background(if (on) c.accentDim else c.surfaceCard)
+                        .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
+                        .clickable { onSelect(section) }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = section.label,
+                        style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (on) c.accent else c.inkMid,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── Hinta ────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun PriceCard(state: PriceState) {
@@ -109,8 +192,6 @@ private fun PriceCard(state: PriceState) {
         when (state) {
             is PriceState.Ready -> {
                 val m = state.model
-                // Three bands from the backend optimizer (CHEAP/NORMAL/EXPENSIVE),
-                // so a genuinely cheap hour reads cheap even on a flat day.
                 val (tag, status) = when (m.nowTier) {
                     PriceTier.Expensive -> "KALLIS NYT" to "warn"
                     PriceTier.Cheap -> "EDULLINEN" to "ok"
@@ -133,231 +214,70 @@ private fun PriceCard(state: PriceState) {
     }
 }
 
-/** Today's total consumption + its cost (design: "Kulutus tänään" / "Kustannus"). */
-@Composable
-private fun TotalsRow(totalKwh: Double?) {
-    Row(horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3)) {
-        MkStatTile(
-            label = "Kulutus tänään",
-            value = totalKwh?.let { Fmt.oneDecimal(it) } ?: "Ei tietoa",
-            unit = if (totalKwh != null) "kWh" else null,
-            icon = MkIcons.LightningFill,
-            modifier = Modifier.weight(1f),
-        )
-        MkStatTile(
-            label = "Kustannus",
-            // No wired backend source yet: the MCP `get_energy_cost` tool exists
-            // server-side but isn't called from here, so an honest placeholder
-            // beats fabricating a euro figure. See EnergiaViewModel gap notes.
-            value = "Ei tietoa",
-            icon = null,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-/**
- * Cheapest hour block today, as a spot-price tip (design: "Halvimmat tunnit
- * tänä yönä"). Renamed to "tänään" here since it's derived from today's whole
- * curve, not specifically the coming night — honest about what was computed.
- */
-@Composable
-private fun CheapestWindowTip(state: PriceState) {
-    val window = (state as? PriceState.Ready)?.model?.cheapestWindow ?: return
-    val c = MkTheme.colors
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(MkRadius.md))
-            .background(c.accentDim)
-            .border(1.dp, c.accentBorder, RoundedCornerShape(MkRadius.md))
-            .padding(horizontal = MkSpacing.x3, vertical = MkSpacing.x3),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
-    ) {
-        Icon(MkIcons.LightbulbFill, null, tint = c.accent, modifier = Modifier.size(16.dp))
-        Text(
-            text = buildAnnotatedString {
-                append("Halvimmat tunnit tänään ")
-                withStyle(SpanStyle(color = c.inkHi, fontFamily = MkTheme.type.mono, fontWeight = FontWeight.Medium)) {
-                    append("${pad2(window.startHour)}–${pad2(window.endHour)}")
-                }
-                append(" · ${Fmt.comma(window.minCents, 1)}–${Fmt.comma(window.maxCents, 1)} c/kWh")
-            },
-            style = MkTheme.type.body,
-            color = c.inkMid,
-        )
-    }
-}
-
-private fun pad2(value: Int): String = value.toString().padStart(2, '0')
-
-/** Estimated consumption by component, as labelled bars (design: "Kulutus laitteittain"). */
-@Composable
-private fun ConsumptionCard(components: List<EnergyComponent>?) {
-    if (components.isNullOrEmpty()) return
-    val c = MkTheme.colors
-    val max = components.maxOf { it.kwh }.coerceAtLeast(0.01)
-    MkCard {
-        MkCardHead("Kulutus laitteittain")
-        components.forEach { comp ->
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(MkRadius.sm))
-                        .background(c.accentDim),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(consumerIcon(comp.name), null, tint = c.accent, modifier = Modifier.size(16.dp))
-                }
-                Text(
-                    text = comp.name,
-                    style = MkTheme.type.body,
-                    color = c.inkHi,
-                    modifier = Modifier.width(96.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(7.dp)
-                        .clip(RoundedCornerShape(MkRadius.round))
-                        .background(c.track),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .fillMaxWidth((comp.kwh / max).toFloat())
-                            .clip(RoundedCornerShape(MkRadius.round))
-                            .background(c.warm),
-                    )
-                }
-                Text(
-                    text = "${Fmt.oneDecimal(comp.kwh)} kWh",
-                    style = MkTheme.type.readout(12),
-                    color = c.inkMid,
-                    modifier = Modifier.width(72.dp),
-                    textAlign = TextAlign.End,
-                    maxLines = 1,
-                )
-            }
-        }
-    }
-}
-
-private fun consumerIcon(name: String): ImageVector = when {
-    name.contains("Maalämpö") -> MkIcons.ThermometerHot
-    name.contains("Valaistus") -> MkIcons.LightbulbFill
-    name.contains("Sauna") -> MkIcons.FlameFill
-    name.contains("Ilmanvaihto") -> MkIcons.Fan
-    else -> MkIcons.LightningFill
-}
+// ── Mittari ──────────────────────────────────────────────────────────────────
 
 @Composable
 private fun MetersCard(live: Map<String, EnergyReading>) {
     val c = MkTheme.colors
+    val hp = live["heatpump"]
+    val ex = live["extra"]
+    // Frequency and phase voltages are grid-wide, so either meter answers; the
+    // cumulative energy registers are per-circuit, so sum both for a house total.
+    fun rawOf(r: EnergyReading?, key: String): Double? =
+        r?.raw?.entries?.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
+    fun grid(key: String): Double? = rawOf(hp, key) ?: rawOf(ex, key)
+    fun sum(key: String): Double? {
+        val a = rawOf(hp, key)
+        val b = rawOf(ex, key)
+        return if (a == null && b == null) null else (a ?: 0.0) + (b ?: 0.0)
+    }
+
+    val auxKw = ex?.powerKw
     MkCard {
         MkCardHead("Sähkömittari")
-        MeterRow("Maalämpö", MkIcons.ThermometerHot, live["heatpump"])
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(c.borderSubtle),
-        )
-        MeterRow("Lisävastus", MkIcons.FlameFill, live["extra"])
-        // Grid frequency + three-phase voltages from the OR-WE-517 payload (both
-        // meters read the same grid). Shown only when the fields are present.
-        GridMeterInfo(live["heatpump"] ?: live["extra"])
-    }
-}
-
-/** Grid frequency + L1/L2/L3 voltages, read from a meter's raw OR-WE-517 map. */
-@Composable
-private fun GridMeterInfo(reading: EnergyReading?) {
-    val c = MkTheme.colors
-    val raw = reading?.raw ?: return
-    fun pick(key: String): Double? =
-        raw.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
-    val freq = pick("Grid_Frequency")
-    val v1 = pick("L1_Voltage")
-    val v2 = pick("L2_Voltage")
-    val v3 = pick("L3_Voltage")
-    // Cumulative import/export (design: "Verkosta" / "Verkkoon"), from the
-    // OR-WE-517's own forward/reverse energy registers — real meter fields,
-    // not derived. Reverse stays near-zero unless something local feeds power
-    // back (there's no solar on this circuit today), but it's still honest to show.
-    val fromGrid = pick("Forward_Active_Energy")
-    val toGrid = pick("Reverse_Active_Energy")
-    if (freq == null && v1 == null && v2 == null && v3 == null) return
-
-    Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(c.borderSubtle))
-    Column(
-        modifier = Modifier.padding(top = MkSpacing.x3),
-        verticalArrangement = Arrangement.spacedBy(MkSpacing.x2),
-    ) {
-        if (freq != null) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("Verkkotaajuus", style = MkTheme.type.body, color = c.inkMid)
-                Text("${Fmt.oneDecimal(freq)} Hz", style = MkTheme.type.readout(14), color = c.inkHi)
-            }
+        Row(horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3)) {
+            MkStatTile(
+                label = "Maalämpö",
+                value = hp?.powerKw?.let { Fmt.oneDecimal(it) } ?: "—",
+                unit = "kW",
+                icon = MkIcons.Lightning,
+                modifier = Modifier.weight(1f),
+            )
+            MkStatTile(
+                label = "Lisävastus",
+                value = auxKw?.let { Fmt.oneDecimal(it) } ?: "—",
+                unit = "kW",
+                icon = MkIcons.FlameFill,
+                // Only tint when the resistive heater is actually drawing power;
+                // it idles at ~0.07 kW standby, which isn't worth a warn.
+                status = if ((auxKw ?: 0.0) > 0.1) MkStatStatus.Warn else MkStatStatus.None,
+                modifier = Modifier.weight(1f),
+            )
+            MkStatTile(
+                label = "Taajuus",
+                value = grid("Grid_Frequency")?.let { Fmt.oneDecimal(it) } ?: "—",
+                unit = "Hz",
+                icon = MkIcons.Waveform,
+                modifier = Modifier.weight(1f),
+            )
         }
-        if (v1 != null || v2 != null || v3 != null) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
-            ) {
-                PhaseChip("L1", v1, Modifier.weight(1f))
-                PhaseChip("L2", v2, Modifier.weight(1f))
-                PhaseChip("L3", v3, Modifier.weight(1f))
-            }
+        Row(
+            modifier = Modifier.padding(top = MkSpacing.x3),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+        ) {
+            PhaseChip("L1", grid("L1_Voltage"), Modifier.weight(1f))
+            PhaseChip("L2", grid("L2_Voltage"), Modifier.weight(1f))
+            PhaseChip("L3", grid("L3_Voltage"), Modifier.weight(1f))
         }
-        // Verkosta/Verkkoon only — the per-meter "Mittarilukema" is already shown
-        // above each MeterRow, so repeating it here would just be a near-duplicate
-        // of the same cumulative total under a different register name.
-        if (fromGrid != null || toGrid != null) {
-            Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(c.borderSubtle))
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x1),
-                horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
-            ) {
-                MeterTotalCell("Verkosta", fromGrid, c.inkHi, TextAlign.Start, Modifier.weight(1f))
-                MeterTotalCell("Verkkoon", toGrid, c.accent, TextAlign.End, Modifier.weight(1f))
-            }
+        Box(modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3).height(1.dp).background(c.borderSubtle))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+        ) {
+            MeterTotalCell("Lukema", sum("Total_Active_Energy"), c.inkHi, TextAlign.Start, Modifier.weight(1f))
+            MeterTotalCell("Verkosta", sum("Forward_Active_Energy"), c.inkHi, TextAlign.Center, Modifier.weight(1f))
+            MeterTotalCell("Verkkoon", sum("Reverse_Active_Energy"), c.accent, TextAlign.End, Modifier.weight(1f))
         }
-    }
-}
-
-/** One cell of the meter's cumulative-total footer: uppercase label + a `kWh` readout. */
-@Composable
-private fun MeterTotalCell(label: String, kwh: Double?, valueColor: Color, align: TextAlign, modifier: Modifier) {
-    val c = MkTheme.colors
-    Column(modifier = modifier, horizontalAlignment = when (align) {
-        TextAlign.Start -> Alignment.Start
-        TextAlign.End -> Alignment.End
-        else -> Alignment.CenterHorizontally
-    }) {
-        Text(
-            text = label,
-            style = MkTheme.type.kicker,
-            color = c.inkLo,
-            maxLines = 1,
-        )
-        Text(
-            text = kwh?.let { "${Fmt.oneDecimal(it)} kWh" } ?: "—",
-            style = MkTheme.type.readout(15),
-            color = valueColor,
-            maxLines = 1,
-        )
     }
 }
 
@@ -368,13 +288,14 @@ private fun PhaseChip(label: String, volts: Double?, modifier: Modifier = Modifi
         modifier = modifier
             .clip(RoundedCornerShape(MkRadius.sm))
             .background(c.surfaceInset)
-            .padding(horizontal = 10.dp, vertical = 7.dp),
+            .padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(label, style = MkTheme.type.readout(10), color = c.inkLo)
         Text(
             volts?.let { "${Fmt.oneDecimal(it)} V" } ?: "—",
-            style = MkTheme.type.readout(14),
+            style = MkTheme.type.readout(13),
             color = c.inkHi,
             maxLines = 1,
         )
@@ -382,55 +303,500 @@ private fun PhaseChip(label: String, volts: Double?, modifier: Modifier = Modifi
 }
 
 @Composable
-private fun MeterRow(name: String, icon: ImageVector, reading: EnergyReading?) {
+private fun MeterTotalCell(label: String, kwh: Double?, valueColor: Color, align: TextAlign, modifier: Modifier) {
     val c = MkTheme.colors
+    Column(
+        modifier = modifier,
+        horizontalAlignment = when (align) {
+            TextAlign.Start -> Alignment.Start
+            TextAlign.End -> Alignment.End
+            else -> Alignment.CenterHorizontally
+        },
+    ) {
+        Text(label, style = MkTheme.type.kicker, color = c.inkLo, maxLines = 1)
+        Text(
+            text = kwh?.let { "${Fmt.int(it)} kWh" } ?: "—",
+            style = MkTheme.type.readout(15),
+            color = valueColor,
+            maxLines = 1,
+        )
+    }
+}
+
+// ── Kulutus + Kustannustrendi ────────────────────────────────────────────────
+
+@Composable
+private fun KulutusSection(
+    cost: CostView?,
+    range: EnergyRange,
+    loading: Boolean,
+    onRange: (EnergyRange) -> Unit,
+) {
+    val c = MkTheme.colors
+    Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.x3)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3)) {
+            MkStatTile(
+                label = "Kulutus ${range.window}",
+                value = cost?.kwh ?: "—",
+                unit = "kWh",
+                icon = MkIcons.LightningFill,
+                modifier = Modifier.weight(1f),
+            )
+            MkStatTile(
+                label = "Kustannus",
+                value = cost?.cost ?: "—",
+                unit = "€",
+                icon = MkIcons.Lightning,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        // 24 h / 7 pv / 30 pv / 12 kk range selector.
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            EnergyRange.entries.forEach { r ->
+                val on = r == range
+                val shape = RoundedCornerShape(MkRadius.round)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(shape)
+                        .background(if (on) c.accentDim else c.surfaceCard)
+                        .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
+                        .clickable { onRange(r) }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = r.tab,
+                        style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (on) c.accent else c.inkMid,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+        ) {
+            Text(
+                text = "Kulutus laitteittain · ${range.window}",
+                style = MkTheme.type.heading,
+                color = c.inkMid,
+                modifier = Modifier.weight(1f),
+            )
+            if (loading) {
+                Text("Lasketaan…", style = MkTheme.type.readout(11), color = c.inkLo, maxLines = 1)
+            }
+        }
+        val consumers = cost?.consumers.orEmpty()
+        if (consumers.isEmpty()) {
+            QuietLine("Ei kulutustietoa")
+        } else {
+            val max = consumers.maxOf { it.kwh }.coerceAtLeast(0.01)
+            consumers.forEach { ConsumerRow(it, max) }
+        }
+
+        CostTrendCard(cost)
+    }
+}
+
+@Composable
+private fun ConsumerRow(comp: EnergyComponent, max: Double) {
+    val c = MkTheme.colors
+    val shape = RoundedCornerShape(MkRadius.md)
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = MkSpacing.x2),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(c.surfaceCard)
+            .border(1.dp, c.borderSubtle, shape)
+            .padding(horizontal = 13.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
     ) {
         Box(
-            modifier = Modifier
-                .size(30.dp)
-                .background(c.accentDim, RoundedCornerShape(MkRadius.sm)),
+            modifier = Modifier.size(30.dp).clip(RoundedCornerShape(MkRadius.sm)).background(c.accentDim),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, null, tint = c.accent, modifier = Modifier.size(16.dp))
+            Icon(consumerIcon(comp.name), null, tint = c.accent, modifier = Modifier.size(16.dp))
         }
         Text(
-            text = name,
-            style = MkTheme.type.body.copy(fontWeight = FontWeight.Medium),
+            text = comp.name,
+            style = MkTheme.type.body,
             color = c.inkHi,
+            modifier = Modifier.width(92.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
         )
-        Column(horizontalAlignment = Alignment.End) {
-            // Live power. The OR-WE-517 meter reports Total_Active_Power; treat
-            // the number as kW per the data contract.
-            Row(verticalAlignment = Alignment.Bottom) {
+        Box(
+            modifier = Modifier.weight(1f).height(7.dp).clip(RoundedCornerShape(MkRadius.round)).background(c.track),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth((comp.kwh / max).toFloat())
+                    .clip(RoundedCornerShape(MkRadius.round))
+                    .background(c.warm),
+            )
+        }
+        Text(
+            text = "${Fmt.oneDecimal(comp.kwh)} kWh",
+            style = MkTheme.type.readout(12),
+            color = c.inkMid,
+            modifier = Modifier.width(64.dp),
+            textAlign = TextAlign.End,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun CostTrendCard(cost: CostView?) {
+    val c = MkTheme.colors
+    MkCard {
+        MkCardHead("Kustannustrendi", action = {
+            Text(cost?.window ?: "", style = MkTheme.type.readout(10), color = c.inkLo)
+        })
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = cost?.cost ?: "—",
+                        style = MkTheme.type.readout(28, FontWeight.Medium),
+                        color = c.inkHi,
+                    )
+                    Text(
+                        text = "€",
+                        style = MkTheme.type.readout(15),
+                        color = c.inkLo,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
                 Text(
-                    text = reading?.powerKw?.let { Fmt.oneDecimal(it) } ?: "—",
-                    style = MkTheme.type.readout(20, FontWeight.Medium),
-                    color = c.inkHi,
-                )
-                Text(
-                    text = "kW",
+                    text = buildString {
+                        append(cost?.kwh ?: "—"); append(" kWh")
+                        cost?.avg?.let { append(" · ka "); append(it); append(" c/kWh") }
+                    },
                     style = MkTheme.type.readout(11),
                     color = c.inkLo,
-                    modifier = Modifier.padding(start = 3.dp),
+                    modifier = Modifier.padding(top = 3.dp),
                 )
             }
-            Text(
-                text = reading?.energyKwh
-                    ?.let { "Mittarilukema ${Fmt.oneDecimal(it)} kWh" }
-                    ?: "Mittarilukema —",
-                style = MkTheme.type.readout(11),
-                color = c.inkLo,
-                modifier = Modifier.padding(top = 2.dp),
+            TrendBars(cost?.trend.orEmpty(), Modifier.weight(1f).height(40.dp))
+        }
+        if (cost?.peak != null || cost?.cheap != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
+                horizontalArrangement = Arrangement.spacedBy(MkSpacing.x4),
+            ) {
+                cost?.peak?.let { PeakCheapLabel(MkIcons.CaretUp, c.warm, it) }
+                cost?.cheap?.let { PeakCheapLabel(MkIcons.CaretDown, c.statusOk, it) }
+            }
+        }
+    }
+}
+
+/** The Kustannustrendi sparkline as accent bars, scaled to the window's peak bucket. */
+@Composable
+private fun TrendBars(values: List<Float>, modifier: Modifier = Modifier) {
+    if (values.isEmpty()) {
+        Box(modifier)
+        return
+    }
+    val c = MkTheme.colors
+    val max = values.max().coerceAtLeast(0.0001f)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        values.forEach { v ->
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(v / max)
+                    .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
+                    .background(c.accent),
             )
         }
     }
+}
+
+@Composable
+private fun PeakCheapLabel(icon: ImageVector, tint: Color, text: String) {
+    val c = MkTheme.colors
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(13.dp))
+        Text(text, style = MkTheme.type.readout(11), color = c.inkLo, maxLines = 1)
+    }
+}
+
+// ── Optimointi ("Lämmityksen optimointi") ────────────────────────────────────
+
+@Composable
+private fun HeatingOptiCard(opti: HeatingOpti?) {
+    val c = MkTheme.colors
+    MkCard {
+        MkCardHead("Lämmityksen optimointi", action = opti?.let { o ->
+            { MkTag(o.nowTierLabel, status = o.nowTone.toTagStatus()) }
+        })
+        if (opti == null) {
+            QuietLine("Ladataan…")
+            return@MkCard
+        }
+        // Per-hour tier forecast: bar heights encode the tier, first bar is "now".
+        Row(
+            modifier = Modifier.fillMaxWidth().height(34.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            opti.tierBars.forEach { bar ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(tierHeight(bar.tier))
+                        .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
+                        .background(tierColor(bar.tier)),
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            opti.tierBars.forEach { bar ->
+                Text(
+                    text = bar.label,
+                    style = MkTheme.type.readout(8),
+                    color = if (bar.current) c.inkHi else c.inkLo,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        opti.biasC?.let { bias ->
+            val shape = RoundedCornerShape(MkRadius.md)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = MkSpacing.x3)
+                    .clip(shape)
+                    .background(c.accentDim)
+                    .border(1.dp, c.accentBorder, shape)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(MkIcons.ThermometerHot, null, tint = c.accent, modifier = Modifier.size(18.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Lämpötilakorjaus ${signed(bias)} °C",
+                        style = MkTheme.type.body.copy(fontWeight = FontWeight.Medium),
+                        color = c.inkHi,
+                    )
+                    Text(
+                        text = "Säätää lämpöpumppua sähkön hinnan mukaan",
+                        style = MkTheme.type.readout(10),
+                        color = c.inkLo,
+                    )
+                }
+            }
+        }
+
+        Column(modifier = Modifier.padding(top = MkSpacing.x2)) {
+            opti.rows.forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(row.key, style = MkTheme.type.body, color = c.inkMid, modifier = Modifier.weight(1f))
+                    Text(
+                        text = row.value,
+                        style = MkTheme.type.readout(12),
+                        color = row.tone.toInk(),
+                        textAlign = TextAlign.End,
+                        maxLines = 1,
+                    )
+                }
+                Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(c.borderSubtle))
+            }
+        }
+    }
+}
+
+// ── Valot ("Valojen käyttö") ─────────────────────────────────────────────────
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LightUsageCard(usage: LightUsage?) {
+    val c = MkTheme.colors
+    MkCard {
+        MkCardHead("Valojen käyttö", action = usage?.let { u ->
+            { Text("${u.onNow}/${u.total} päällä", style = MkTheme.type.readout(11), color = c.inkMid) }
+        })
+        if (usage == null) {
+            QuietLine("Ladataan…")
+            return@MkCard
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2)) {
+            LightStatCell("kWh tänään", usage.kwhToday ?: "—", c.inkHi, Modifier.weight(1f))
+            LightStatCell("auto-off", usage.autoOffToday.toString(), c.accent, Modifier.weight(1f))
+            LightStatCell("käyttöä", usage.totalUseLabel ?: "—", c.statusOk, Modifier.weight(1f))
+        }
+
+        if (usage.areaRows.isNotEmpty()) {
+            SectionLabel("Käyttö alueittain")
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                usage.areaRows.forEach { AreaRow(it) }
+            }
+        }
+
+        if (usage.autoRules.isNotEmpty()) {
+            SectionLabel("Automaatio tänään")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                usage.autoRules.forEach { AutoRuleChip(it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LightStatCell(label: String, value: String, valueColor: Color, modifier: Modifier) {
+    val c = MkTheme.colors
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(MkRadius.sm))
+            .background(c.surfaceInset)
+            .padding(vertical = 9.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(value, style = MkTheme.type.readout(16), color = valueColor, maxLines = 1)
+        Text(label, style = MkTheme.type.kicker, color = c.inkLo, maxLines = 1)
+    }
+}
+
+@Composable
+private fun AreaRow(area: AreaUse) {
+    val c = MkTheme.colors
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(area.icon, null, tint = c.accent, modifier = Modifier.size(15.dp))
+        Text(
+            text = area.name,
+            style = MkTheme.type.body,
+            color = c.inkHi,
+            modifier = Modifier.width(78.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Box(
+            modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(MkRadius.round)).background(c.track),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth((area.pct / 100f).coerceIn(0f, 1f))
+                    .clip(RoundedCornerShape(MkRadius.round))
+                    .background(c.accent),
+            )
+        }
+        Text(
+            text = area.hoursLabel,
+            style = MkTheme.type.readout(11),
+            color = c.inkMid,
+            modifier = Modifier.width(62.dp),
+            textAlign = TextAlign.End,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun AutoRuleChip(rule: AutoRule) {
+    val c = MkTheme.colors
+    val shape = RoundedCornerShape(MkRadius.round)
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .background(c.surfaceInset)
+            .border(1.dp, c.borderSubtle, shape)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(rule.icon, null, tint = c.accent, modifier = Modifier.size(13.dp))
+        Text(rule.label, style = MkTheme.type.body, color = c.inkMid, maxLines = 1)
+        Text(rule.count.toString(), style = MkTheme.type.readout(12), color = c.inkHi, maxLines = 1)
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text,
+        style = MkTheme.type.kicker,
+        color = MkTheme.colors.inkLo,
+        modifier = Modifier.padding(top = MkSpacing.x3, bottom = MkSpacing.x2),
+    )
+}
+
+// ── Shared bits ──────────────────────────────────────────────────────────────
+
+@Composable
+private fun tierColor(t: HeatTier): Color = when (t) {
+    HeatTier.Cheap -> MkTheme.colors.statusOk
+    HeatTier.Normal -> MkTheme.colors.inkLo
+    HeatTier.Expensive -> MkTheme.colors.warm
+    HeatTier.PreHeat -> MkTheme.colors.accent
+}
+
+/** Bar-height fraction per tier, mirroring the design's cheap<preheat<normal<expensive ramp. */
+private fun tierHeight(t: HeatTier): Float = when (t) {
+    HeatTier.Cheap -> 0.40f
+    HeatTier.Normal -> 0.62f
+    HeatTier.Expensive -> 1.0f
+    HeatTier.PreHeat -> 0.78f
+}
+
+@Composable
+private fun OptiTone.toInk(): Color = when (this) {
+    OptiTone.Warn -> MkTheme.colors.warm
+    OptiTone.Accent -> MkTheme.colors.accent
+    OptiTone.Ok -> MkTheme.colors.statusOk
+    OptiTone.Ink -> MkTheme.colors.inkHi
+}
+
+private fun OptiTone.toTagStatus(): MkTagStatus = when (this) {
+    OptiTone.Warn -> MkTagStatus.Warn
+    OptiTone.Accent -> MkTagStatus.Accent
+    OptiTone.Ok -> MkTagStatus.Ok
+    OptiTone.Ink -> MkTagStatus.Neutral
+}
+
+private fun signed(v: Double): String = (if (v >= 0) "+" else "") + Fmt.oneDecimal(v)
+
+private fun consumerIcon(name: String): ImageVector = when {
+    name.contains("Maalämpö") -> MkIcons.ThermometerHot
+    name.contains("Valaistus") -> MkIcons.LightbulbFill
+    name.contains("Sauna") -> MkIcons.FlameFill
+    name.contains("Ilmanvaihto") -> MkIcons.Fan
+    else -> MkIcons.LightningFill
 }
 
 @Composable

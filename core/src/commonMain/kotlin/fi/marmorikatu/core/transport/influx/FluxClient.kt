@@ -142,6 +142,127 @@ class FluxClient(
         return lastStringValue(postFlux(flux))
     }
 
+    /**
+     * Light on-time today, in hours, per floor. Integrates each fixture's `is_on`
+     * (0/1) step signal separately — grouping several lights into one table first
+     * interleaves their timestamps and makes `integral` return nonsense (even
+     * negatives) — then sums the per-light hours back up per `floor_name`.
+     * Keyed by floor name; empty on failure.
+     */
+    suspend fun lightOnTimeByFloorToday(): Map<String, Double> {
+        val flux = """
+            import "date"
+            from(bucket: "$bucket")
+              |> range(start: date.truncate(t: now(), unit: 1d))
+              |> filter(fn: (r) => r._measurement == "lights" and r._field == "is_on")
+              |> group(columns: ["light_id", "floor_name"])
+              |> integral(unit: 1h, interpolate: "linear")
+              |> group(columns: ["floor_name"])
+              |> sum()
+              |> keep(columns: ["floor_name", "_value"])
+        """.trimIndent()
+        return parseGrouped(postFlux(flux), "floor_name")
+    }
+
+    /**
+     * Count of today's automatic light-off decisions, grouped by the optimizer's
+     * `category` tag (e.g. `co2_auto`, `porch_schedule`, `toilet`). Empty on
+     * failure. `decision` is a string field, so this counts rows where it equals
+     * `"off"`.
+     */
+    suspend fun lightAutoOffCountsToday(): Map<String, Double> {
+        val flux = """
+            import "date"
+            from(bucket: "$bucket")
+              |> range(start: date.truncate(t: now(), unit: 1d))
+              |> filter(fn: (r) => r._measurement == "lights_optimizer" and r._field == "decision" and r._value == "off")
+              |> group(columns: ["category"])
+              |> count()
+              |> keep(columns: ["category", "_value"])
+        """.trimIndent()
+        return parseGrouped(postFlux(flux), "category")
+    }
+
+    /**
+     * Per-bucket metered energy (kWh) over [range], summed across the heat-pump
+     * and aux meters — the cost-trend sparkline on the Energia tab. Each meter's
+     * `Total_Active_Energy` is a monotonic counter, so `spread` (max − min) per
+     * window is that window's consumption; ungrouping and summing folds both
+     * meters into one bucket. These two circuits are the only metered load, so
+     * this is a heat-pump+aux trend, not whole-house. Ordered oldest→newest;
+     * empty on failure.
+     *
+     * @param range Flux duration, e.g. `-24h`, `-7d`, `-30d`, `-365d`.
+     * @param every bucket width, e.g. `2h`, `1d`, `3d`, `1mo`.
+     */
+    suspend fun energyKwhBuckets(range: String, every: String): List<Double> {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: $range)
+              |> filter(fn: (r) => r._measurement == "hvac" and r._field == "Total_Active_Energy")
+              |> group(columns: ["meter"])
+              |> aggregateWindow(every: $every, fn: spread, createEmpty: false)
+              |> group()
+              |> aggregateWindow(every: $every, fn: sum, createEmpty: false)
+              |> map(fn: (r) => ({ _time: r._time, _value: r._value, _field: "kwh" }))
+              |> keep(columns: ["_time", "_value", "_field"])
+        """.trimIndent()
+        val csv = postFlux(flux) ?: return emptyList()
+        return parseAnnotatedCsv(csv)["kwh"].orEmpty().map { it.value }
+    }
+
+    /**
+     * Estimated sauna heating-hours over [range] — the hours the sauna room is
+     * genuinely hot. The sauna is unmetered, so consumption is inferred from its
+     * Ruuvi temperature. Unlike the backend's `_query_sauna_kwh`, which counts
+     * every minute above **30 °C** (the room sits there for hours after — and
+     * independently of — heating, wildly overestimating in summer), this counts
+     * only time above 60 °C, i.e. an actual heating session. A 15-minute base
+     * window keeps it cheap even over a year. Multiply by the heater's ~6 kW for
+     * kWh. Returns null when the sensor has no data (caller falls back).
+     */
+    suspend fun saunaHeatingHours(range: String): Double? {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: $range)
+              |> filter(fn: (r) => r._measurement == "ruuvi" and r.sensor_name == "Sauna" and r._field == "temperature")
+              |> aggregateWindow(every: 15m, fn: mean, createEmpty: false)
+              |> map(fn: (r) => ({ r with _value: if r._value > 60.0 then 1.0 else 0.0 }))
+              |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+              |> sum()
+              |> keep(columns: ["_value", "_field"])
+        """.trimIndent()
+        return lastStringValue(postFlux(flux))?.toDoubleOrNull()
+    }
+
+    /**
+     * Parse an annotated-CSV result of the shape `<keyColumn>, _value` (one row
+     * per group) into a map. Used by the grouped scalar queries above, where the
+     * grouping key is a tag column rather than `_field`.
+     */
+    internal fun parseGrouped(csv: String?, keyColumn: String): Map<String, Double> {
+        if (csv == null) return emptyMap()
+        val result = mutableMapOf<String, Double>()
+        var keyIdx = -1
+        var valueIdx = -1
+        csv.lineSequence().forEach { rawLine ->
+            val line = rawLine.trim('\r', '\n')
+            if (line.isBlank()) return@forEach
+            if (line.startsWith("#")) { keyIdx = -1; return@forEach }
+            val cells = line.split(",")
+            if (keyIdx < 0) {
+                keyIdx = cells.indexOf(keyColumn)
+                valueIdx = cells.indexOf("_value")
+                return@forEach
+            }
+            if (keyIdx < 0 || valueIdx < 0 || cells.size <= maxOf(keyIdx, valueIdx)) return@forEach
+            val key = cells[keyIdx].takeIf { it.isNotBlank() } ?: return@forEach
+            val value = cells[valueIdx].toDoubleOrNull() ?: return@forEach
+            result[key] = value
+        }
+        return result
+    }
+
     private suspend fun postFlux(flux: String): String? {
         val url = "${configStore.config.value.influxUrl}/api/v2/query?org=$org"
         return try {
