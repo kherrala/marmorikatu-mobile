@@ -18,18 +18,10 @@ import kotlinx.coroutines.launch
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
-/** Rendered state of the whole Valot screen. */
+/** Rendered state of the whole Valot screen: lights grouped by floor. */
 data class ValotUiState(
     val loading: Boolean = true,
-    /** Every area currently on, house-wide — the permanent "Aktiiviset" section. */
-    val activeAreas: List<AreaUi> = emptyList(),
     val floors: List<FloorSection> = emptyList(),
-    /** How many areas have at least one light on — the header count. */
-    val areasOn: Int = 0,
-    /** The preset whose exact light set is live, if any — highlights its chip. */
-    val activePreset: KotiScene? = null,
-    /** Additive area presets whose lights are all currently on. */
-    val activeAreaPresets: Set<LightAreaPreset> = emptySet(),
 )
 
 /** One floor's section: the floor, a header label, and the areas under it. */
@@ -92,30 +84,9 @@ class ValotViewModel(
 
     val uiState: StateFlow<ValotUiState> =
         combine(lights.lights, loaded) { list, isLoaded ->
-            val floors = buildFloorSections(list)
-            val active = floors.flatMap { it.areas }.filter { it.isOn() }
-            // A preset is "active" when the lights in its scope exactly match its
-            // target — so its chip highlights, and Kaikki pois when all are off.
-            // Elokuva's scope is basement-only, so it can highlight regardless of
-            // what the rest of the house is doing.
-            val activePreset = KotiScene.entries.firstOrNull { scene ->
-                val scopeIds = sceneScopeLights(scene, list).map { it.id }.toSet()
-                val onInScope = list.filter { it.displayedOn && it.id in scopeIds }.map { it.id }.toSet()
-                sceneOnLightIds(scene, list) == onInScope
-            }
-            // An additive area preset is "on" when every one of its lights is on.
-            val onIds = list.filter { it.displayedOn }.map { it.id }.toSet()
-            val activeAreaPresets = LightAreaPreset.entries.filter { preset ->
-                val ids = areaPresetLightIds(preset, list)
-                ids.isNotEmpty() && ids.all { it in onIds }
-            }.toSet()
             ValotUiState(
                 loading = !isLoaded && list.isEmpty(),
-                activeAreas = active,
-                floors = floors,
-                areasOn = active.size,
-                activePreset = activePreset,
-                activeAreaPresets = activeAreaPresets,
+                floors = buildFloorSections(list),
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, ValotUiState())
 
@@ -207,49 +178,6 @@ class ValotViewModel(
         viewModelScope.launch { runCatching { lights.setAll(false) } }
     }
 
-    /**
-     * Apply a lighting preset: its named areas come on (per the house rules),
-     * every other common light goes off. Bedrooms are never touched.
-     */
-    fun applyPreset(scene: KotiScene) {
-        viewModelScope.launch {
-            val list = lights.lights.value
-            val onIds = sceneOnLightIds(scene, list)
-            sceneScopeLights(scene, list)
-                .forEach { l ->
-                    val target = l.id in onIds
-                    if (l.displayedOn != target) runCatching { lights.setLight(l.id, target) }
-                }
-        }
-    }
-
-    /**
-     * Toggle an additive area preset: if all its lights are already on, turn the
-     * whole area off; otherwise turn it on. The rest of the house is untouched.
-     */
-    fun toggleAreaPreset(preset: LightAreaPreset) {
-        viewModelScope.launch {
-            val list = lights.lights.value
-            val ids = areaPresetLightIds(preset, list)
-            if (ids.isEmpty()) return@launch
-            val byId = list.associateBy { it.id }
-            val allOn = ids.all { byId[it]?.displayedOn == true }
-            val target = !allOn
-            ids.forEach { id ->
-                if (byId[id]?.displayedOn != target) runCatching { lights.setLight(id, target) }
-            }
-        }
-    }
-
-    /** Turn off every light on one floor (the floor header's "Sammuta"). */
-    fun floorOff(floor: Floor) {
-        viewModelScope.launch {
-            lights.lights.value
-                .filter { it.floor == floor && it.displayedOn }
-                .forEach { runCatching { lights.setLight(it.id, false) } }
-        }
-    }
-
     private fun buildFloorSections(list: List<Light>): List<FloorSection> =
         FLOOR_ORDER.mapNotNull { floor ->
             val floorLights = list.filter { it.floor == floor }
@@ -263,15 +191,23 @@ class ValotViewModel(
             val saunaFloor = rest.any { it.name.contains("sauna", ignoreCase = true) }
             val areas = LinkedHashMap<String, MutableList<Light>>()
             rest.forEach { light ->
-                areas.getOrPut(areaNameFor(light, saunaFloor)) { mutableListOf() }.add(light)
+                // Genuine outdoor lights fold into one "Etupiha" scene (design),
+                // rather than splitting entrance / terrace / carport into separate
+                // cards. Uncategorised fixtures the backend also files under ULKO
+                // (Tekninen tila, Varasto) keep their own switch cards.
+                val areaName = if (light.isOutdoor()) OUTDOOR_AREA else areaNameFor(light, saunaFloor)
+                areas.getOrPut(areaName) { mutableListOf() }.add(light)
             }
 
             val items = mutableListOf<AreaUi>()
             areas.forEach { (areaName, group) ->
                 items += when {
+                    // Only the rooms worth tuning get the dimmer ladder (design);
+                    // everything else is a plain on/off switch or a lone light.
+                    isSceneRoom(areaName) && group.size > 1 ->
+                        AreaUi.SceneArea(floor.label, areaName, levelFor(group), group.toList())
                     group.size == 1 -> AreaUi.SingleLight(floor.label, group.first())
-                    isPlainGroup(areaName) -> AreaUi.ToggleGroup(floor.label, areaName, group.toList())
-                    else -> AreaUi.SceneArea(floor.label, areaName, levelFor(group), group.toList())
+                    else -> AreaUi.ToggleGroup(floor.label, areaName, group.toList())
                 }
             }
             if (windows.isNotEmpty()) {
@@ -284,8 +220,24 @@ class ValotViewModel(
         }
 
     private companion object {
-        /** Floor pager order — living floors first, cellar and outdoors after. */
+        /** Floor order — living floors first, cellar and outdoors after. */
         val FLOOR_ORDER = listOf(Floor.ALAKERTA, Floor.YLAKERTA, Floor.KELLARI, Floor.ULKO)
+
+        /** The single outdoor area the front-yard lights fold into. */
+        const val OUTDOOR_AREA = "Etupiha"
+
+        /** A genuine outdoor fixture — folded into the [OUTDOOR_AREA] scene. */
+        fun Light.isOutdoor(): Boolean {
+            val n = name.lowercase()
+            return listOf("sisäänkäynti", "terassi", "autokatos", "piha", "ulkovalo", "etupiha")
+                .any { n.contains(it) }
+        }
+
+        /** Rooms worth a dimmer ladder (design); everything else is a plain switch. */
+        fun isSceneRoom(area: String): Boolean {
+            val a = area.lowercase()
+            return a == "keittiö" || a == "olohuone" || a == OUTDOOR_AREA.lowercase()
+        }
 
         fun ceilHalf(size: Int): Int = (size + 1) / 2
 
@@ -317,14 +269,6 @@ class ValotViewModel(
                 n.contains("aula", ignoreCase = true) -> "Aula"
                 else -> first
             }
-        }
-
-        /** Utility rooms get plain on/off switches, never a dimmer ladder. */
-        fun isPlainGroup(area: String): Boolean {
-            val a = area.lowercase()
-            return a.startsWith("wc") || a.startsWith("kylpy") || a.startsWith("kylpu") ||
-                a.startsWith("mh") || a.startsWith("sauna") || a.startsWith("tekninen") ||
-                a.startsWith("kodinhoito")
         }
 
         /** Render order within a floor: dimmers → on/off groups → singles → windows. */

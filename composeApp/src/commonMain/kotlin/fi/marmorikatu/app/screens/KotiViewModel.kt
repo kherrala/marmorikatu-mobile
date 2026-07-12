@@ -168,34 +168,6 @@ internal fun sceneScopeLights(scene: KotiScene, lights: List<Light>): List<Light
     }
 }
 
-/**
- * Additive light presets for the Valot view. Unlike the exclusive [KotiScene]s,
- * these toggle only their own area on/off and leave the rest of the house
- * alone — turning off the whole house to light the terrace would be wrong.
- * "Kotiintulo" is the late-night arrival path: entrance, foyer, stairs, kitchen.
- */
-enum class LightAreaPreset(val label: String, val icon: ImageVector) {
-    Terassi("Terassi", MkIcons.Armchair),
-    Autokatos("Autokatos", MkIcons.Lamp),
-    Kotiintulo("Kotiintulo", MkIcons.DoorOpen),
-}
-
-/** The light ids that make up an [LightAreaPreset]'s area. */
-internal fun areaPresetLightIds(preset: LightAreaPreset, lights: List<Light>): Set<Int> {
-    fun Light.has(vararg n: String) = n.any { name.contains(it, ignoreCase = true) }
-    fun Light.isLed() = name.contains("ledi", ignoreCase = true)
-    fun Light.kitchenCeiling() = has("Ruokailu") || (has("Keittiö") && has("atto"))
-    fun Light.foyer() = has("Eteinen", "Tuulikaappi")
-    fun Light.stairs() = has("Portaikko", "Aula rappuset")
-    return when (preset) {
-        LightAreaPreset.Terassi -> lights.filter { it.has("Terassi") }
-        LightAreaPreset.Autokatos -> lights.filter { it.has("Autokatos") && !it.isLed() }
-        LightAreaPreset.Kotiintulo -> lights.filter {
-            !it.isLed() && (it.has("Sisäänkäynti") || it.foyer() || it.stairs() || it.kitchenCeiling())
-        }
-    }.map { it.id }.toSet()
-}
-
 /** "At the door" banner content, surfaced only for a person announcement. */
 data class DoorInfo(
     val title: String,
