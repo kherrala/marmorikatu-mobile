@@ -113,6 +113,10 @@ enum class KotiScene(val label: String, val icon: ImageVector) {
     Iltavalot("Iltavalot", MkIcons.MoonStars),
     /** Movie: only the basement billiard light; everything else in the common areas goes dark. */
     Elokuva("Elokuva", MkIcons.FilmSlate),
+    /** Terrace: the outdoor terrace light on; other outdoor lights off, indoors untouched. */
+    Terassi("Terassi", MkIcons.Tree),
+    /** Late-night arrival: entrance → foyer → stairs lit, everything else off. */
+    Kotiinpaluu("Kotiinpaluu", MkIcons.House),
     /** Everything in the common areas off (bedrooms untouched). */
     KaikkiPois("Kaikki pois", MkIcons.Power),
 }
@@ -142,6 +146,7 @@ internal fun sceneOnLightIds(scene: KotiScene, lights: List<Light>): Set<Int> {
     fun Light.livingCeiling() = has("Olohuone") && has("katto")
     fun Light.foyer() = has("Eteinen", "Tuulikaappi")
     fun Light.stairs() = has("Portaikko", "Aula rappuset")
+    fun Light.terrace() = has("terassi")
     val common = lights.filterNot { isBedroomLight(it.name) }
     return when (scene) {
         KotiScene.Aamuvalot -> common.filter { !it.isLed() && (it.kitchenCeiling() || it.livingCeiling() || it.stairs() || it.foyer()) }
@@ -150,6 +155,12 @@ internal fun sceneOnLightIds(scene: KotiScene, lights: List<Light>): Set<Int> {
         // light comes on, every other basement light goes off, and nothing
         // elsewhere in the house is touched.
         KotiScene.Elokuva -> common.filter { it.floor == Floor.KELLARI && it.has("biljard") }
+        // Terrace is outdoor-only (see [sceneScopeLights]): the terrace light on,
+        // other outdoor lights off, indoors untouched.
+        KotiScene.Terassi -> common.filter { it.terrace() }
+        // Late-night arrival: light only the path in — front entrance, foyer, and
+        // the staircase — and leave everything else dark.
+        KotiScene.Kotiinpaluu -> common.filter { !it.isLed() && (it.has("Sisäänkäynti") || it.foyer() || it.stairs()) }
         KotiScene.KaikkiPois -> emptyList()
     }.map { it.id }.toSet()
 }
@@ -164,6 +175,9 @@ internal fun sceneScopeLights(scene: KotiScene, lights: List<Light>): List<Light
     val common = lights.filterNot { isBedroomLight(it.name) }
     return when (scene) {
         KotiScene.Elokuva -> common.filter { it.floor == Floor.KELLARI }
+        // Terrace governs only the outdoor lights — flipping the terrace mode never
+        // touches anything indoors.
+        KotiScene.Terassi -> common.filter { it.floor == Floor.ULKO }
         else -> common
     }
 }

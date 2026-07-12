@@ -160,35 +160,42 @@ fun ValotScreen(
     }
 }
 
-/** The four scene presets (Aamuvalot / Iltavalot / Elokuva / Kaikki pois). */
+/** The scene presets, four to a row (Aamuvalot / Iltavalot / Elokuva / Terassi / Kotiinpaluu / Kaikki pois). */
 @Composable
 private fun PresetRow(active: KotiScene?, onApply: (KotiScene) -> Unit) {
     val c = MkTheme.colors
     val shape = RoundedCornerShape(MkRadius.md)
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        KotiScene.entries.forEach { s ->
-            val on = s == active
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(84.dp)
-                    .clip(shape)
-                    .background(if (on) c.accent else c.surfaceCard)
-                    .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
-                    .clickable { onApply(s) }
-                    .padding(vertical = 12.dp, horizontal = 4.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Icon(s.icon, null, tint = if (on) c.inkOnAccent else c.inkMid, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.height(7.dp))
-                Text(
-                    text = s.label,
-                    style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
-                    color = if (on) c.inkOnAccent else c.inkMid,
-                    maxLines = 1,
-                    textAlign = TextAlign.Center,
-                )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Four columns per row (design grid); a short last row is padded so the
+        // remaining chips keep their quarter-width rather than stretching.
+        KotiScene.entries.chunked(4).forEach { rowScenes ->
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                rowScenes.forEach { s ->
+                    val on = s == active
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(84.dp)
+                            .clip(shape)
+                            .background(if (on) c.accent else c.surfaceCard)
+                            .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
+                            .clickable { onApply(s) }
+                            .padding(vertical = 12.dp, horizontal = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(s.icon, null, tint = if (on) c.inkOnAccent else c.inkMid, modifier = Modifier.size(22.dp))
+                        Spacer(Modifier.height(7.dp))
+                        Text(
+                            text = s.label,
+                            style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
+                            color = if (on) c.inkOnAccent else c.inkMid,
+                            maxLines = 2,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+                repeat(4 - rowScenes.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }

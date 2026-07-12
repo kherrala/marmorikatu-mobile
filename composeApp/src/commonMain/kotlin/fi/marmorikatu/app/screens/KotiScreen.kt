@@ -78,7 +78,6 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     val state by viewModel.uiState.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
     val news by viewModel.news.collectAsState()
-    val activePreset by viewModel.activePreset.collectAsState()
     val kpiDetailSeries by viewModel.kpiDetailSeries.collectAsState()
     val kpiDetailLoading by viewModel.kpiDetailLoading.collectAsState()
     val weather by viewModel.weather.collectAsState()
@@ -316,9 +315,6 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 )
             }
 
-            SectionLabel("Valaistus")
-            SceneRow(active = activePreset, onScene = viewModel::applyPreset)
-
             if (state.rooms.isNotEmpty()) {
                 val safeIndex = roomIndex.coerceIn(0, state.rooms.size - 1)
                 SectionLabel("Lämpötilat", updatedAtEpochSeconds = updatedAt)
@@ -444,53 +440,6 @@ private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit, onRead: () -> Unit,
                 modifier = Modifier.size(18.dp),
             )
             Text(if (reading) "Lopeta" else "Lue", style = MkTheme.type.readout(10).copy(letterSpacing = 0.06.em), color = tint)
-        }
-    }
-}
-
-/**
- * One-tap lighting scenes, per the design's "Pikatilat" strip. Scrolls
- * horizontally; an active scene is filled with the accent tint so its state is
- * visible at a glance, and tapping it again toggles it off.
- */
-@Composable
-internal fun SceneRow(active: KotiScene?, onScene: (KotiScene) -> Unit) {
-    val c = MkTheme.colors
-    val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.md)
-    // Full-width grid: the four presets share the row as equal columns (design's
-    // repeat(4,1fr)) rather than a left-aligned horizontally scrolling strip.
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        KotiScene.entries.forEach { s ->
-            val on = s == active
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 62.dp)
-                    .clip(shape)
-                    .background(if (on) c.accentDim else c.surfaceCard)
-                    .border(1.dp, if (on) c.accentBorder else c.borderSubtle, shape)
-                    .clickable { onScene(s) }
-                    .padding(vertical = 11.dp, horizontal = 4.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                androidx.compose.material3.Icon(
-                    imageVector = s.icon,
-                    contentDescription = null,
-                    tint = c.accent,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = s.label,
-                    style = MkTheme.type.label,
-                    color = if (on) c.accent else c.inkMid,
-                    maxLines = 1,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
-            }
         }
     }
 }
