@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -131,19 +132,28 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     }
     if (detailOpen) LockLandscapeWhileVisible()
 
-    MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(colors.appBg)
-                .verticalScroll(rememberScrollState())
-                .padding(MkSpacing.pagePad),
-            verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
-        ) {
-            // No freshness/refresh bar here: pull-to-refresh already covers it.
-            val selected = selKey?.let { key -> state.kpis.firstOrNull { it.key == key } }
+    // Dashboard scroll, seeded from and written back to the VM. It is attached only
+    // to the dashboard branch below, so a detail chart never clobbers it — returning
+    // from a chart lands where the user left off.
+    val scrollState = rememberScrollState(viewModel.scrollOffset)
+    LaunchedEffect(scrollState) {
+        snapshotFlow { scrollState.value }.collect { viewModel.scrollOffset = it }
+    }
 
-            if (selected != null) {
+    MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
+        val selected = selKey?.let { key -> state.kpis.firstOrNull { it.key == key } }
+        val room = roomDetailIndex?.let { state.rooms.getOrNull(it) }
+        // Detail charts render in their own scroll container, separate from the
+        // dashboard's [scrollState], so opening/closing one leaves it untouched.
+        if (selected != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.appBg)
+                    .verticalScroll(rememberScrollState())
+                    .padding(MkSpacing.pagePad),
+                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+            ) {
                 // Load this metric's history at the chosen window from InfluxDB.
                 val hasSource = selected.detailMeasurement != null && selected.detailField != null
                 LaunchedEffect(selected.key, detailRange, hasSource) {
@@ -195,12 +205,17 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 } else if (hasSource && loaded.size < 2) {
                     Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
                 }
-                return@Column
             }
-
+        } else if (room != null) {
             // Room temperature detail — opened by tapping the climate card's value.
-            val room = roomDetailIndex?.let { state.rooms.getOrNull(it) }
-            if (room != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.appBg)
+                    .verticalScroll(rememberScrollState())
+                    .padding(MkSpacing.pagePad),
+                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+            ) {
                 val field = room.historyField
                 LaunchedEffect(room.name, detailRange, field) {
                     if (field != null) viewModel.loadKpiDetail("rooms", field, null, null, detailRange)
@@ -236,9 +251,16 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 } else if (field != null && kpiDetailSeries.size < 2) {
                     Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
                 }
-                return@Column
             }
-
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.appBg)
+                    .verticalScroll(scrollState)
+                    .padding(MkSpacing.pagePad),
+                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+            ) {
             val activeAttn = state.attention.filterNot { it.text in dismissedAttn }
             val dismissedAttnItems = state.attention.filter { it.text in dismissedAttn }
             // Only surface the strip when something actually needs attention — the
@@ -346,6 +368,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
             }
 
             Spacer(Modifier.height(MkSpacing.scrollBottomGap))
+            }
         }
     }
 }

@@ -39,6 +39,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -168,7 +169,17 @@ fun IlmastoScreen(
         if (focus != null) LockLandscapeWhileVisible()
     }
 
-    val listState = rememberLazyListState()
+    // Seed the list from the VM-preserved position and write scroll changes back,
+    // so returning from a focus chart (which recreates this screen via the forced
+    // landscape) lands where the user left off instead of at the top.
+    val listState = rememberLazyListState(viewModel.listScrollIndex, viewModel.listScrollOffset)
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) ->
+                viewModel.listScrollIndex = index
+                viewModel.listScrollOffset = offset
+            }
+    }
     val scope = rememberCoroutineScope()
     // Scroll-spy: the highlighted sub-tab follows the top-most visible section.
     // The list is [sticky tabs, Lämpö, Ilma, Maalämpö, Ilmanvaihto, Jäähdytys],
@@ -232,10 +243,10 @@ fun IlmastoScreen(
                     }
                 }
                 item(key = "ilma") { AirQualityCard(snapshot, openFocus) }
-                item(key = "anturit") { AnturitSection(ruuvi) }
+                item(key = "anturit") { AnturitSection(ruuvi, openFocus) }
                 item(key = "maalampo") { HeatPumpCard(heatPump, openFocus) }
                 item(key = "iv") { VentilationCard(snapshot, ventilation, openFocus) }
-                item(key = "jaahdytys") { JaahdytysSection(ventilation, cooling) }
+                item(key = "jaahdytys") { JaahdytysSection(ventilation, cooling, openFocus) }
                 if (snapshot.failed) {
                     item(key = "failed") {
                         Text(
@@ -370,19 +381,27 @@ private fun AirQualityCard(snapshot: IlmastoSnapshot, onFocus: (FocusMetric) -> 
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
             val humidity = air?.humidity?.value ?: hvac?.humidityPct
-            GaugeSlot {
+            // Only the ruuvi humidity has a history series to focus; the hvac
+            // fallback isn't the same measurement, so it stays non-tappable.
+            GaugeSlot(onClick = air?.humidity?.let { h ->
+                { onFocus(FocusMetric(MkIcons.DropHalf, "Kosteus", Fmt.int(h.value), "%", "ruuvi", "humidity", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+            }) {
                 if (humidity != null) {
                     MkGauge(value = humidity.toFloat(), max = 100f, label = "Kosteus", unit = "%", status = "accent", size = 96.dp)
                 } else GaugePlaceholder("Kosteus")
             }
             val co2 = air?.co2
-            GaugeSlot {
+            GaugeSlot(onClick = co2?.let { c ->
+                { onFocus(FocusMetric(MkIcons.Wind, "CO₂", Fmt.int(c.value), "ppm", "ruuvi", "co2", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+            }) {
                 if (co2 != null) {
                     MkGauge(value = co2.value.toFloat(), max = 1500f, label = "CO₂ ppm", unit = "", status = air.statusOf(co2) ?: "accent", size = 96.dp)
                 } else GaugePlaceholder("CO₂")
             }
             val pm = air?.pm25
-            GaugeSlot {
+            GaugeSlot(onClick = pm?.let { p ->
+                { onFocus(FocusMetric(MkIcons.Wind, "PM2.5", Fmt.oneDecimal(p.value), "µg/m³", "ruuvi", "pm2_5", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+            }) {
                 if (pm != null) {
                     MkGauge(value = pm.value.toFloat(), max = 35f, label = "PM2.5", unit = "", status = air.statusOf(pm) ?: "ok", size = 96.dp)
                 } else GaugePlaceholder("PM2.5")
@@ -570,11 +589,19 @@ private fun ReadoutRow(label: String, celsius: Double?, onClick: (() -> Unit)? =
 
 // ── Jäähdytys: cooling + humidity control (read-only) ───────────────────────
 
-private data class ClimTile(val label: String, val value: String?, val unit: String?, val icon: ImageVector)
+/** A cooling/humidity readout; a non-null [field] makes the tile open its `hvac` history chart. */
+private data class ClimTile(
+    val label: String,
+    val value: String?,
+    val unit: String?,
+    val icon: ImageVector,
+    val measurement: String = "hvac",
+    val field: String? = null,
+)
 
 /** Two-column grid of stat tiles (heat-pump/cooling readout style). */
 @Composable
-private fun StatGrid(tiles: List<ClimTile>) {
+private fun StatGrid(tiles: List<ClimTile>, onFocus: (FocusMetric) -> Unit) {
     tiles.chunked(2).forEach { row ->
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x2),
@@ -586,6 +613,9 @@ private fun StatGrid(tiles: List<ClimTile>) {
                     value = t.value ?: NO_DATA,
                     unit = if (t.value != null) t.unit else null,
                     icon = t.icon,
+                    onClick = if (t.value != null && t.field != null) {
+                        { onFocus(FocusMetric(t.icon, t.label, t.value, t.unit ?: "", t.measurement, t.field)) }
+                    } else null,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -623,7 +653,7 @@ private fun DisplayPills(options: List<String>, activeIndex: Int) {
 }
 
 @Composable
-private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling) {
+private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling, onFocus: (FocusMetric) -> Unit) {
     val c = MkTheme.colors
     val active = cooling.pumpCooling || cooling.coolingPump
     fun raw(vararg keys: String): Double? = keys.firstNotNullOfOrNull { ventilation.raw[it] }
@@ -640,11 +670,14 @@ private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling) {
             DisplayPills(listOf("Pois", "Auto", "Päällä"), if (active) 2 else 0)
             StatGrid(
                 listOf(
-                    ClimTile("Jäähd. meno", cooling.coolantSupplyC?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.Snowflake),
-                    ClimTile("Jäähd. paluu", cooling.coolantReturnC?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.ThermometerCold),
-                    ClimTile("Venttiili", raw("damperposition")?.let { Fmt.int(it) }, "%", MkIcons.Drop),
+                    // meno = the chilled feed (consistently the colder coil = Jaahpatteri_2);
+                    // paluu = the warmer return coil (Jaahpatteri_1). Venttiili = actuator drive.
+                    ClimTile("Jäähd. meno", cooling.coolantSupplyC?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.Snowflake, field = "Jaahpatteri_2"),
+                    ClimTile("Jäähd. paluu", cooling.coolantReturnC?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.ThermometerCold, field = "Jaahpatteri_1"),
+                    ClimTile("Venttiili", raw("damperposition")?.let { Fmt.int(it) }, "%", MkIcons.Drop, field = "Toimilaite_ohjaus"),
                     ClimTile("Kiertopumppu", if (active) "Päällä" else "Pois", null, MkIcons.FanFill),
                 ),
+                onFocus,
             )
             // ASETUSARVOT — the PLC's cooling control setpoints (rMaxInAir /
             // rMinInAir / outdoor-min / dew-point margin). These are persistent
@@ -686,11 +719,12 @@ private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling) {
             }
             StatGrid(
                 listOf(
-                    ClimTile("Suhteellinen", (ventilation.relativeHumidity ?: raw("relativehumidity", "indoorrh"))?.let { Fmt.int(it) }, "%", MkIcons.DropHalf),
-                    ClimTile("Absoluuttinen", raw("abshumidity")?.let { Fmt.oneDecimal(it) }, "g/m³", MkIcons.Drop),
-                    ClimTile("Kastepiste", raw("dewpoint")?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.ThermometerCold),
-                    ClimTile("Entalpia", raw("enthalpy")?.let { Fmt.oneDecimal(it) }, "kJ/kg", MkIcons.Leaf),
+                    ClimTile("Suhteellinen", (ventilation.relativeHumidity ?: raw("relativehumidity", "indoorrh"))?.let { Fmt.int(it) }, "%", MkIcons.DropHalf, field = "Suhteellinen_kosteus"),
+                    ClimTile("Absoluuttinen", raw("abshumidity")?.let { Fmt.oneDecimal(it) }, "g/m³", MkIcons.Drop, field = "Absoluuttinen_kosteus"),
+                    ClimTile("Kastepiste", raw("dewpoint")?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.ThermometerCold, field = "Kastepiste"),
+                    ClimTile("Entalpia", raw("enthalpy")?.let { Fmt.oneDecimal(it) }, "kJ/kg", MkIcons.Leaf, field = "Entalpia"),
                 ),
+                onFocus,
             )
         }
     }
@@ -699,8 +733,13 @@ private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling) {
 // ── Gauges ──────────────────────────────────────────────────────────────────
 
 @Composable
-private fun GaugeSlot(content: @Composable () -> Unit) {
-    Box(contentAlignment = Alignment.Center) { content() }
+private fun GaugeSlot(onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = if (onClick != null) {
+            Modifier.clip(RoundedCornerShape(MkRadius.md)).clickable(onClick = onClick)
+        } else Modifier,
+    ) { content() }
 }
 
 @Composable
@@ -732,25 +771,34 @@ private fun ltoStatus(value: Double): String = when {
 // ── Anturit: the Ruuvi tag readings ─────────────────────────────────────────
 
 @Composable
-private fun AnturitSection(ruuvi: Map<String, RuuviReading>) {
+private fun AnturitSection(ruuvi: Map<String, RuuviReading>, onFocus: (FocusMetric) -> Unit) {
     val c = MkTheme.colors
-    data class Anturi(val name: String, val icon: ImageVector, val value: String, val warn: Boolean)
+    data class Anturi(val name: String, val icon: ImageVector, val value: String, val warn: Boolean, val focus: FocusMetric?)
+    // Each Ruuvi temperature opens its 24 h history (ruuvi/temperature filtered to
+    // that sensor). Pressure has no per-sensor detail here (the user asked for the
+    // temperatures), so it stays a plain readout.
+    fun tempFocus(name: String, icon: ImageVector, valueStr: String, sensor: String) =
+        FocusMetric(icon, name, valueStr, "°C", "ruuvi", "temperature", tagKey = "sensor_name", tagValue = sensor)
     val pressureHpa = ruuvi.values.firstNotNullOfOrNull { it.pressure }?.let { it / 100.0 }
     val rows = buildList {
         ruuvi[RuuviSensors.FRIDGE]?.temperature?.let {
-            add(Anturi("Jääkaappi", MkIcons.ThermometerCold, "${Fmt.oneDecimal(it)} °C", it > 8.0))
+            val v = Fmt.oneDecimal(it)
+            add(Anturi("Jääkaappi", MkIcons.ThermometerCold, "$v °C", it > 8.0, tempFocus("Jääkaappi", MkIcons.ThermometerCold, v, RuuviSensors.FRIDGE)))
         }
         ruuvi[RuuviSensors.FREEZER]?.temperature?.let {
-            add(Anturi("Pakastin", MkIcons.Snowflake, "${Fmt.oneDecimal(it)} °C", it > -15.0))
+            val v = Fmt.oneDecimal(it)
+            add(Anturi("Pakastin", MkIcons.Snowflake, "$v °C", it > -15.0, tempFocus("Pakastin", MkIcons.Snowflake, v, RuuviSensors.FREEZER)))
         }
         ruuvi["Takka"]?.temperature?.let {
-            add(Anturi("Takka", MkIcons.FlameFill, "${Fmt.int(it)} °C", false))
+            val v = Fmt.int(it)
+            add(Anturi("Takka", MkIcons.FlameFill, "$v °C", false, tempFocus("Takka", MkIcons.FlameFill, v, "Takka")))
         }
         ruuvi[RuuviSensors.OUTDOOR]?.temperature?.let {
-            add(Anturi("Ulkoilma", MkIcons.Tree, "${Fmt.oneDecimal(it)} °C", false))
+            val v = Fmt.oneDecimal(it)
+            add(Anturi("Ulkoilma", MkIcons.Tree, "$v °C", false, tempFocus("Ulkoilma", MkIcons.Tree, v, RuuviSensors.OUTDOOR)))
         }
         pressureHpa?.let {
-            add(Anturi("Ilmanpaine", MkIcons.Gauge, "${Fmt.int(it)} hPa", false))
+            add(Anturi("Ilmanpaine", MkIcons.Gauge, "${Fmt.int(it)} hPa", false, null))
         }
     }
     if (rows.isEmpty()) return
@@ -771,6 +819,7 @@ private fun AnturitSection(ruuvi: Map<String, RuuviReading>) {
                         .clip(RoundedCornerShape(MkRadius.sm))
                         .background(if (a.warn) c.warmDim else c.surfaceCard)
                         .border(1.dp, if (a.warn) c.warm else c.borderSubtle, RoundedCornerShape(MkRadius.sm))
+                        .then(if (a.focus != null) Modifier.clickable { onFocus(a.focus) } else Modifier)
                         .padding(horizontal = MkSpacing.x3, vertical = MkSpacing.x2),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
@@ -782,6 +831,10 @@ private fun AnturitSection(ruuvi: Map<String, RuuviReading>) {
                             .background(if (a.warn) c.warm else c.accent),
                     )
                     Text(a.value, style = MkTheme.type.readout(15), color = c.inkHi)
+                    // Chevron hints the row drills into a history chart.
+                    if (a.focus != null) {
+                        Icon(MkIcons.CaretRight, null, tint = c.inkLo, modifier = Modifier.size(14.dp))
+                    }
                 }
             }
         }

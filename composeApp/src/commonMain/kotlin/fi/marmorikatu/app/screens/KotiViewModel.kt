@@ -307,6 +307,13 @@ class KotiViewModel(
     private val _detailRange = MutableStateFlow(TimeRangeOption.H24)
     val detailRange: StateFlow<TimeRangeOption> = _detailRange.asStateFlow()
 
+    /**
+     * Dashboard scroll offset, kept here for the same reason as the detail state:
+     * the page is recreated when a detail chart forces landscape, so a plain
+     * remembered ScrollState would snap back to the top on return.
+     */
+    var scrollOffset: Int = 0
+
     // The door-camera viewer also forces landscape, so its open flag must live in
     // the ViewModel too — a plain remember would be wiped by the page recreation
     // and the viewer would snap shut.

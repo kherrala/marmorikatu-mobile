@@ -66,6 +66,12 @@ class IlmastoViewModel(
     private val _focusLoading = MutableStateFlow(false)
     val focusLoading: StateFlow<Boolean> = _focusLoading.asStateFlow()
 
+    // Section-list scroll position, kept in the VM so it survives the composition
+    // being recreated while a focus chart forces landscape — otherwise returning
+    // from the chart would snap the list back to the top. Same rationale as [focus].
+    var listScrollIndex: Int = 0
+    var listScrollOffset: Int = 0
+
     // The focused readout lives here (not in the composable) so it survives the
     // phone turning to landscape for the chart — see KotiViewModel for why.
     private val _focus = MutableStateFlow<FocusMetric?>(null)
