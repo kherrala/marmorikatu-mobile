@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -226,6 +227,19 @@ fun MkLineChart(
                     end = Offset(w, y),
                     strokeWidth = 1.dp.toPx(),
                 )
+            }
+
+            // Vertical gridlines, one per x-axis label so the two always line up.
+            if (labels.size > 1) {
+                for (i in labels.indices) {
+                    val x = i.toFloat() / (labels.size - 1) * w
+                    drawLine(
+                        color = colors.vizGrid,
+                        start = Offset(x, 0f),
+                        end = Offset(x, h),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                }
             }
 
             fun px(i: Int, n: Int): Float = if (n <= 1) 0f else i.toFloat() / (n - 1) * w
@@ -560,8 +574,6 @@ fun MkMetricDetail(
     onRangeChange: ((TimeRangeOption) -> Unit)? = null,
     /** When set, a "Takaisin" button rides the top row beside the range picker. */
     onBack: (() -> Unit)? = null,
-    /** Let the chart grow to fill the height the caller gives the card (no dead space below). */
-    fillHeight: Boolean = false,
 ) {
     val colors = MkTheme.colors
     // Note: MetricDetail alarm is the ink variant, unlike Gauge's --status-alarm.
@@ -595,8 +607,9 @@ fun MkMetricDetail(
     }
 
     // Reusable pieces so the portrait (stacked) and landscape (side-by-side)
-    // layouts share one definition.
-    val header: @Composable () -> Unit = {
+    // layouts share one definition; the side-by-side column passes a smaller
+    // readout so the readout + stats fit its narrow height without clipping.
+    val header: @Composable (Int) -> Unit = { valueSize ->
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -619,7 +632,7 @@ fun MkMetricDetail(
                     color = colors.inkMid,
                 )
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Text(text = value, style = MkTheme.type.readout(38), color = lineColor)
+                    Text(text = value, style = MkTheme.type.readout(valueSize), color = lineColor)
                     // Only pair a unit with a numeric readout — a state word like
                     // "Käy" / "Seis" / "Ei tietoa" must not read "Käy kW".
                     val numeric = value.trimStart('-', '+', ' ').firstOrNull()?.isDigit() == true
@@ -666,7 +679,7 @@ fun MkMetricDetail(
     // figures in less width, leaving the rest for a wider chart.
     val statsColumn: @Composable () -> Unit = {
         if (mergedStats.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 mergedStats.forEach { stat ->
                     Column {
                         Text(
@@ -674,26 +687,21 @@ fun MkMetricDetail(
                             style = MkTheme.type.readout(10).copy(letterSpacing = 0.1.em),
                             color = colors.inkLo,
                         )
-                        Text(text = stat.v, style = MkTheme.type.readout(17), color = colors.inkHi)
+                        Text(text = stat.v, style = MkTheme.type.readout(16), color = colors.inkHi)
                     }
                 }
             }
         }
     }
 
-    MkCard(modifier = modifier, padding = MkCardPadding.PadLg) {
-        BoxWithConstraints(
-            modifier = Modifier.fillMaxWidth().then(if (fillHeight) Modifier.fillMaxHeight() else Modifier),
-        ) {
+    MkCard(modifier = modifier, padding = MkCardPadding.Pad) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             // Landscape / kiosk: put the readout + range + stats in a left column
             // and give the chart the whole right side, so rotating actually makes
             // the chart bigger instead of pushing it off the bottom.
             val wide = maxWidth >= 560.dp
             if (wide) {
-                Column(
-                    modifier = if (fillHeight) Modifier.fillMaxHeight() else Modifier,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     // Back button (left) + range selector (right) share the top row,
                     // above the chart, so the whole detail fits without scrolling.
                     if (onBack != null || (range != null && onRangeChange != null)) {
@@ -716,15 +724,18 @@ fun MkMetricDetail(
                             }
                         }
                     }
+                    // The row's height is the readout+stats column's own height, and the
+                    // chart fills it — so the chart is always as tall as the side panel
+                    // (no dead space below it) and the stats never clip.
                     Row(
-                        modifier = if (fillHeight) Modifier.weight(1f) else Modifier,
+                        modifier = Modifier.height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         Column(
                             modifier = Modifier.weight(0.28f),
-                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            header()
+                            header(26)
                             statsColumn()
                         }
                         MkLineChart(
@@ -733,14 +744,13 @@ fun MkMetricDetail(
                             height = 190.dp,
                             showLegend = false,
                             scrubbable = true,
-                            fillHeight = fillHeight,
-                            modifier = Modifier.weight(0.72f)
-                                .then(if (fillHeight) Modifier.fillMaxHeight() else Modifier),
+                            fillHeight = true,
+                            modifier = Modifier.weight(0.72f).fillMaxHeight(),
                         )
                     }
                 }
             } else {
-                Column(modifier = if (fillHeight) Modifier.fillMaxHeight() else Modifier) {
+                Column {
                     if (onBack != null) {
                         MkButton(
                             text = "Takaisin",
@@ -751,20 +761,13 @@ fun MkMetricDetail(
                         )
                         Spacer(Modifier.height(10.dp))
                     }
-                    header()
+                    header(38)
                     Spacer(Modifier.height(14.dp))
                     if (range != null && onRangeChange != null) {
                         rangePicker()
                         Spacer(Modifier.height(12.dp))
                     }
-                    MkLineChart(
-                        series = series,
-                        labels = labels,
-                        showLegend = false,
-                        scrubbable = true,
-                        fillHeight = fillHeight,
-                        modifier = if (fillHeight) Modifier.weight(1f) else Modifier,
-                    )
+                    MkLineChart(series = series, labels = labels, showLegend = false, scrubbable = true)
                     if (mergedStats.isNotEmpty()) {
                         Spacer(Modifier.height(14.dp))
                         statsRow(true)

@@ -7,7 +7,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -70,8 +69,11 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.koin.compose.viewmodel.koinViewModel
 import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 /**
  * Koti (home): the attention strip, an optional door alert, the climate card,
@@ -151,17 +153,14 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
         // Detail charts render in their own scroll container, separate from the
         // dashboard's [scrollState], so opening/closing one leaves it untouched.
         if (selected != null) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize().background(colors.appBg)) {
-                // Size the card to the viewport so its chart fills the height instead of
-                // leaving dead space below; content taller than this still scrolls.
-                val cardHeight = maxHeight - MkSpacing.pagePad * 2
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(MkSpacing.pagePad),
-                    verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
-                ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.appBg)
+                    .verticalScroll(rememberScrollState())
+                    .padding(MkSpacing.pagePad),
+                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+            ) {
                 // Load this metric's history at the chosen window from InfluxDB.
                 val hasSource = selected.detailMeasurement != null && selected.detailField != null
                 LaunchedEffect(selected.key, detailRange, hasSource) {
@@ -196,9 +195,8 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     range = if (hasSource) detailRange else null,
                     onRangeChange = if (hasSource) ({ viewModel.setDetailRange(it) }) else null,
                     onBack = { viewModel.closeDetail() },
-                    fillHeight = true,
                     // Swipe the card to the right to go back to the grid.
-                    modifier = Modifier.height(cardHeight).pointerInput(selKey) {
+                    modifier = Modifier.pointerInput(selKey) {
                         var dragged = 0f
                         detectHorizontalDragGestures(
                             onDragEnd = {
@@ -213,7 +211,6 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     Text("Ladataan historiaa…", style = MkTheme.type.label, color = colors.inkLo)
                 } else if (hasSource && loaded.size < 2) {
                     Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
-                }
                 }
             }
         } else if (room != null) {
@@ -549,28 +546,36 @@ private fun KpiGrid(kpis: List<KotiKpi>, onSelect: (String) -> Unit) {
     }
 }
 
+private val WEEKDAYS = listOf("ma", "ti", "ke", "to", "pe", "la", "su")
+private val MONTHS =
+    listOf("tammi", "helmi", "maalis", "huhti", "touko", "kesä", "heinä", "elo", "syys", "loka", "marras", "joulu")
+
 /**
- * X-axis ticks describing the selected detail window. The intraday windows are
- * *rolling* (`-6h` / `-24h`, ending now), so each tick reads as the actual clock
- * hour (no minutes) at that point, computed from the device clock so it always
- * lines up with the plotted window; the final tick is the live edge ("nyt").
+ * X-axis ticks describing the selected detail window. Every window is *rolling*
+ * (ends now), so the ticks are evenly-spaced points walked back from now and
+ * formatted for the window — clock hour (no minutes) intraday, weekday / day /
+ * month for the longer ranges — with the final tick the live edge ("nyt"). They
+ * are computed from the device clock so they always line up with the plotted data
+ * and with the chart's vertical gridlines.
  */
 @OptIn(ExperimentalTime::class)
 internal fun chartLabels(range: TimeRangeOption): List<String> {
-    fun hourTicks(windowHours: Int, stepHours: Int): List<String> {
-        val now = Clock.System.now()
-        val zone = TimeZone.currentSystemDefault()
-        val ticks = (windowHours downTo stepHours step stepHours).map { back ->
-            (now - back.hours).toLocalDateTime(zone).hour.toString().padStart(2, '0')
-        }
-        return ticks + "nyt"
+    val now = Clock.System.now()
+    val zone = TimeZone.currentSystemDefault()
+    fun ticks(window: Duration, count: Int, fmt: (Instant) -> String): List<String> {
+        val step = window / count
+        return (count downTo 1).map { back -> fmt(now - step * back) } + "nyt"
     }
+    fun hh(i: Instant) = i.toLocalDateTime(zone).hour.toString().padStart(2, '0')
+    fun wd(i: Instant) = WEEKDAYS[i.toLocalDateTime(zone).dayOfWeek.ordinal]
+    fun dom(i: Instant) = "${i.toLocalDateTime(zone).dayOfMonth}."
+    fun mon(i: Instant) = MONTHS[i.toLocalDateTime(zone).monthNumber - 1]
     return when (range) {
-        TimeRangeOption.H6 -> hourTicks(6, 1)
-        TimeRangeOption.H24 -> hourTicks(24, 4)
-        TimeRangeOption.D7 -> listOf("ma", "ke", "pe", "su")
-        TimeRangeOption.D30 -> listOf("1.", "10.", "20.", "30.")
-        TimeRangeOption.Y1 -> listOf("tammi", "huhti", "heinä", "loka")
+        TimeRangeOption.H6 -> ticks(6.hours, 6, ::hh)
+        TimeRangeOption.H24 -> ticks(24.hours, 8, ::hh)
+        TimeRangeOption.D7 -> ticks(7.days, 7, ::wd)
+        TimeRangeOption.D30 -> ticks(30.days, 6, ::dom)
+        TimeRangeOption.Y1 -> ticks(365.days, 6, ::mon)
     }
 }
 
