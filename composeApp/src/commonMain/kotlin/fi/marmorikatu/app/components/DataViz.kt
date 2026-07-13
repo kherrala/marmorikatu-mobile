@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkTheme
@@ -539,6 +540,7 @@ fun MkGauge(
  * KPI detail card: header with a big readout and range selector, a line chart,
  * and a stats row. Built on [MkCard] and [MkTimeRange].
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MkMetricDetail(
     icon: ImageVector,
@@ -564,6 +566,27 @@ fun MkMetricDetail(
         "alarm" -> colors.statusAlarmInk
         "info" -> colors.statusInfo
         else -> colors.accent
+    }
+
+    // Enrich the caller's stats with min/max/avg read straight off the plotted
+    // series, so the side panel carries more than the current reading. Skipped for
+    // state metrics ("Käy"/"Seis") and for any key the caller already supplies
+    // (e.g. the price detail's own min/max/ka), which keep the caller's formatting.
+    val numericReadout = value.trimStart('-', '+', ' ').firstOrNull()?.isDigit() == true
+    val mergedStats = remember(stats, series, unit, numericReadout) {
+        val vals = series.firstOrNull()?.values.orEmpty()
+        val derived = if (numericReadout && vals.size >= 2) {
+            fun fmt(v: Float): String =
+                if (unit.isBlank()) Fmt.oneDecimal(v.toDouble()) else "${Fmt.oneDecimal(v.toDouble())} $unit"
+            listOf(
+                MkStat("min", fmt(vals.min())),
+                MkStat("max", fmt(vals.max())),
+                MkStat("ka", fmt(vals.average().toFloat())),
+            )
+        } else {
+            emptyList()
+        }
+        stats + derived.filter { d -> stats.none { it.k.equals(d.k, ignoreCase = true) } }
     }
 
     // Reusable pieces so the portrait (stacked) and landscape (side-by-side)
@@ -613,14 +636,33 @@ fun MkMetricDetail(
         }
     }
     val statsRow: @Composable (Boolean) -> Unit = { hairline ->
-        if (stats.isNotEmpty()) {
-            Row(
+        if (mergedStats.isNotEmpty()) {
+            FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(if (hairline) Modifier.drawTopHairline(colors.borderSubtle).padding(top = 12.dp) else Modifier),
                 horizontalArrangement = Arrangement.spacedBy(22.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                stats.forEach { stat ->
+                mergedStats.forEach { stat ->
+                    Column {
+                        Text(
+                            text = stat.k.uppercase(),
+                            style = MkTheme.type.readout(10).copy(letterSpacing = 0.1.em),
+                            color = colors.inkLo,
+                        )
+                        Text(text = stat.v, style = MkTheme.type.readout(17), color = colors.inkHi)
+                    }
+                }
+            }
+        }
+    }
+    // Vertical stat list for the wide layout's narrow side panel: stacking fits more
+    // figures in less width, leaving the rest for a wider chart.
+    val statsColumn: @Composable () -> Unit = {
+        if (mergedStats.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                mergedStats.forEach { stat ->
                     Column {
                         Text(
                             text = stat.k.uppercase(),
@@ -664,21 +706,21 @@ fun MkMetricDetail(
                             }
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         Column(
-                            modifier = Modifier.weight(0.38f),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(0.28f),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
                             header()
-                            statsRow(false)
+                            statsColumn()
                         }
                         MkLineChart(
                             series = series,
                             labels = labels,
-                            height = 180.dp,
+                            height = 190.dp,
                             showLegend = false,
                             scrubbable = true,
-                            modifier = Modifier.weight(0.62f),
+                            modifier = Modifier.weight(0.72f),
                         )
                     }
                 }

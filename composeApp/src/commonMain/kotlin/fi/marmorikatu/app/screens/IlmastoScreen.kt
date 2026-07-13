@@ -102,10 +102,14 @@ private enum class IlmastoSub(val label: String) {
     Jaahdytys("Jäähdytys"),
 }
 
-/** Axis ticks must describe the selected window, not always a 24-hour clock. */
+/**
+ * Axis ticks describing the selected window. The intraday windows are *rolling*
+ * (`-6h` / `-24h`, ending now), so they read as hours-before-now, not a fixed
+ * wall clock — the old "00:00…18:00" mislabeled every 24 h tick but "nyt".
+ */
 private fun ilmastoAxisLabels(range: TimeRangeOption): List<String> = when (range) {
     TimeRangeOption.H6 -> listOf("-6 t", "-4 t", "-2 t", "nyt")
-    TimeRangeOption.H24 -> listOf("00:00", "06:00", "12:00", "18:00", "nyt")
+    TimeRangeOption.H24 -> listOf("-24 t", "-20 t", "-16 t", "-12 t", "-8 t", "-4 t", "nyt")
     TimeRangeOption.D7 -> listOf("ma", "ke", "pe", "su")
     TimeRangeOption.D30 -> listOf("1.", "10.", "20.", "30.")
     TimeRangeOption.Y1 -> listOf("tammi", "huhti", "heinä", "loka")
