@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -139,6 +140,8 @@ fun MkLineChart(
     showYAxis: Boolean = true,
     /** Drag across the chart to read each sample: crosshair + value tooltip. */
     scrubbable: Boolean = false,
+    /** Let the plot area grow to fill the height its parent gives it (else [height]). */
+    fillHeight: Boolean = false,
 ) {
     val colors = MkTheme.colors
     val allValues = series.flatMap { it.values }
@@ -179,14 +182,14 @@ fun MkLineChart(
             }
         }
 
-        Row(modifier = Modifier.fillMaxWidth()) {
+        Row(modifier = Modifier.fillMaxWidth().then(if (fillHeight) Modifier.weight(1f) else Modifier)) {
             if (showYAxis) {
-                YAxisLabels(lo = lo, hi = hiRaw, ticks = grid + 1, height = height, width = yAxisWidth)
+                YAxisLabels(lo = lo, hi = hiRaw, ticks = grid + 1, height = height, width = yAxisWidth, fill = fillHeight)
             }
             Canvas(
                 modifier = Modifier
                     .weight(1f)
-                    .height(height)
+                    .then(if (fillHeight) Modifier.fillMaxHeight() else Modifier.height(height))
                     // Keep the plot inside its box: an out-of-range value must never
                     // draw up over the legend or down past the axis.
                     .clipToBounds()
@@ -310,14 +313,14 @@ fun MkLineChart(
  * spaced to line up with the chart's horizontal gridlines.
  */
 @Composable
-private fun YAxisLabels(lo: Float, hi: Float, ticks: Int, height: Dp, width: Dp) {
+private fun YAxisLabels(lo: Float, hi: Float, ticks: Int, height: Dp, width: Dp, fill: Boolean = false) {
     val colors = MkTheme.colors
     val span = hi - lo
     val decimals = if (kotlin.math.abs(span) >= 20f || kotlin.math.abs(hi) >= 100f) 0 else 1
     Column(
         modifier = Modifier
             .width(width)
-            .height(height)
+            .then(if (fill) Modifier.fillMaxHeight() else Modifier.height(height))
             .padding(end = 6.dp),
         verticalArrangement = Arrangement.SpaceBetween,
         horizontalAlignment = Alignment.End,
@@ -557,6 +560,8 @@ fun MkMetricDetail(
     onRangeChange: ((TimeRangeOption) -> Unit)? = null,
     /** When set, a "Takaisin" button rides the top row beside the range picker. */
     onBack: (() -> Unit)? = null,
+    /** Let the chart grow to fill the height the caller gives the card (no dead space below). */
+    fillHeight: Boolean = false,
 ) {
     val colors = MkTheme.colors
     // Note: MetricDetail alarm is the ink variant, unlike Gauge's --status-alarm.
@@ -677,13 +682,18 @@ fun MkMetricDetail(
     }
 
     MkCard(modifier = modifier, padding = MkCardPadding.PadLg) {
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxWidth().then(if (fillHeight) Modifier.fillMaxHeight() else Modifier),
+        ) {
             // Landscape / kiosk: put the readout + range + stats in a left column
             // and give the chart the whole right side, so rotating actually makes
             // the chart bigger instead of pushing it off the bottom.
             val wide = maxWidth >= 560.dp
             if (wide) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = if (fillHeight) Modifier.fillMaxHeight() else Modifier,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     // Back button (left) + range selector (right) share the top row,
                     // above the chart, so the whole detail fits without scrolling.
                     if (onBack != null || (range != null && onRangeChange != null)) {
@@ -706,7 +716,10 @@ fun MkMetricDetail(
                             }
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(
+                        modifier = if (fillHeight) Modifier.weight(1f) else Modifier,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
                         Column(
                             modifier = Modifier.weight(0.28f),
                             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -720,12 +733,14 @@ fun MkMetricDetail(
                             height = 190.dp,
                             showLegend = false,
                             scrubbable = true,
-                            modifier = Modifier.weight(0.72f),
+                            fillHeight = fillHeight,
+                            modifier = Modifier.weight(0.72f)
+                                .then(if (fillHeight) Modifier.fillMaxHeight() else Modifier),
                         )
                     }
                 }
             } else {
-                Column {
+                Column(modifier = if (fillHeight) Modifier.fillMaxHeight() else Modifier) {
                     if (onBack != null) {
                         MkButton(
                             text = "Takaisin",
@@ -742,8 +757,15 @@ fun MkMetricDetail(
                         rangePicker()
                         Spacer(Modifier.height(12.dp))
                     }
-                    MkLineChart(series = series, labels = labels, showLegend = false, scrubbable = true)
-                    if (stats.isNotEmpty()) {
+                    MkLineChart(
+                        series = series,
+                        labels = labels,
+                        showLegend = false,
+                        scrubbable = true,
+                        fillHeight = fillHeight,
+                        modifier = if (fillHeight) Modifier.weight(1f) else Modifier,
+                    )
+                    if (mergedStats.isNotEmpty()) {
                         Spacer(Modifier.height(14.dp))
                         statsRow(true)
                     }

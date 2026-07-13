@@ -102,18 +102,8 @@ private enum class IlmastoSub(val label: String) {
     Jaahdytys("Jäähdytys"),
 }
 
-/**
- * Axis ticks describing the selected window. The intraday windows are *rolling*
- * (`-6h` / `-24h`, ending now), so they read as hours-before-now, not a fixed
- * wall clock — the old "00:00…18:00" mislabeled every 24 h tick but "nyt".
- */
-private fun ilmastoAxisLabels(range: TimeRangeOption): List<String> = when (range) {
-    TimeRangeOption.H6 -> listOf("-6 t", "-4 t", "-2 t", "nyt")
-    TimeRangeOption.H24 -> listOf("-24 t", "-20 t", "-16 t", "-12 t", "-8 t", "-4 t", "nyt")
-    TimeRangeOption.D7 -> listOf("ma", "ke", "pe", "su")
-    TimeRangeOption.D30 -> listOf("1.", "10.", "20.", "30.")
-    TimeRangeOption.Y1 -> listOf("tammi", "huhti", "heinä", "loka")
-}
+/** Axis ticks for the selected window; shares [chartLabels] so both screens agree. */
+private fun ilmastoAxisLabels(range: TimeRangeOption): List<String> = chartLabels(range)
 
 /** A readout the user tapped to focus, with its InfluxDB history source. */
 data class FocusMetric(
