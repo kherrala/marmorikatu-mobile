@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -153,14 +154,17 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
         // Detail charts render in their own scroll container, separate from the
         // dashboard's [scrollState], so opening/closing one leaves it untouched.
         if (selected != null) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(colors.appBg)
-                    .verticalScroll(rememberScrollState())
-                    .padding(MkSpacing.pagePad),
-                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
-            ) {
+            BoxWithConstraints(modifier = Modifier.fillMaxSize().background(colors.appBg)) {
+                // Fill the viewport so the chart uses the full height (no dead space
+                // below it); a card taller than the viewport still scrolls.
+                val cardHeight = maxHeight - MkSpacing.pagePad * 2
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(MkSpacing.pagePad),
+                    verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+                ) {
                 // Load this metric's history at the chosen window from InfluxDB.
                 val hasSource = selected.detailMeasurement != null && selected.detailField != null
                 LaunchedEffect(selected.key, detailRange, hasSource) {
@@ -195,8 +199,9 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     range = if (hasSource) detailRange else null,
                     onRangeChange = if (hasSource) ({ viewModel.setDetailRange(it) }) else null,
                     onBack = { viewModel.closeDetail() },
+                    fillHeight = true,
                     // Swipe the card to the right to go back to the grid.
-                    modifier = Modifier.pointerInput(selKey) {
+                    modifier = Modifier.height(cardHeight).pointerInput(selKey) {
                         var dragged = 0f
                         detectHorizontalDragGestures(
                             onDragEnd = {
@@ -211,6 +216,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     Text("Ladataan historiaa…", style = MkTheme.type.label, color = colors.inkLo)
                 } else if (hasSource && loaded.size < 2) {
                     Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
+                }
                 }
             }
         } else if (room != null) {

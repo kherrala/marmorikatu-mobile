@@ -547,7 +547,7 @@ private fun TabletSurface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(colors.appBg)
-                    .padding(horizontal = MkSpacing.pagePadTablet, vertical = MkSpacing.x4),
+                    .padding(horizontal = MkSpacing.pagePadTablet, vertical = MkSpacing.x3),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(
@@ -562,14 +562,14 @@ private fun TabletSurface(
                 MkIconButton(
                     icon = if (dark) MkIcons.Sun else MkIcons.Moon,
                     label = "Teema",
-                    size = MkIconButtonSize.Lg,
+                    size = MkIconButtonSize.Md,
                     onClick = viewModel::toggleTheme,
                 )
                 Spacer(Modifier.width(MkSpacing.x2))
                 MkIconButton(
                     icon = MkIcons.BellFill,
                     label = "Tapahtumat",
-                    size = MkIconButtonSize.Lg,
+                    size = MkIconButtonSize.Md,
                     badge = if (unread > 0) unread.toString() else null,
                     onClick = { viewModel.setTab(Tab.Tapahtumat) },
                 )
@@ -577,7 +577,7 @@ private fun TabletSurface(
                 MkIconButton(
                     icon = MkIcons.GearSix,
                     label = "Asetukset",
-                    size = MkIconButtonSize.Lg,
+                    size = MkIconButtonSize.Md,
                     onClick = openSettings,
                 )
                 Spacer(Modifier.width(MkSpacing.x3))

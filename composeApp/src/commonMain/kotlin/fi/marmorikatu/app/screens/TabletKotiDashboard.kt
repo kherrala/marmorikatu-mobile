@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -237,10 +238,12 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                     viewModel.loadKpiDetail(m, f, detail.detailTagKey, detail.detailTagValue, detailRange)
                 }
             }
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(c.appBg)
+            BoxWithConstraints(modifier = Modifier.fillMaxSize().background(c.appBg)) {
+                // Fill the viewport so the chart uses the full height; taller content scrolls.
+                val cardHeight = maxHeight - MkSpacing.x4 * 2
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
                     // Swipe the detail page to the right to return to the grid.
                     .pointerInput(detail.key) {
                         var dragged = 0f
@@ -271,11 +274,14 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                     range = detailRange,
                     onRangeChange = { detailRange = it },
                     onBack = { detailKpi = null },
+                    fillHeight = true,
+                    modifier = Modifier.height(cardHeight),
                 )
                 if (kpiDetailLoading) {
                     Text("Ladataan historiaa…", style = MkTheme.type.label, color = c.inkLo)
                 } else if (kpiDetailSeries.size < 2) {
                     Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = c.inkLo)
+                }
                 }
             }
         }

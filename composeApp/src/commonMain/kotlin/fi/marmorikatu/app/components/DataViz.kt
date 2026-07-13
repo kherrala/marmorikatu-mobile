@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -574,6 +576,8 @@ fun MkMetricDetail(
     onRangeChange: ((TimeRangeOption) -> Unit)? = null,
     /** When set, a "Takaisin" button rides the top row beside the range picker. */
     onBack: (() -> Unit)? = null,
+    /** Grow the card (and its chart) to fill the height the caller gives it. */
+    fillHeight: Boolean = false,
 ) {
     val colors = MkTheme.colors
     // Note: MetricDetail alarm is the ink variant, unlike Gauge's --status-alarm.
@@ -695,13 +699,18 @@ fun MkMetricDetail(
     }
 
     MkCard(modifier = modifier, padding = MkCardPadding.Pad) {
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxWidth().then(if (fillHeight) Modifier.fillMaxHeight() else Modifier),
+        ) {
             // Landscape / kiosk: put the readout + range + stats in a left column
             // and give the chart the whole right side, so rotating actually makes
             // the chart bigger instead of pushing it off the bottom.
             val wide = maxWidth >= 560.dp
             if (wide) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = if (fillHeight) Modifier.fillMaxHeight() else Modifier,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     // Back button (left) + range selector (right) share the top row,
                     // above the chart, so the whole detail fits without scrolling.
                     if (onBack != null || (range != null && onRangeChange != null)) {
@@ -724,18 +733,21 @@ fun MkMetricDetail(
                             }
                         }
                     }
-                    // The row's height is the readout+stats column's own height, and the
-                    // chart fills it — so the chart is always as tall as the side panel
-                    // (no dead space below it) and the stats never clip.
+                    // The chart fills the row's height. When the card is told to fill
+                    // (fillHeight) the row grows to the card; otherwise the row is only
+                    // as tall as the readout+stats column. Either way the chart is never
+                    // shorter than the side panel, so there's no dead space below it; the
+                    // side panel scrolls if a short viewport can't fit every stat.
                     Row(
-                        modifier = Modifier.height(IntrinsicSize.Min),
+                        modifier = if (fillHeight) Modifier.weight(1f) else Modifier.height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         Column(
-                            modifier = Modifier.weight(0.28f),
+                            modifier = Modifier.weight(0.28f)
+                                .then(if (fillHeight) Modifier.fillMaxHeight().verticalScroll(rememberScrollState()) else Modifier),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            header(26)
+                            header(30)
                             statsColumn()
                         }
                         MkLineChart(
