@@ -42,6 +42,7 @@ import fi.marmorikatu.app.components.MkButtonVariant
 import fi.marmorikatu.app.components.MkMetricDetail
 import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.app.components.MkCameraCard
+import fi.marmorikatu.app.components.MkCameraViewer
 import fi.marmorikatu.app.components.MkClimateRoom
 import fi.marmorikatu.app.components.MkEventFeed
 import fi.marmorikatu.app.components.MkLineChart
@@ -74,6 +75,7 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
     val events by viewModel.tabletEvents.collectAsState()
     val kpiDetailSeries by viewModel.kpiDetailSeries.collectAsState()
     val kpiDetailLoading by viewModel.kpiDetailLoading.collectAsState()
+    val cameraOpen by viewModel.cameraOpen.collectAsState()
     val c = MkTheme.colors
 
     var detailKpi by remember { mutableStateOf<KotiKpi?>(null) }
@@ -202,14 +204,17 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                 modifier = Modifier.weight(0.95f).fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                val door = state.door
+                val shot = state.cameraSnapshot
                 MkCameraCard(
-                    painter = rememberBase64Painter(door?.image),
+                    painter = rememberBase64Painter(shot?.image),
                     camera = "Etupiha",
                     title = "Etupiha",
-                    subtitle = door?.subtitle ?: "Ei liikettä",
+                    subtitle = shot?.subtitle ?: "Ei liikettä",
+                    metaTime = shot?.time ?: "",
                     shotHeight = 112.dp,
                     live = false,
+                    // Tap the still to blow it up full-screen, like the phone door alert.
+                    onClick = shot?.image?.let { { viewModel.openCamera() } },
                 )
                 DashCard("Tapahtumat", modifier = Modifier.weight(1f).fillMaxHeight()) {
                     if (events.isEmpty()) {
@@ -284,6 +289,18 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                 }
                 }
             }
+        }
+
+        // Full-screen camera still, opened by tapping the front-yard card.
+        if (cameraOpen) {
+            val shot = state.cameraSnapshot
+            MkCameraViewer(
+                painter = rememberBase64Painter(shot?.image),
+                title = shot?.title ?: "Etupiha",
+                subtitle = shot?.subtitle ?: "",
+                time = shot?.time ?: "",
+                onDismiss = { viewModel.closeCamera() },
+            )
         }
     }
 }

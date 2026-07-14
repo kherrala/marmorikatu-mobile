@@ -233,6 +233,9 @@ data class KotiUiState(
     val error: String? = null,
     val attention: List<AttentionItem> = emptyList(),
     val door: DoorInfo? = null,
+    /** The last announcement that carried a camera snapshot, retained for the
+     *  kiosk's front-yard camera card so it keeps showing the most recent frame. */
+    val cameraSnapshot: DoorInfo? = null,
     val rooms: List<MkClimateRoom> = emptyList(),
     val kpis: List<KotiKpi> = emptyList(),
     /** The 7 climate stat tiles for the tablet/kiosk dashboard's top row. */
@@ -711,6 +714,7 @@ class KotiViewModel(
         error = snap.error,
         attention = buildAttention(snap, ruuvi, vent, heatPump),
         door = buildDoor(recent),
+        cameraSnapshot = buildCameraSnapshot(recent),
         rooms = buildRooms(temps, demand, heatPump, snap.roomHistory),
         kpis = buildKpis(snap, heatPump, ruuvi),
         kioskStats = buildKioskStats(snap, heatPump),
@@ -930,6 +934,22 @@ class KotiViewModel(
             time = Fmt.clock(newest.ts),
             subtitle = newest.text,
             image = newest.image,
+        )
+    }
+
+    /**
+     * The most recent announcement that carried a camera snapshot, whatever its
+     * position in the feed. The front-yard camera card uses this so it keeps
+     * showing the last frame instead of going blank the moment a newer, image-less
+     * announcement (news, a sensor alert…) becomes the head of the list.
+     */
+    private fun buildCameraSnapshot(recent: List<Announcement>): DoorInfo? {
+        val shot = recent.firstOrNull { !it.image.isNullOrBlank() } ?: return null
+        return DoorInfo(
+            title = "Etupiha",
+            time = Fmt.clock(shot.ts),
+            subtitle = shot.text,
+            image = shot.image,
         )
     }
 
