@@ -1405,7 +1405,13 @@ class KotiViewModel(
          * second line is the central upstairs hall instead — outdoor + a floor
          * apiece (upstairs, main, cellar).
          */
-        val DASH_TEMP_ORDER = listOf("Ulko", "Yläkerta aula", "Keittiö", "Kellari")
+        // Outdoor + the living spaces, bedrooms included (the kids' rooms were the
+        // conspicuous omission). Names must match [Rooms] display names exactly.
+        val DASH_TEMP_ORDER = listOf(
+            "Ulko", "Yläkerta aula",
+            "Seelan huone", "Aarnin huone", "Aikuisten makuuhuone", "Makuuhuone alakerta",
+            "Keittiö", "Kellari",
+        )
 
         /**
          * ThermIQ publishes roughly every 15–60 s; past this the feed is

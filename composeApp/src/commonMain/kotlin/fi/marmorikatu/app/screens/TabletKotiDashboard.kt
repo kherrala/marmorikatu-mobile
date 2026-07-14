@@ -144,7 +144,10 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                 if (tempSeries.isEmpty()) {
                     DashEmpty("Ei lämpötilahistoriaa")
                 } else {
-                    val palette = listOf(c.vizOutdoor, c.vizRoom, c.vizSecondary, c.vizTertiary)
+                    val palette = listOf(
+                        c.vizOutdoor, c.vizRoom, c.vizSecondary, c.vizTertiary,
+                        c.vizAccent, c.warm, c.statusAlarmInk, c.inkMid,
+                    )
                     val series = tempSeries.mapIndexed { i, s ->
                         MkSeries(name = s.name, values = s.values, color = palette[i % palette.size])
                     }
