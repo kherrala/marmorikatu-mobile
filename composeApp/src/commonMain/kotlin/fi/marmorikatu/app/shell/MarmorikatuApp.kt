@@ -53,8 +53,9 @@ import fi.marmorikatu.app.components.MkVoiceDock
 import fi.marmorikatu.app.components.MkVoiceQuickCommands
 import fi.marmorikatu.app.components.MkVoiceSize
 import fi.marmorikatu.app.components.VoiceState
+import fi.marmorikatu.app.components.rememberGreeting
+import fi.marmorikatu.app.components.rememberWallClock
 import fi.marmorikatu.app.debug.DebugScreen
-import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.screens.BussitScreen
 import fi.marmorikatu.app.screens.KalenteriScreen
@@ -343,7 +344,7 @@ private fun PhoneSurface(
                 )
                 Spacer(Modifier.width(2.dp))
                 Text(
-                    text = tab.title ?: Fmt.greeting(),
+                    text = tab.title ?: rememberGreeting(),
                     style = type.title,
                     color = colors.inkHi,
                 )
@@ -574,7 +575,7 @@ private fun TabletSurface(
                     ),
                 ) {
                     Text("Marmorikatu", style = type.kicker, color = colors.accent)
-                    Text(tab.title ?: Fmt.greeting(), style = type.title, color = colors.inkHi)
+                    Text(tab.title ?: rememberGreeting(), style = type.title, color = colors.inkHi)
                 }
                 MkIconButton(
                     icon = if (dark) MkIcons.Sun else MkIcons.Moon,
@@ -598,7 +599,7 @@ private fun TabletSurface(
                     onClick = openSettings,
                 )
                 Spacer(Modifier.width(MkSpacing.x3))
-                Text(Fmt.now(), style = type.readout(22), color = colors.inkHi)
+                Text(rememberWallClock(), style = type.readout(22), color = colors.inkHi)
             }
 
             // The idle mic lives in the nav-rail footer on this surface, so the

@@ -33,6 +33,13 @@ interface AnnouncementsRepository {
     fun stop()
 
     suspend fun history(limit: Int = 20): List<Announcement>
+
+    /**
+     * The bridge's retained last camera snapshot (with its `image`), or null.
+     * Separate from [recent]/[history] — those strip images — so a kiosk can
+     * show the last front-yard frame on cold start / reconnect / an idle yard.
+     */
+    suspend fun cameraSnapshot(): Announcement?
 }
 
 class DefaultAnnouncementsRepository(
@@ -106,4 +113,6 @@ class DefaultAnnouncementsRepository(
     }
 
     override suspend fun history(limit: Int): List<Announcement> = bridge.announcementHistory(limit)
+
+    override suspend fun cameraSnapshot(): Announcement? = bridge.cameraSnapshot()
 }

@@ -271,7 +271,7 @@ class KotiViewModel(
     private val infoRepo: InfoRepository,
     private val tts: SpeechOutput,
     private val startupProgress: StartupProgress,
-    announcementsRepo: AnnouncementsRepository,
+    private val announcementsRepo: AnnouncementsRepository,
     private val settings: Settings = Settings(),
 ) : ViewModel() {
 
@@ -486,6 +486,8 @@ class KotiViewModel(
         val roomHistory: Map<String, List<Float>> = emptyMap(),
         /** Today's + tomorrow's family calendar events, as "info" strip reminders. */
         val calendarReminders: List<AttentionItem> = emptyList(),
+        /** The bridge's retained last front-yard snapshot (image kept), or null. */
+        val cameraSnapshot: Announcement? = null,
         /** Epoch seconds of this fetch; drives the per-refresh KPI flash. */
         val fetchedAt: Long = 0L,
     )
@@ -631,6 +633,10 @@ class KotiViewModel(
                     val hvac = async { runCatching { climateRepo.hvacSummary() }.getOrNull() }
                     val air = async { runCatching { climateRepo.airQuality() }.getOrNull() }
                     val ruuviOut = async { runCatching { climateRepo.outdoorRuuviTemp() }.getOrNull() }
+                    // The bridge's retained last front-yard snapshot for the kiosk
+                    // camera card — kept apart from the announcement stream so an
+                    // idle/cold-started kiosk still shows the last frame.
+                    val camShot = async { runCatching { announcementsRepo.cameraSnapshot() }.getOrNull() }
                     // 24 h KPI sparkline series (metricHistory degrades to empty on failure).
                     val co2H = async { climateRepo.metricHistory("ruuvi", "co2") }
                     val indoorH = async { climateRepo.metricHistory("thermia", "indoor_temp") }
@@ -683,6 +689,9 @@ class KotiViewModel(
                         roomHistory = snapshots.value.roomHistory,
                         // Preserve calendar reminders (loaded on a separate cadence).
                         calendarReminders = snapshots.value.calendarReminders,
+                        // Keep the last snapshot if this fetch momentarily failed,
+                        // so the camera card doesn't flicker back to black.
+                        cameraSnapshot = camShot.await() ?: snapshots.value.cameraSnapshot,
                         fetchedAt = nowEpochSeconds(),
                     )
                 }
@@ -724,7 +733,7 @@ class KotiViewModel(
         error = snap.error,
         attention = buildAttention(snap, ruuvi, vent, heatPump),
         door = buildDoor(recent),
-        cameraSnapshot = buildCameraSnapshot(recent),
+        cameraSnapshot = buildCameraSnapshot(recent, snap.cameraSnapshot),
         rooms = buildRooms(temps, demand, heatPump, snap.roomHistory),
         kpis = buildKpis(snap, heatPump, ruuvi),
         kioskStats = buildKioskStats(snap, heatPump),
@@ -954,8 +963,15 @@ class KotiViewModel(
      * showing the last frame instead of going blank the moment a newer, image-less
      * announcement (news, a sensor alert…) becomes the head of the list.
      */
-    private fun buildCameraSnapshot(recent: List<Announcement>): DoorInfo? {
-        val shot = recent.firstOrNull { !it.image.isNullOrBlank() } ?: return null
+    private fun buildCameraSnapshot(recent: List<Announcement>, retained: Announcement?): DoorInfo? {
+        // Prefer whichever frame is newer: a live in-stream image (a person alert
+        // arriving while we're subscribed) or the bridge's retained last snapshot
+        // (which a cold-started / reconnected / idle kiosk gets even though it
+        // wasn't subscribed at push time). The stream image can't reach here after
+        // it scrolls out of `recent`, so the retained one keeps the card populated.
+        val shot = listOfNotNull(recent.firstOrNull { !it.image.isNullOrBlank() }, retained)
+            .filter { !it.image.isNullOrBlank() }
+            .maxByOrNull { it.ts } ?: return null
         return DoorInfo(
             title = "Etupiha",
             time = Fmt.clock(shot.ts),

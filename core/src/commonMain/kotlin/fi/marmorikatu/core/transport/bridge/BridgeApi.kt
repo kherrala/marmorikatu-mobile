@@ -221,4 +221,22 @@ class BridgeApi(
             runCatching { AppJson.decodeFromJsonElement(Announcement.serializer(), event) }.getOrNull()
         }
     }
+
+    /**
+     * The last camera snapshot the bridge retained (`GET /announcements/camera`),
+     * or null when none is held. Unlike [announcementHistory] this one keeps the
+     * `image`: the bridge strips images from the history ring but serves the most
+     * recent one here, so the kiosk's front-yard card can show it on cold start /
+     * reconnect instead of a black placeholder — no need to have been subscribed
+     * at the instant of the person-detection.
+     */
+    suspend fun cameraSnapshot(): Announcement? {
+        val obj = AppJson.parseToJsonElement(
+            httpClient.get("$base/announcements/camera").body<String>()
+        ).jsonObject
+        val snapshot = obj["snapshot"] as? JsonObject ?: return null
+        return runCatching {
+            AppJson.decodeFromJsonElement(Announcement.serializer(), snapshot)
+        }.getOrNull()
+    }
 }

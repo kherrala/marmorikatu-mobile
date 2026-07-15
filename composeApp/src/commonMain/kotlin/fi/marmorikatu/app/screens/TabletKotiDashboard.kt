@@ -5,7 +5,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -151,20 +150,29 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                         c.vizAccent, c.warm, c.statusAlarmInk, c.inkMid,
                     )
                     val series = tempSeries.mapIndexed { i, s ->
-                        MkSeries(name = s.name, values = s.values, color = palette[i % palette.size])
+                        // Compact legend names: the full room labels ("Aikuisten
+                        // makuuhuone", …) wrap the eight-series legend to three rows,
+                        // which on the short kiosk body leaves the plot no height at
+                        // all. The abbreviations keep it to ~two rows so the chart
+                        // still gets room, with every line (bedrooms included) named.
+                        MkSeries(name = shortSeriesLabel(s.name), values = s.values, color = palette[i % palette.size])
                     }
-                    // Fill the card: the chart canvas takes the space left after
-                    // its legend (which can wrap to two rows on a narrow column).
-                    BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    // Fill the card: the legend takes its natural height and the plot
+                    // flexes into whatever is left. The chart must fill a *bounded*
+                    // box for its internal weighted plot to get a height — a plain
+                    // vertical weight() here left the plot 0 px tall (all space went
+                    // to the legend). A weight()-sized Box gives MkLineChart a bounded
+                    // height that fillMaxSize()/fillHeight then fills, so the plot
+                    // shows. (The old `height = maxHeight − fixed allowance` instead
+                    // guessed a two-row legend and clipped it once it wrapped.)
+                    Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                         MkLineChart(
                             series = series,
                             labels = TEMP_LABELS,
-                            // Auto-scale to the data (rooms/outdoor routinely pass
-                            // 24 °C in summer); a fixed ceiling pushed the line off
-                            // the top and over the legend.
-                            height = (maxHeight - CHART_LEGEND_ALLOWANCE).coerceAtLeast(96.dp),
+                            fillHeight = true,
                             showLegend = true,
                             showYAxis = true,
+                            modifier = Modifier.fillMaxSize(),
                         )
                     }
                 }
@@ -411,11 +419,24 @@ private fun RoomChip(room: MkClimateRoom, modifier: Modifier = Modifier, onClick
     }
 }
 
+/**
+ * Compact temperature-chart legend labels. The chart carries eight lines
+ * (outdoor + a floor apiece + every bedroom); the full room names wrap the
+ * legend to three rows and starve the plot on the short kiosk body, so the
+ * multi-word rooms get short-but-recognisable forms. Names not listed (Ulko,
+ * Keittiö, Kellari) are already short and pass through unchanged.
+ */
+private fun shortSeriesLabel(name: String): String = when (name) {
+    "Yläkerta aula" -> "YK aula"
+    "Seelan huone" -> "Seela"
+    "Aarnin huone" -> "Aarni"
+    "Aikuisten makuuhuone" -> "Aikuiset"
+    "Makuuhuone alakerta" -> "MH alakerta"
+    else -> name
+}
+
 /** Kiosk stat tiles per row: the design's single row of seven (repeat(7,1fr)). */
 private const val STATS_PER_ROW = 7
-
-/** Height reserved for the temperature chart's legend so the canvas fills the rest. */
-private val CHART_LEGEND_ALLOWANCE = 48.dp
 
 /** Events shown in the kiosk feed — bounded so it never spills past its panel. */
 private const val KIOSK_EVENT_COUNT = 4

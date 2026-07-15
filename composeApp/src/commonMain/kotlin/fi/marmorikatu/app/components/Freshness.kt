@@ -133,6 +133,45 @@ internal fun rememberTickingAge(updatedAtEpochSeconds: Long?): String? {
 }
 
 /**
+ * The live wall clock as "HH:MM" for the kiosk header. [Fmt.now] reads the clock
+ * once at composition, so a bare `Text(Fmt.now())` freezes at first draw on the
+ * always-on kiosk; this ticks each second but — like [rememberTickingAge] — only
+ * writes a *changed* value, so it recomposes just this one Text when the minute
+ * flips, never per frame.
+ */
+@Composable
+fun rememberWallClock(): String {
+    val time = remember { mutableStateOf(Fmt.now()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1_000)
+            val next = Fmt.now()
+            if (next != time.value) time.value = next
+        }
+    }
+    return time.value
+}
+
+/**
+ * The time-aware greeting ([Fmt.greeting]), refreshed as the clock advances so it
+ * flips (Huomenta → Päivää → …) on an always-on surface instead of staying stuck
+ * at whatever it was when the header first composed. Recomposes at most a few
+ * times a day — the string changes rarely.
+ */
+@Composable
+fun rememberGreeting(): String {
+    val greeting = remember { mutableStateOf(Fmt.greeting()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000)
+            val next = Fmt.greeting()
+            if (next != greeting.value) greeting.value = next
+        }
+    }
+    return greeting.value
+}
+
+/**
  * Standard pull-to-refresh wrapper. Every screen that can re-fetch should use
  * it, so the gesture means the same thing everywhere.
  */
