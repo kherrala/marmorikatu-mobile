@@ -18,6 +18,13 @@ data class BussitUiState(
     val loading: Boolean = true,
     val failed: Boolean = false,
     val departures: List<BusDeparture> = emptyList(),
+    /**
+     * The departure to promote to the big card: the soonest bus you can still
+     * reach at a walking pace (its leave-by hasn't passed), not merely the next
+     * one to arrive — a bus already too close to walk to belongs in the list,
+     * not as a "catch me" headline. Null only when there are no departures.
+     */
+    val featured: BusDeparture? = null,
 )
 
 /**
@@ -55,7 +62,20 @@ class BussitViewModel(
                     val live = data.departures
                         .filter { Fmt.minutesUntil(it.departureTimeMs) >= -1 }
                         .sortedBy { it.departureTimeMs }
-                    _state.value = BussitUiState(loading = false, failed = false, departures = live)
+                    // Promote the soonest bus you can still catch on foot: its
+                    // leave-by (walk time already baked in by Nysse) is still in the
+                    // future. Compare raw millis, not Fmt.minutesUntil, whose toInt()
+                    // truncates a "-0.5 min" leave-by to 0 and would call a just-missed
+                    // bus catchable. Fall back to the soonest overall so the board
+                    // always has a headline (e.g. when every leave-by has passed).
+                    val nowMs = Clock.System.now().toEpochMilliseconds()
+                    val featured = live.firstOrNull { d ->
+                        val lb = d.leaveByMs   // local: leaveByMs is a cross-module nullable, no smart-cast
+                        lb == null || lb >= nowMs
+                    } ?: live.firstOrNull()
+                    _state.value = BussitUiState(
+                        loading = false, failed = false, departures = live, featured = featured,
+                    )
                     _updatedAt.value = Clock.System.now().epochSeconds
                 }.onFailure {
                     _state.value = _state.value.copy(loading = false, failed = true)

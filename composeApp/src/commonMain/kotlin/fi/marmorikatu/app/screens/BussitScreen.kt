@@ -39,6 +39,8 @@ import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.core.model.BusDeparture
 import org.koin.compose.viewmodel.koinViewModel
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
 
 /**
  * Bussit: the live Nysse departure board. A refreshing list of the next buses,
@@ -98,8 +100,11 @@ fun BussitScreen(viewModel: BussitViewModel = koinViewModel()) {
                 }
 
                 else -> {
-                    val featured = state.departures.first()
-                    val rest = state.departures.drop(1)
+                    // Feature the soonest catchable bus (chosen in the view model);
+                    // everything else — including any nearer bus whose walk window
+                    // has already closed — falls to the list below.
+                    val featured = state.featured ?: state.departures.first()
+                    val rest = state.departures.filter { it !== featured }
                     item(key = "featured") { FeaturedDepartureCard(featured) }
                     if (rest.isNotEmpty()) {
                         item(key = "rest-head") {
@@ -240,6 +245,7 @@ private fun FeaturedMetric(
 }
 
 /** One departure row: line tile · destination + stop · minutes-until readout. */
+@OptIn(ExperimentalTime::class)
 @Composable
 private fun DepartureCard(d: BusDeparture) {
     val c = MkTheme.colors
@@ -290,11 +296,18 @@ private fun DepartureCard(d: BusDeparture) {
                 }
                 d.leaveByMs?.let { leaveByMs ->
                     val leaveIn = Fmt.minutesUntil(leaveByMs)
-                    val hint = if (leaveIn < 1) "Lähde nyt" else "Lähde $leaveIn min kuluttua"
+                    // A bus whose leave-by has passed can't be reached on foot — say
+                    // so, rather than the misleading "Lähde nyt" that used to show.
+                    val missed = leaveByMs < Clock.System.now().toEpochMilliseconds()
+                    val hint = when {
+                        missed -> "Kävellen ei ehdi"
+                        leaveIn < 1 -> "Lähde nyt"
+                        else -> "Lähde $leaveIn min kuluttua"
+                    }
                     Text(
                         text = hint,
                         style = MkTheme.type.readout(11, FontWeight.Medium),
-                        color = c.accent,
+                        color = if (missed) c.inkLo else c.accent,
                         modifier = Modifier.padding(top = 2.dp),
                         maxLines = 1,
                     )
