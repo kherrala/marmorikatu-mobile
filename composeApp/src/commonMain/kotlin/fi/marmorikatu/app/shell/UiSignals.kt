@@ -1,6 +1,8 @@
 package fi.marmorikatu.app.shell
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Cross-cutting UI signals shared between the shell and the screens without
@@ -12,7 +14,20 @@ import kotlinx.coroutines.flow.MutableStateFlow
  * simply rotates to use the width, instead of the whole app changing layout.
  */
 class UiSignals {
-    val detailOpen = MutableStateFlow(false)
+    // Each detail-hosting screen contributes under its own key and the flag is
+    // the OR. With a single shared boolean, a composed neighbour pager page
+    // (its own detail closed) would keep writing false over the active page's
+    // true — the shell would flip to the kiosk, dispose the detail's landscape
+    // lock, and oscillate between the orientations.
+    private var detailOwners = emptySet<String>()
+    private val _detailOpen = MutableStateFlow(false)
+    val detailOpen: StateFlow<Boolean> = _detailOpen.asStateFlow()
+
+    /** Assert or clear [owner]'s full-page detail. Main-thread only (composition apply). */
+    fun setDetailOpen(owner: String, open: Boolean) {
+        detailOwners = if (open) detailOwners + owner else detailOwners - owner
+        _detailOpen.value = detailOwners.isNotEmpty()
+    }
 
     /**
      * A pending navigation request from outside the Compose tree — e.g. a tapped

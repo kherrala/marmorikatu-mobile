@@ -240,6 +240,11 @@ data class KotiUiState(
     val kpis: List<KotiKpi> = emptyList(),
     /** The 7 climate stat tiles for the tablet/kiosk dashboard's top row. */
     val kioskStats: List<KotiKpi> = emptyList(),
+    /**
+     * The outdoor-temperature detail behind the weather widget (key "ulko").
+     * Not a grid tile — resolved only when the widget is tapped.
+     */
+    val outdoorKpi: KotiKpi? = null,
 )
 
 /** One temperature line for the tablet dashboard's 24 h chart. */
@@ -351,6 +356,10 @@ class KotiViewModel(
     private val _kpiDetailLoading = MutableStateFlow(false)
     val kpiDetailLoading: StateFlow<Boolean> = _kpiDetailLoading.asStateFlow()
 
+    // The in-flight detail query. Cancelled before each new load so a slow
+    // response can never overwrite a newer metric/range's series.
+    private var kpiDetailJob: Job? = null
+
     /** Load a KPI's history for the detail chart at the chosen [range]. */
     fun loadKpiDetail(
         measurement: String,
@@ -359,9 +368,10 @@ class KotiViewModel(
         tagValue: String?,
         range: TimeRangeOption,
     ) {
+        kpiDetailJob?.cancel()
         _kpiDetailSeries.value = emptyList()
         _kpiDetailLoading.value = true
-        viewModelScope.launch {
+        kpiDetailJob = viewModelScope.launch {
             val (flux, every) = fluxRange(range)
             // "hvac_lto" is a computed series (see recoveryEfficiencyHistory), not a
             // real stored field, so it takes the dedicated query.
@@ -718,6 +728,7 @@ class KotiViewModel(
         rooms = buildRooms(temps, demand, heatPump, snap.roomHistory),
         kpis = buildKpis(snap, heatPump, ruuvi),
         kioskStats = buildKioskStats(snap, heatPump),
+        outdoorKpi = outdoorKpi(snap, heatPump),
     )
 
     // ── Attention strip: only REAL abnormal conditions ────────────────────────
@@ -1058,6 +1069,33 @@ class KotiViewModel(
         detailMeasurement = detailMeasurement, detailField = detailField,
         detailTagKey = detailTagKey, detailTagValue = detailTagValue,
     )
+
+    /**
+     * The outdoor-temperature detail the weather widget opens. Source priority
+     * mirrors [outdoorTemp] (the on-site Ruuvi, then the ventilation unit, then
+     * the heat pump), and the history source follows the sensor the shown
+     * reading came from, so the chart continues the headline number.
+     */
+    private fun outdoorKpi(snap: Snapshots, hp: HeatPumpStatus): KotiKpi {
+        data class Src(val c: Double?, val m: String, val f: String, val tk: String? = null, val tv: String? = null)
+        val src = listOf(
+            Src(snap.outdoorRuuviC, "ruuvi", "temperature", "sensor_name", RuuviSensors.OUTDOOR),
+            Src(snap.hvac?.outdoorC, "hvac", "Ulkolampotila"),
+            Src(hp.outdoorC?.takeIf { hp.available }, "thermia", "outdoor_temp"),
+        ).firstOrNull { it.c != null }
+        return plainKpi(
+            key = "ulko",
+            icon = MkIcons.Tree,
+            label = "Ulkolämpötila",
+            value = src?.c?.let { Fmt.oneDecimal(it) },
+            unit = "°C",
+            spark = snap.history["ulko"].orEmpty(),
+            detailMeasurement = src?.m ?: "hvac",
+            detailField = src?.f ?: "Ulkolampotila",
+            detailTagKey = src?.tk,
+            detailTagValue = src?.tv,
+        )
+    }
 
     /** Cooling (ilmastointi): live from the `marmorikatu/cooling` pump state. */
     private fun ventilationKpi(): KotiKpi {

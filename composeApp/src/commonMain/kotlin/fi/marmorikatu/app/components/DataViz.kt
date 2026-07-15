@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -55,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkRadius
+import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
 import kotlin.math.abs
 import kotlin.math.max
@@ -556,8 +559,9 @@ fun MkGauge(
 // ---------------------------------------------------------------------------
 
 /**
- * KPI detail card: header with a big readout and range selector, a line chart,
- * and a stats row. Built on [MkCard] and [MkTimeRange].
+ * KPI detail: header with a big readout and range selector, a line chart, and
+ * a stats row, rendered flat on the app background (no card chrome — it is a
+ * full page, not a widget among widgets). Usually hosted in [MkMetricDetailPage].
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -576,7 +580,7 @@ fun MkMetricDetail(
     onRangeChange: ((TimeRangeOption) -> Unit)? = null,
     /** When set, a "Takaisin" button rides the top row beside the range picker. */
     onBack: (() -> Unit)? = null,
-    /** Grow the card (and its chart) to fill the height the caller gives it. */
+    /** Grow the detail (and its chart) to fill the height the caller gives it. */
     fillHeight: Boolean = false,
 ) {
     val colors = MkTheme.colors
@@ -698,92 +702,193 @@ fun MkMetricDetail(
         }
     }
 
-    MkCard(modifier = modifier, padding = MkCardPadding.Pad) {
-        BoxWithConstraints(
-            modifier = Modifier.fillMaxWidth().then(if (fillHeight) Modifier.fillMaxHeight() else Modifier),
-        ) {
-            // Landscape / kiosk: put the readout + range + stats in a left column
-            // and give the chart the whole right side, so rotating actually makes
-            // the chart bigger instead of pushing it off the bottom.
-            val wide = maxWidth >= 560.dp
-            if (wide) {
-                Column(
-                    modifier = if (fillHeight) Modifier.fillMaxHeight() else Modifier,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    // Back button (left) + range selector (right) share the top row,
-                    // above the chart, so the whole detail fits without scrolling.
-                    if (onBack != null || (range != null && onRangeChange != null)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (onBack != null) {
-                                MkButton(
-                                    text = "Takaisin",
-                                    onClick = onBack,
-                                    variant = MkButtonVariant.Ghost,
-                                    size = MkButtonSize.Sm,
-                                    icon = MkIcons.CaretLeft,
-                                )
-                            }
-                            Spacer(Modifier.weight(1f))
-                            if (range != null && onRangeChange != null) {
-                                MkTimeRange(value = range, onChange = onRangeChange)
-                            }
-                        }
-                    }
-                    // The chart fills the row's height. When the card is told to fill
-                    // (fillHeight) the row grows to the card; otherwise the row is only
-                    // as tall as the readout+stats column. Either way the chart is never
-                    // shorter than the side panel, so there's no dead space below it; the
-                    // side panel scrolls if a short viewport can't fit every stat.
+    // A detail always renders as a full page on the app background — no card
+    // border/surface around it (it isn't a widget among widgets there).
+    BoxWithConstraints(
+        modifier = modifier.fillMaxWidth().then(if (fillHeight) Modifier.fillMaxHeight() else Modifier),
+    ) {
+        // Landscape / kiosk: put the readout + range + stats in a left column
+        // and give the chart the whole right side, so rotating actually makes
+        // the chart bigger instead of pushing it off the bottom.
+        val wide = maxWidth >= 560.dp
+        if (wide) {
+            Column(
+                modifier = if (fillHeight) Modifier.fillMaxHeight() else Modifier,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                // Back button (left) + range selector (right) share the top row,
+                // above the chart, so the whole detail fits without scrolling.
+                if (onBack != null || (range != null && onRangeChange != null)) {
                     Row(
-                        modifier = if (fillHeight) Modifier.weight(1f) else Modifier.height(IntrinsicSize.Min),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(
-                            modifier = Modifier.weight(0.28f)
-                                .then(if (fillHeight) Modifier.fillMaxHeight().verticalScroll(rememberScrollState()) else Modifier),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            header(30)
-                            statsColumn()
+                        if (onBack != null) {
+                            MkButton(
+                                text = "Takaisin",
+                                onClick = onBack,
+                                variant = MkButtonVariant.Ghost,
+                                size = MkButtonSize.Sm,
+                                icon = MkIcons.CaretLeft,
+                            )
                         }
-                        MkLineChart(
-                            series = series,
-                            labels = labels,
-                            height = 190.dp,
-                            showLegend = false,
-                            scrubbable = true,
-                            fillHeight = true,
-                            modifier = Modifier.weight(0.72f).fillMaxHeight(),
-                        )
+                        Spacer(Modifier.weight(1f))
+                        if (range != null && onRangeChange != null) {
+                            MkTimeRange(value = range, onChange = onRangeChange)
+                        }
                     }
                 }
-            } else {
-                Column {
-                    if (onBack != null) {
-                        MkButton(
-                            text = "Takaisin",
-                            onClick = onBack,
-                            variant = MkButtonVariant.Ghost,
-                            size = MkButtonSize.Sm,
-                            icon = MkIcons.CaretLeft,
-                        )
-                        Spacer(Modifier.height(10.dp))
+                // The chart fills the row's height. When the detail is told to fill
+                // (fillHeight) the row grows to the page; otherwise the row is only
+                // as tall as the readout+stats column. Either way the chart is never
+                // shorter than the side panel, so there's no dead space below it; the
+                // side panel scrolls if a short viewport can't fit every stat.
+                Row(
+                    modifier = if (fillHeight) Modifier.weight(1f) else Modifier.height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.weight(0.28f)
+                            .then(if (fillHeight) Modifier.fillMaxHeight().verticalScroll(rememberScrollState()) else Modifier),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        header(30)
+                        statsColumn()
                     }
-                    header(38)
+                    MkLineChart(
+                        series = series,
+                        labels = labels,
+                        height = 190.dp,
+                        showLegend = false,
+                        scrubbable = true,
+                        fillHeight = true,
+                        modifier = Modifier.weight(0.72f).fillMaxHeight(),
+                    )
+                }
+            }
+        } else {
+            Column(modifier = if (fillHeight) Modifier.fillMaxHeight() else Modifier) {
+                if (onBack != null) {
+                    MkButton(
+                        text = "Takaisin",
+                        onClick = onBack,
+                        variant = MkButtonVariant.Ghost,
+                        size = MkButtonSize.Sm,
+                        icon = MkIcons.CaretLeft,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+                header(38)
+                Spacer(Modifier.height(14.dp))
+                if (range != null && onRangeChange != null) {
+                    rangePicker()
+                    Spacer(Modifier.height(12.dp))
+                }
+                // With fillHeight the chart claims all the height left between
+                // the readout and the stats row — a portrait phone/iPad detail
+                // must fill its page, not float a fixed-height chart over blank
+                // space (iOS never forces landscape, so portrait is permanent).
+                MkLineChart(
+                    series = series,
+                    labels = labels,
+                    showLegend = false,
+                    scrubbable = true,
+                    fillHeight = fillHeight,
+                    modifier = if (fillHeight) Modifier.weight(1f) else Modifier,
+                )
+                if (mergedStats.isNotEmpty()) {
                     Spacer(Modifier.height(14.dp))
-                    if (range != null && onRangeChange != null) {
-                        rangePicker()
-                        Spacer(Modifier.height(12.dp))
-                    }
-                    MkLineChart(series = series, labels = labels, showLegend = false, scrubbable = true)
-                    if (mergedStats.isNotEmpty()) {
-                        Spacer(Modifier.height(14.dp))
-                        statsRow(true)
-                    }
+                    statsRow(true)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Full-page host for a [MkMetricDetail]: fills the viewport so the chart gets
+ * the whole height (no dead space below the stats), scrolls when the content
+ * is taller than the screen, and swipes right to dismiss. The shared
+ * "Ladataan historiaa…" / "Ei historiaa saatavilla." lines render under the
+ * chart while a real history source is fetching or came back empty.
+ */
+@Composable
+fun MkMetricDetailPage(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    unit: String,
+    series: List<MkSeries>,
+    labels: List<String>,
+    stats: List<MkStat>,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    status: String = "accent",
+    range: TimeRangeOption? = null,
+    onRangeChange: ((TimeRangeOption) -> Unit)? = null,
+    /** True while the history query for this metric is in flight. */
+    loading: Boolean = false,
+    /** False for a metric with no history source at all: hides the loading/empty lines. */
+    hasHistory: Boolean = true,
+    horizontalPadding: Dp = MkSpacing.pagePad,
+    verticalPadding: Dp = MkSpacing.pagePad,
+    /** Identity for the swipe-to-dismiss gesture; change it when the metric changes. */
+    swipeKey: Any = label,
+) {
+    val colors = MkTheme.colors
+    BoxWithConstraints(modifier = modifier.fillMaxSize().background(colors.appBg)) {
+        // Size the detail to the viewport so the chart uses the full height; the
+        // page still scrolls if a short viewport can't fit the readout + stats.
+        val pageHeight = maxHeight - verticalPadding * 2
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                // Swipe the page to the right to go back to the dashboard.
+                .pointerInput(swipeKey) {
+                    var dragged = 0f
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (dragged > 56.dp.toPx()) onBack()
+                            dragged = 0f
+                        },
+                        onHorizontalDrag = { _, delta -> dragged += delta },
+                    )
+                }
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = horizontalPadding, vertical = verticalPadding),
+            verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+        ) {
+            Box(modifier = Modifier.height(pageHeight)) {
+                MkMetricDetail(
+                    icon = icon,
+                    label = label,
+                    value = value,
+                    unit = unit,
+                    series = series,
+                    labels = labels,
+                    stats = stats,
+                    status = status,
+                    range = range,
+                    onRangeChange = onRangeChange,
+                    onBack = onBack,
+                    fillHeight = true,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // Status feedback floats centred over the (empty) plot area —
+                // below the viewport-height detail it would sit past the fold.
+                val statusLine = when {
+                    !hasHistory -> null
+                    loading -> "Ladataan historiaa…"
+                    series.all { it.values.size < 2 } -> "Ei historiaa saatavilla."
+                    else -> null
+                }
+                if (statusLine != null) {
+                    Text(
+                        text = statusLine,
+                        style = MkTheme.type.label,
+                        color = colors.inkLo,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
                 }
             }
         }

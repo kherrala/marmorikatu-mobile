@@ -13,6 +13,7 @@ import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Ventilation
 import fi.marmorikatu.core.repository.ClimateRepository
 import fi.marmorikatu.core.transport.influx.FluxPoint
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -77,9 +78,13 @@ class IlmastoViewModel(
     private val _focus = MutableStateFlow<FocusMetric?>(null)
     val focus: StateFlow<FocusMetric?> = _focus.asStateFlow()
 
+    /** The focus chart's selected time window, shared across focused readouts. */
+    private val _focusRange = MutableStateFlow(TimeRangeOption.H24)
+    val focusRange: StateFlow<TimeRangeOption> = _focusRange.asStateFlow()
+
     fun openFocus(metric: FocusMetric) {
         _focus.value = metric
-        loadFocus(metric.measurement, metric.field, metric.tagKey, metric.tagValue)
+        loadFocus(metric)
     }
 
     fun closeFocus() {
@@ -87,24 +92,39 @@ class IlmastoViewModel(
         clearFocus()
     }
 
-    /** Load a readout's 24 h InfluxDB history for the focus chart. */
-    fun loadFocus(measurement: String, field: String, tagKey: String? = null, tagValue: String? = null) {
+    /** Switch the focus chart's window and reload the open readout's history. */
+    fun setFocusRange(range: TimeRangeOption) {
+        if (range == _focusRange.value) return
+        _focusRange.value = range
+        _focus.value?.let { loadFocus(it) }
+    }
+
+    // The in-flight history query. Cancelled before each new load (and on clear)
+    // so a slow response can never overwrite a newer metric/range's series.
+    private var focusJob: Job? = null
+
+    /** Load a readout's InfluxDB history for the focus chart at [focusRange]. */
+    private fun loadFocus(metric: FocusMetric) {
+        focusJob?.cancel()
         _focusSeries.value = emptyList()
         _focusLoading.value = true
-        viewModelScope.launch {
-            // Fine-grained 24 h window (same as the H24 chart) so the focus line is
+        focusJob = viewModelScope.launch {
+            // Fine-grained windows (same as the H24 chart) so the focus line is
             // smooth, not blocky. "hvac_lto" is a computed efficiency series.
-            val (flux, every) = TimeRangeOption.H24.fluxWindow()
-            _focusSeries.value = if (measurement == "hvac_lto") {
+            val (flux, every) = _focusRange.value.fluxWindow()
+            val series = if (metric.measurement == "hvac_lto") {
                 climate.recoveryEfficiencyHistory(flux, every)
             } else {
-                climate.metricHistory(measurement, field, flux, every, tagKey, tagValue)
+                climate.metricHistory(metric.measurement, metric.field, flux, every, metric.tagKey, metric.tagValue)
             }
+            // Unit scaling (e.g. the Ruuvi pressure is stored in Pa, shown in hPa).
+            _focusSeries.value = if (metric.scale == 1f) series else series.map { it * metric.scale }
             _focusLoading.value = false
         }
     }
 
     fun clearFocus() {
+        focusJob?.cancel()
         _focusSeries.value = emptyList()
         _focusLoading.value = false
     }
@@ -172,7 +192,8 @@ class IlmastoViewModel(
 /** Maps a UI time range onto a Flux `range` / `every` pair. */
 // Aggregation window per range, tuned for smooth charts (~150–300 points).
 // FluxClient reads InfluxDB directly (no 100-row cap), so a fine grain is cheap.
-private fun TimeRangeOption.fluxWindow(): Pair<String, String> = when (this) {
+// Internal: the Energia focus charts share the same windows.
+internal fun TimeRangeOption.fluxWindow(): Pair<String, String> = when (this) {
     TimeRangeOption.H6 -> "-6h" to "2m"     // 180 pts
     TimeRangeOption.H24 -> "-24h" to "5m"   // 288 pts
     TimeRangeOption.D7 -> "-7d" to "1h"     // 168 pts

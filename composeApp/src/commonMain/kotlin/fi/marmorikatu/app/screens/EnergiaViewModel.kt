@@ -4,13 +4,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fi.marmorikatu.app.components.BarState
 import fi.marmorikatu.app.components.MkPriceBar
+import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.core.model.ElectricityPrices
 import fi.marmorikatu.core.model.EnergyReading
 import fi.marmorikatu.core.model.PriceTier
+import fi.marmorikatu.core.repository.ClimateRepository
 import fi.marmorikatu.core.repository.EnergyBreakdown
 import fi.marmorikatu.core.repository.EnergyRepository
 import fi.marmorikatu.core.repository.LightsRepository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,7 +37,77 @@ import kotlin.time.Instant
 class EnergiaViewModel(
     private val energyRepo: EnergyRepository,
     private val lightsRepo: LightsRepository,
+    private val climateRepo: ClimateRepository,
 ) : ViewModel() {
+
+    // ── Focus view: a tapped readout's full-page history chart ──────────────
+    // Same shape as IlmastoViewModel's focus so the two tabs behave alike; the
+    // selection lives in the VM so it survives the landscape recreation a phone
+    // detail forces.
+
+    private val _focus = MutableStateFlow<FocusMetric?>(null)
+    val focus: StateFlow<FocusMetric?> = _focus.asStateFlow()
+
+    private val _focusSeries = MutableStateFlow<List<Float>>(emptyList())
+    val focusSeries: StateFlow<List<Float>> = _focusSeries.asStateFlow()
+
+    private val _focusLoading = MutableStateFlow(false)
+    val focusLoading: StateFlow<Boolean> = _focusLoading.asStateFlow()
+
+    private val _focusRange = MutableStateFlow(TimeRangeOption.H24)
+    val focusRange: StateFlow<TimeRangeOption> = _focusRange.asStateFlow()
+
+    fun openFocus(metric: FocusMetric) {
+        _focus.value = metric
+        loadFocus(metric)
+    }
+
+    fun closeFocus() {
+        focusJob?.cancel()
+        _focus.value = null
+        _focusSeries.value = emptyList()
+        _focusLoading.value = false
+    }
+
+    fun setFocusRange(range: TimeRangeOption) {
+        if (range == _focusRange.value) return
+        _focusRange.value = range
+        _focus.value?.let { loadFocus(it) }
+    }
+
+    // The in-flight history query. Cancelled before each new load (and on close)
+    // so a slow response can never overwrite a newer metric/range's series.
+    private var focusJob: Job? = null
+
+    // Section-list scroll position, kept in the VM so it survives the forced-
+    // landscape recreation a phone focus chart triggers — see IlmastoViewModel.
+    var listScrollIndex: Int = 0
+    var listScrollOffset: Int = 0
+
+    private fun loadFocus(metric: FocusMetric) {
+        // The Kulutus/Kustannus detail renders the already-loaded cost trend —
+        // there is no single InfluxDB series behind it to query.
+        if (metric.measurement == KULUTUS_TREND) return
+        focusJob?.cancel()
+        _focusSeries.value = emptyList()
+        _focusLoading.value = true
+        focusJob = viewModelScope.launch {
+            val (flux, every) = _focusRange.value.fluxWindow()
+            val series = climateRepo.metricHistory(
+                metric.measurement, metric.field, flux, every, metric.tagKey, metric.tagValue,
+            )
+            _focusSeries.value = if (metric.scale == 1f) series else series.map { it * metric.scale }
+            _focusLoading.value = false
+        }
+    }
+
+    companion object {
+        /**
+         * Sentinel [FocusMetric.measurement] for the Kulutus/Kustannus tiles:
+         * their detail charts the in-memory [cost] trend instead of InfluxDB.
+         */
+        const val KULUTUS_TREND = "kulutus_trend"
+    }
 
     /** InfluxDB snapshot that seeds the meter card before the live MQTT topics arrive. */
     private val _meterSnapshot = MutableStateFlow<Map<String, EnergyReading>>(emptyMap())

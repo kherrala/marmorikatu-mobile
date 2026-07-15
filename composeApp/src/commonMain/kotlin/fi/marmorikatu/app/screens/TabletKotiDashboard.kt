@@ -2,6 +2,7 @@ package fi.marmorikatu.app.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -15,9 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,15 +30,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import fi.marmorikatu.app.components.BarState
 import fi.marmorikatu.app.components.EventEntry
 import fi.marmorikatu.app.components.MkButton
 import fi.marmorikatu.app.components.MkButtonSize
 import fi.marmorikatu.app.components.MkButtonVariant
-import fi.marmorikatu.app.components.MkMetricDetail
+import fi.marmorikatu.app.components.MkMetricDetailPage
+import fi.marmorikatu.app.components.MkTagStatus
 import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.app.components.MkCameraCard
 import fi.marmorikatu.app.components.MkCameraViewer
@@ -78,7 +76,11 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
     val cameraOpen by viewModel.cameraOpen.collectAsState()
     val c = MkTheme.colors
 
-    var detailKpi by remember { mutableStateOf<KotiKpi?>(null) }
+    // Only the tapped detail's KEY is stored; the KotiKpi itself is re-resolved
+    // from live state every recomposition so an open detail keeps tracking the
+    // dashboard underneath — the kiosk is always-on, and a stored snapshot
+    // would freeze the readout at tap time (cf. KotiScreen's selKey).
+    var detailKey by remember { mutableStateOf<String?>(null) }
     var detailRange by remember { mutableStateOf(TimeRangeOption.H24) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -119,7 +121,7 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                                 spark = kpi.seriesValues,
                                 pulseKey = kpi.freshAsOf,
                                 dimmed = kpi.stale,
-                                onClick = if (kpi.detailField != null) ({ detailKpi = kpi }) else null,
+                                onClick = if (kpi.detailField != null) ({ detailKey = kpi.key }) else null,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -172,11 +174,15 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                 modifier = Modifier.weight(1.1f).fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                DashCard("Sähkön hinta tänään") {
+                val sahko = state.kpis.firstOrNull { it.key == "sahko" }
+                DashCard(
+                    "Sähkön hinta tänään",
+                    // Tapping the card opens the spot price's history detail.
+                    onClick = sahko?.takeIf { it.detailField != null }?.let { { detailKey = it.key } },
+                ) {
                     if (priceBars.isEmpty()) {
                         DashEmpty("Ei hintatietoa")
                     } else {
-                        val sahko = state.kpis.firstOrNull { it.key == "sahko" }
                         MkPriceBars(
                             bars = priceBars.map {
                                 MkPriceBar(
@@ -199,7 +205,12 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                     }
                 }
                 DashCard("Huoneet", modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    if (state.rooms.isEmpty()) DashEmpty("Ei tietoa") else RoomsGrid(state.rooms)
+                    if (state.rooms.isEmpty()) {
+                        DashEmpty("Ei tietoa")
+                    } else {
+                        // A tapped room chip opens that room's temperature history.
+                        RoomsGrid(state.rooms, onRoomClick = { room -> detailKey = "room_${room.name}" })
+                    }
                 }
             }
 
@@ -236,62 +247,50 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
         }
     }
 
-        // KPI detail overlay — tapping a stat tile opens its history chart.
-        val detail = detailKpi
+        // KPI detail overlay — tapping a stat tile opens its history chart. The
+        // KPI is re-resolved from live state so the header keeps updating.
+        val detail = detailKey?.let { key ->
+            if (key.startsWith("room_")) {
+                state.rooms.firstOrNull { "room_${it.name}" == key }?.let(::roomDetailKpi)
+            } else {
+                state.kioskStats.firstOrNull { it.key == key }
+                    ?: state.kpis.firstOrNull { it.key == key }
+            }
+        }
         if (detail != null) {
-            LaunchedEffect(detail.key, detailRange) {
-                val m = detail.detailMeasurement
-                val f = detail.detailField
-                if (m != null && f != null) {
-                    viewModel.loadKpiDetail(m, f, detail.detailTagKey, detail.detailTagValue, detailRange)
+            val hasSource = detail.detailMeasurement != null && detail.detailField != null
+            LaunchedEffect(detail.key, detailRange, detail.detailMeasurement, detail.detailField, detail.detailTagValue) {
+                if (hasSource) {
+                    viewModel.loadKpiDetail(
+                        detail.detailMeasurement!!,
+                        detail.detailField!!,
+                        detail.detailTagKey,
+                        detail.detailTagValue,
+                        detailRange,
+                    )
                 }
             }
-            BoxWithConstraints(modifier = Modifier.fillMaxSize().background(c.appBg)) {
-                // Fill the viewport so the chart uses the full height; taller content scrolls.
-                val cardHeight = maxHeight - MkSpacing.x4 * 2
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                    // Swipe the detail page to the right to return to the grid.
-                    .pointerInput(detail.key) {
-                        var dragged = 0f
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                if (dragged > 64.dp.toPx()) detailKpi = null
-                                dragged = 0f
-                            },
-                            onHorizontalDrag = { _, delta -> dragged += delta },
-                        )
-                    }
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = MkSpacing.pagePadTablet, vertical = MkSpacing.x4),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                val chart = if (kpiDetailSeries.size < 2) emptyList() else listOf(
-                    MkSeries(name = null, values = kpiDetailSeries, color = c.accent, area = true),
-                )
-                MkMetricDetail(
-                    icon = detail.icon,
-                    label = detail.label,
-                    value = detail.value,
-                    unit = detail.unit ?: detail.detailUnit,
-                    series = chart,
-                    labels = chartLabels(detailRange),
-                    stats = emptyList(),
-                    status = "accent",
-                    range = detailRange,
-                    onRangeChange = { detailRange = it },
-                    onBack = { detailKpi = null },
-                    fillHeight = true,
-                    modifier = Modifier.height(cardHeight),
-                )
-                if (kpiDetailLoading) {
-                    Text("Ladataan historiaa…", style = MkTheme.type.label, color = c.inkLo)
-                } else if (kpiDetailSeries.size < 2) {
-                    Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = c.inkLo)
-                }
-                }
-            }
+            val loaded = if (hasSource) kpiDetailSeries else detail.seriesValues
+            val chart = if (loaded.size < 2) emptyList() else listOf(
+                MkSeries(name = null, values = loaded, color = c.accent, area = true),
+            )
+            MkMetricDetailPage(
+                icon = detail.icon,
+                label = detail.label,
+                value = detail.value,
+                unit = detail.unit ?: detail.detailUnit,
+                series = chart,
+                labels = chartLabels(detailRange),
+                stats = detail.stats,
+                range = if (hasSource) detailRange else null,
+                onRangeChange = if (hasSource) ({ detailRange = it }) else null,
+                onBack = { detailKey = null },
+                loading = kpiDetailLoading,
+                hasHistory = hasSource,
+                horizontalPadding = MkSpacing.pagePadTablet,
+                verticalPadding = MkSpacing.x4,
+                swipeKey = detail.key,
+            )
         }
 
         // Full-screen camera still, opened by tapping the front-yard card.
@@ -313,6 +312,7 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
 private fun DashCard(
     title: String,
     modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val c = MkTheme.colors
@@ -322,6 +322,7 @@ private fun DashCard(
             .clip(shape)
             .background(c.surfaceCard)
             .border(1.dp, c.borderSubtle, shape)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -329,6 +330,28 @@ private fun DashCard(
         content()
     }
 }
+
+/**
+ * A room chip's detail as a synthetic [KotiKpi], so the kiosk's one detail
+ * overlay serves the rooms too (measurement `rooms`, the room's history field).
+ */
+private fun roomDetailKpi(room: MkClimateRoom): KotiKpi = KotiKpi(
+    key = "room_${room.name}",
+    icon = room.icon ?: MkIcons.Thermometer,
+    label = room.name,
+    value = room.temp,
+    unit = "°C",
+    statStatus = MkStatStatus.None,
+    tag = null,
+    tagStatus = MkTagStatus.Neutral,
+    detailStatus = "accent",
+    detailUnit = "°C",
+    seriesValues = room.history,
+    labels = emptyList(),
+    stats = emptyList(),
+    detailMeasurement = "rooms",
+    detailField = room.historyField,
+)
 
 /** A "no data yet" placeholder inside a [DashCard]. */
 @Composable
@@ -341,16 +364,22 @@ private fun DashEmpty(text: String) {
     }
 }
 
-/** Two-column grid of room temperature readouts. */
+/** Two-column grid of room temperature readouts; a tap opens the room's history. */
 @Composable
-private fun RoomsGrid(rooms: List<MkClimateRoom>) {
+private fun RoomsGrid(rooms: List<MkClimateRoom>, onRoomClick: (MkClimateRoom) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         rooms.chunked(2).forEach { pair ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                pair.forEach { room -> RoomChip(room, Modifier.weight(1f)) }
+                pair.forEach { room ->
+                    RoomChip(
+                        room,
+                        Modifier.weight(1f),
+                        onClick = if (room.historyField != null) ({ onRoomClick(room) }) else null,
+                    )
+                }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
         }
@@ -358,12 +387,13 @@ private fun RoomsGrid(rooms: List<MkClimateRoom>) {
 }
 
 @Composable
-private fun RoomChip(room: MkClimateRoom, modifier: Modifier = Modifier) {
+private fun RoomChip(room: MkClimateRoom, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
     val c = MkTheme.colors
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(MkRadius.sm))
             .background(c.surfaceInset)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,

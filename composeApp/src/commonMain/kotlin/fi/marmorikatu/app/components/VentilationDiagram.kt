@@ -1,7 +1,14 @@
 package fi.marmorikatu.app.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -19,11 +26,16 @@ import androidx.compose.ui.unit.sp
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.theme.MkTheme
 
+/** One of the four duct-temperature corners of [MkVentilationDiagram]. */
+enum class VentZone { Outdoor, Supply, Extract, Exhaust }
+
 /**
  * The MVHR (heat-recovery ventilation) system diagram from the design: four
  * labelled air ducts around a central heat-exchanger (LTO) hexagon and the
  * supply-air post-heater. Geometry mirrors the design's 360×168 SVG; the
- * temperatures and efficiency are live. A pure schematic — no interaction.
+ * temperatures and efficiency are live. With [onZoneClick] set, tapping a
+ * duct corner reports its [VentZone] (the caller opens its history chart);
+ * the centre stays inert so the LTO hexagon isn't a hidden tap target.
  */
 @Composable
 fun MkVentilationDiagram(
@@ -34,13 +46,15 @@ fun MkVentilationDiagram(
     preHeatC: Double?,
     ltoPct: Double?,
     modifier: Modifier = Modifier,
+    onZoneClick: ((VentZone) -> Unit)? = null,
 ) {
     val c = MkTheme.colors
     val measurer = rememberTextMeasurer()
     val mono = MkTheme.type.mono
     fun t(v: Double?) = v?.let { "${Fmt.oneDecimal(it)}°" } ?: "–"
 
-    Canvas(modifier.fillMaxWidth().aspectRatio(360f / 168f)) {
+    Box(modifier = modifier.fillMaxWidth().aspectRatio(360f / 168f)) {
+    Canvas(Modifier.fillMaxSize()) {
         val sx = size.width / 360f
         val sy = size.height / 168f
         fun o(x: Float, y: Float) = Offset(x * sx, y * sy)
@@ -103,5 +117,23 @@ fun MkVentilationDiagram(
         label("TULOILMA", 326f, 150f, 8f, c.inkLo)
         label("POISTOILMA", 322f, 26f, 8f, c.inkLo)
         label("JÄTEILMA", 34f, 26f, 8f, c.inkLo)
+    }
+
+    // Invisible corner tap targets over the four duct readouts. The middle
+    // column (the LTO hexagon) is left free of targets on purpose.
+    if (onZoneClick != null) {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+                Box(Modifier.weight(0.36f).fillMaxHeight().clickable { onZoneClick(VentZone.Exhaust) })
+                Spacer(Modifier.weight(0.28f))
+                Box(Modifier.weight(0.36f).fillMaxHeight().clickable { onZoneClick(VentZone.Extract) })
+            }
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+                Box(Modifier.weight(0.36f).fillMaxHeight().clickable { onZoneClick(VentZone.Outdoor) })
+                Spacer(Modifier.weight(0.28f))
+                Box(Modifier.weight(0.36f).fillMaxHeight().clickable { onZoneClick(VentZone.Supply) })
+            }
+        }
+    }
     }
 }

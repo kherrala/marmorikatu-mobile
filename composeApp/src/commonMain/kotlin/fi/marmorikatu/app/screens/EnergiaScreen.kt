@@ -27,14 +27,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -45,14 +50,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import fi.marmorikatu.app.components.MkCard
 import fi.marmorikatu.app.components.MkCardHead
+import fi.marmorikatu.app.components.MkMetricDetailPage
 import fi.marmorikatu.app.components.MkPriceBars
 import fi.marmorikatu.app.components.MkPullToRefresh
+import fi.marmorikatu.app.components.MkSeries
+import fi.marmorikatu.app.components.MkStat
 import fi.marmorikatu.app.components.MkStatStatus
 import fi.marmorikatu.app.components.MkStatTile
 import fi.marmorikatu.app.components.MkTag
 import fi.marmorikatu.app.components.MkTagStatus
+import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
+import fi.marmorikatu.app.platform.LockLandscapeWhileVisible
+import fi.marmorikatu.app.shell.UiSignals
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
@@ -61,6 +72,7 @@ import fi.marmorikatu.core.model.PriceTier
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import kotlin.coroutines.coroutineContext
 
@@ -78,13 +90,15 @@ private enum class EnSection(val label: String) {
 /**
  * Energia: pörssisähkön hinta, sähkömittari, kulutus ja kustannus valittavalla
  * aikavälillä, sekä lämmityksen ja valojen optimointi. Yläreunan välilehdet
- * vierittävät kuhunkin osioon (kuten Valot-näytön kerrospalkki).
+ * vierittävät kuhunkin osioon (kuten Valot-näytön kerrospalkki). Mittarien ja
+ * hintojen lukemat avaavat koko sivun historiakäyrän (kuten Ilmasto-näyttö).
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun EnergiaScreen(
     modifier: Modifier = Modifier,
     viewModel: EnergiaViewModel = koinViewModel(),
+    forceLandscapeDetail: Boolean = false,
 ) {
     val priceState by viewModel.prices.collectAsState()
     val liveEnergy by viewModel.liveEnergy.collectAsState()
@@ -94,6 +108,23 @@ fun EnergiaScreen(
     val heatingOpti by viewModel.heatingOpti.collectAsState()
     val lightUsage by viewModel.lightUsage.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
+    val focus by viewModel.focus.collectAsState()
+    val focusSeries by viewModel.focusSeries.collectAsState()
+    val focusLoading by viewModel.focusLoading.collectAsState()
+    val focusRange by viewModel.focusRange.collectAsState()
+
+    // System back leaves the focus chart for the readouts instead of quitting.
+    BackHandler(enabled = focus != null) { viewModel.closeFocus() }
+
+    // On the phone, a focus chart turns to landscape (even under an orientation
+    // lock) and keeps the phone surface while it is wide — see IlmastoScreen.
+    if (forceLandscapeDetail) {
+        val uiSignals: UiSignals = koinInject()
+        // Synchronous commit (SideEffect), not a coroutine — see KotiScreen.
+        SideEffect { uiSignals.setDetailOpen("energia", focus != null) }
+        DisposableEffect(Unit) { onDispose { uiSignals.setDetailOpen("energia", false) } }
+        if (focus != null) LockLandscapeWhileVisible()
+    }
 
     LaunchedEffect(Unit) {
         while (coroutineContext.isActive) {
@@ -102,7 +133,17 @@ fun EnergiaScreen(
         }
     }
 
-    val listState = rememberLazyListState()
+    // Seed the list from the VM-preserved position and write scroll changes
+    // back, so returning from a focus chart (whose forced landscape recreates
+    // this pager page) lands where the user left off instead of at the top.
+    val listState = rememberLazyListState(viewModel.listScrollIndex, viewModel.listScrollOffset)
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) ->
+                viewModel.listScrollIndex = index
+                viewModel.listScrollOffset = offset
+            }
+    }
     val scope = rememberCoroutineScope()
     val sections = EnSection.entries
     // Layout: sticky tabs = item 0, then one item per section (Hinta = 1 … Valot = 5).
@@ -119,34 +160,128 @@ fun EnergiaScreen(
     }
 
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
-        LazyColumn(
-            state = listState,
-            modifier = modifier.fillMaxSize().background(MkTheme.colors.appBg),
-            contentPadding = PaddingValues(
-                start = MkSpacing.pagePad,
-                end = MkSpacing.pagePad,
-                top = MkSpacing.x2,
-                bottom = MkSpacing.pagePad + MkSpacing.scrollBottomGap,
-            ),
-            verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
-        ) {
-            stickyHeader(key = "tabs") {
-                EnSubTabs(
-                    active = activeSection,
-                    onSelect = { section ->
-                        scope.launch {
-                            listState.animateScrollToItem(sections.indexOf(section) + 1, -barPx)
-                        }
-                    },
-                )
+        val f = focus
+        if (f != null) {
+            EnergiaFocusPage(
+                f = f,
+                focusSeries = focusSeries,
+                focusLoading = focusLoading,
+                focusRange = focusRange,
+                onRangeChange = viewModel::setFocusRange,
+                cost = cost,
+                costRange = range,
+                costLoading = costLoading,
+                onBack = viewModel::closeFocus,
+            )
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = modifier.fillMaxSize().background(MkTheme.colors.appBg),
+                contentPadding = PaddingValues(
+                    start = MkSpacing.pagePad,
+                    end = MkSpacing.pagePad,
+                    top = MkSpacing.x2,
+                    bottom = MkSpacing.pagePad + MkSpacing.scrollBottomGap,
+                ),
+                verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+            ) {
+                stickyHeader(key = "tabs") {
+                    EnSubTabs(
+                        active = activeSection,
+                        onSelect = { section ->
+                            scope.launch {
+                                listState.animateScrollToItem(sections.indexOf(section) + 1, -barPx)
+                            }
+                        },
+                    )
+                }
+                item(key = "hinta") { PriceCard(priceState, viewModel::openFocus) }
+                item(key = "mittari") { MetersCard(liveEnergy, viewModel::openFocus) }
+                item(key = "kulutus") { KulutusSection(cost, range, costLoading, viewModel::setRange, viewModel::openFocus) }
+                item(key = "optimointi") { HeatingOptiCard(heatingOpti, viewModel::openFocus) }
+                item(key = "valot") { LightUsageCard(lightUsage) }
             }
-            item(key = "hinta") { PriceCard(priceState) }
-            item(key = "mittari") { MetersCard(liveEnergy) }
-            item(key = "kulutus") { KulutusSection(cost, range, costLoading, viewModel::setRange) }
-            item(key = "optimointi") { HeatingOptiCard(heatingOpti) }
-            item(key = "valot") { LightUsageCard(lightUsage) }
         }
     }
+}
+
+/**
+ * The tapped readout's full-page history chart. Most metrics chart an InfluxDB
+ * series at a selectable window; the Kulutus/Kustannus tiles chart the section's
+ * already-loaded per-bucket kWh trend instead (its window comes from the
+ * section's own 24 h / 7 pv / 30 pv / 12 kk selector, so no separate picker).
+ */
+@Composable
+private fun EnergiaFocusPage(
+    f: FocusMetric,
+    focusSeries: List<Float>,
+    focusLoading: Boolean,
+    focusRange: TimeRangeOption,
+    onRangeChange: (TimeRangeOption) -> Unit,
+    cost: CostView?,
+    costRange: EnergyRange,
+    costLoading: Boolean,
+    onBack: () -> Unit,
+) {
+    val c = MkTheme.colors
+    if (f.measurement == EnergiaViewModel.KULUTUS_TREND) {
+        val values = cost?.trend.orEmpty()
+        val series = if (values.size < 2) emptyList()
+        else listOf(MkSeries(name = null, values = values, color = c.accent, area = true))
+        val stats = buildList {
+            cost?.kwh?.let { add(MkStat("kWh", it)) }
+            cost?.cost?.let { add(MkStat("€", it)) }
+            cost?.avg?.let { add(MkStat("ka", "$it c/kWh")) }
+            cost?.peak?.let { add(MkStat("huippu", it)) }
+            cost?.cheap?.let { add(MkStat("halvin", it)) }
+            // Explicit kWh min/max (and a ka fallback): the plotted buckets are
+            // kWh whichever tile opened this, so MkMetricDetail's derived stats
+            // must not label them with the Kustannus tile's € unit.
+            if (values.size >= 2) {
+                fun kwh(v: Float) = "${Fmt.oneDecimal(v.toDouble())} kWh"
+                add(MkStat("min", kwh(values.min())))
+                add(MkStat("max", kwh(values.max())))
+                if (cost?.avg == null) add(MkStat("ka", kwh(values.average().toFloat())))
+            }
+        }
+        MkMetricDetailPage(
+            icon = f.icon,
+            label = "${f.label} · ${costRange.window}",
+            value = (if (f.field == "eur") cost?.cost else cost?.kwh) ?: "—",
+            unit = if (f.field == "eur") "€" else "kWh",
+            series = series,
+            labels = chartLabels(costRange.toTimeRange()),
+            stats = stats,
+            onBack = onBack,
+            loading = costLoading,
+            swipeKey = f.label,
+        )
+    } else {
+        val series = if (focusSeries.size < 2) emptyList()
+        else listOf(MkSeries(name = null, values = focusSeries, color = c.accent, area = true))
+        MkMetricDetailPage(
+            icon = f.icon,
+            label = f.label,
+            value = f.value,
+            unit = f.unit,
+            series = series,
+            labels = chartLabels(focusRange),
+            stats = emptyList(),
+            range = focusRange,
+            onRangeChange = onRangeChange,
+            onBack = onBack,
+            loading = focusLoading,
+            swipeKey = f.label,
+        )
+    }
+}
+
+/** The Kulutus window → the shared chart-label range (they line up 1:1). */
+private fun EnergyRange.toTimeRange(): TimeRangeOption = when (this) {
+    EnergyRange.H24 -> TimeRangeOption.H24
+    EnergyRange.D7 -> TimeRangeOption.D7
+    EnergyRange.D30 -> TimeRangeOption.D30
+    EnergyRange.Y1 -> TimeRangeOption.Y1
 }
 
 // ── Sub-tab bar ──────────────────────────────────────────────────────────────
@@ -186,11 +321,22 @@ private fun EnSubTabs(active: EnSection, onSelect: (EnSection) -> Unit) {
 // ── Hinta ────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun PriceCard(state: PriceState) {
+private fun PriceCard(state: PriceState, onFocus: (FocusMetric) -> Unit) {
     // Drops "tänään" once the curve carries into tomorrow's prices, so the title
     // stays honest when the chart spans two days.
     val spansTomorrow = (state as? PriceState.Ready)?.model?.spansTomorrow == true
-    MkCard {
+    // Tapping the card opens the stored spot-price history at a selectable window.
+    val onClick = (state as? PriceState.Ready)?.model?.currentCents?.let { cents ->
+        {
+            onFocus(
+                FocusMetric(
+                    MkIcons.LightningFill, "Sähkön hinta", Fmt.oneDecimal(cents), "c/kWh",
+                    "electricity", "price_with_tax",
+                ),
+            )
+        }
+    }
+    MkCard(interactive = onClick != null, onClick = onClick) {
         MkCardHead(if (spansTomorrow) "Sähkön hinta" else "Sähkön hinta tänään")
         when (state) {
             is PriceState.Ready -> {
@@ -220,7 +366,7 @@ private fun PriceCard(state: PriceState) {
 // ── Mittari ──────────────────────────────────────────────────────────────────
 
 @Composable
-private fun MetersCard(live: Map<String, EnergyReading>) {
+private fun MetersCard(live: Map<String, EnergyReading>, onFocus: (FocusMetric) -> Unit) {
     val c = MkTheme.colors
     val hp = live["heatpump"]
     val ex = live["extra"]
@@ -234,16 +380,41 @@ private fun MetersCard(live: Map<String, EnergyReading>) {
         val b = rawOf(ex, key)
         return if (a == null && b == null) null else (a ?: 0.0) + (b ?: 0.0)
     }
+    // The meter whose reading a grid-wide field came from, so its history chart
+    // pins the same source (both meters store the field as separate series).
+    fun meterOf(key: String): String? = when {
+        rawOf(hp, key) != null -> "heatpump"
+        rawOf(ex, key) != null -> "extra"
+        else -> null
+    }
+    // A grid-wide readout's focus chart: hvac/<field> pinned to the meter that
+    // supplied the shown value. Null (not tappable) without a live reading.
+    fun gridFocus(label: String, key: String, unit: String, icon: ImageVector): (() -> Unit)? {
+        val v = grid(key) ?: return null
+        val m = meterOf(key) ?: return null
+        return { onFocus(FocusMetric(icon, label, Fmt.oneDecimal(v), unit, "hvac", key, tagKey = "meter", tagValue = m)) }
+    }
 
+    val hpKw = hp?.powerKw
     val auxKw = ex?.powerKw
     MkCard {
         MkCardHead("Sähkömittari")
         Row(horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3)) {
             MkStatTile(
                 label = "Maalämpö",
-                value = hp?.powerKw?.let { Fmt.oneDecimal(it) } ?: "—",
+                value = hpKw?.let { Fmt.oneDecimal(it) } ?: "—",
                 unit = "kW",
                 icon = MkIcons.Lightning,
+                onClick = hpKw?.let {
+                    {
+                        onFocus(
+                            FocusMetric(
+                                MkIcons.Lightning, "Maalämpö", Fmt.oneDecimal(it), "kW",
+                                "hvac", "Total_Active_Power", tagKey = "meter", tagValue = "heatpump",
+                            ),
+                        )
+                    }
+                },
                 modifier = Modifier.weight(1f),
             )
             MkStatTile(
@@ -254,6 +425,16 @@ private fun MetersCard(live: Map<String, EnergyReading>) {
                 // Only tint when the resistive heater is actually drawing power;
                 // it idles at ~0.07 kW standby, which isn't worth a warn.
                 status = if ((auxKw ?: 0.0) > 0.1) MkStatStatus.Warn else MkStatStatus.None,
+                onClick = auxKw?.let {
+                    {
+                        onFocus(
+                            FocusMetric(
+                                MkIcons.FlameFill, "Lisävastus", Fmt.oneDecimal(it), "kW",
+                                "hvac", "Total_Active_Power", tagKey = "meter", tagValue = "extra",
+                            ),
+                        )
+                    }
+                },
                 modifier = Modifier.weight(1f),
             )
             MkStatTile(
@@ -261,6 +442,7 @@ private fun MetersCard(live: Map<String, EnergyReading>) {
                 value = grid("Grid_Frequency")?.let { Fmt.oneDecimal(it) } ?: "—",
                 unit = "Hz",
                 icon = MkIcons.Waveform,
+                onClick = gridFocus("Taajuus", "Grid_Frequency", "Hz", MkIcons.Waveform),
                 modifier = Modifier.weight(1f),
             )
         }
@@ -268,9 +450,9 @@ private fun MetersCard(live: Map<String, EnergyReading>) {
             modifier = Modifier.padding(top = MkSpacing.x3),
             horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
         ) {
-            PhaseChip("L1", grid("L1_Voltage"), Modifier.weight(1f))
-            PhaseChip("L2", grid("L2_Voltage"), Modifier.weight(1f))
-            PhaseChip("L3", grid("L3_Voltage"), Modifier.weight(1f))
+            PhaseChip("L1", grid("L1_Voltage"), Modifier.weight(1f), gridFocus("Vaihe L1", "L1_Voltage", "V", MkIcons.Lightning))
+            PhaseChip("L2", grid("L2_Voltage"), Modifier.weight(1f), gridFocus("Vaihe L2", "L2_Voltage", "V", MkIcons.Lightning))
+            PhaseChip("L3", grid("L3_Voltage"), Modifier.weight(1f), gridFocus("Vaihe L3", "L3_Voltage", "V", MkIcons.Lightning))
         }
         Box(modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3).height(1.dp).background(c.borderSubtle))
         Row(
@@ -285,11 +467,17 @@ private fun MetersCard(live: Map<String, EnergyReading>) {
 }
 
 @Composable
-private fun PhaseChip(label: String, volts: Double?, modifier: Modifier = Modifier) {
+private fun PhaseChip(
+    label: String,
+    volts: Double?,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
     val c = MkTheme.colors
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(MkRadius.sm))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .background(c.surfaceInset)
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -334,15 +522,21 @@ private fun KulutusSection(
     range: EnergyRange,
     loading: Boolean,
     onRange: (EnergyRange) -> Unit,
+    onFocus: (FocusMetric) -> Unit,
 ) {
     val c = MkTheme.colors
     Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.x3)) {
         Row(horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3)) {
+            // Both tiles open the window's per-bucket kWh trend as a full-page
+            // chart (KULUTUS_TREND renders from the loaded cost view).
             MkStatTile(
                 label = "Kulutus ${range.window}",
                 value = cost?.kwh ?: "—",
                 unit = "kWh",
                 icon = MkIcons.LightningFill,
+                onClick = cost?.kwh?.let {
+                    { onFocus(FocusMetric(MkIcons.LightningFill, "Kulutus", it, "kWh", EnergiaViewModel.KULUTUS_TREND, "kwh")) }
+                },
                 modifier = Modifier.weight(1f),
             )
             MkStatTile(
@@ -350,6 +544,9 @@ private fun KulutusSection(
                 value = cost?.cost ?: "—",
                 unit = "€",
                 icon = MkIcons.Lightning,
+                onClick = cost?.cost?.let {
+                    { onFocus(FocusMetric(MkIcons.Lightning, "Kustannus", it, "€", EnergiaViewModel.KULUTUS_TREND, "eur")) }
+                },
                 modifier = Modifier.weight(1f),
             )
         }
@@ -546,7 +743,7 @@ private fun PeakCheapLabel(icon: ImageVector, tint: Color, text: String) {
 // ── Optimointi ("Lämmityksen optimointi") ────────────────────────────────────
 
 @Composable
-private fun HeatingOptiCard(opti: HeatingOpti?) {
+private fun HeatingOptiCard(opti: HeatingOpti?, onFocus: (FocusMetric) -> Unit) {
     val c = MkTheme.colors
     MkCard {
         MkCardHead("Lämmityksen optimointi", action = opti?.let { o ->
@@ -597,6 +794,15 @@ private fun HeatingOptiCard(opti: HeatingOpti?) {
                     .clip(shape)
                     .background(c.accentDim)
                     .border(1.dp, c.accentBorder, shape)
+                    // The applied bias opens the optimizer's total_bias history.
+                    .clickable {
+                        onFocus(
+                            FocusMetric(
+                                MkIcons.ThermometerHot, "Lämpötilakorjaus", signed(bias), "°C",
+                                "indoor_publisher", "total_bias",
+                            ),
+                        )
+                    }
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),

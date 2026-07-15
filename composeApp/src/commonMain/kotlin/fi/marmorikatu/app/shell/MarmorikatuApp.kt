@@ -66,6 +66,7 @@ import fi.marmorikatu.app.screens.TapahtumatScreen
 import fi.marmorikatu.app.screens.ValotScreen
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
+import kotlinx.coroutines.delay
 import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 
@@ -112,6 +113,14 @@ fun MarmorikatuApp(
             // the chart room — keep it on the phone surface so the whole app does
             // not swap to the kiosk just because it turned wide.
             val wide = isTablet || (!detailOpen && widthDp > heightDp)
+            // A detail-forced rotation recreates the activity, and while the old
+            // composition disposes, [detailOpen] reads false for a moment before
+            // the recreated screen re-asserts it. Sit out that transient before
+            // swapping a phone to the kiosk: acting on it would dispose the
+            // detail and its landscape lock, snap back to portrait, re-open the
+            // detail, and oscillate between the orientations forever. The effect
+            // restarts (cancelling the wait) the instant detailOpen turns true.
+            if (wide && !isTablet) delay(SURFACE_SETTLE_MS)
             viewModel.setSurface(if (wide) Surface.Tablet else Surface.Phone)
         }
     }
@@ -176,6 +185,14 @@ private fun DebugOverlay(onClose: () -> Unit) {
 /** Below this the nav rail has no room to breathe. */
 private const val TABLET_MIN_WIDTH_DP = 720
 
+/**
+ * How long a phone must stay wide with no detail open before it swaps to the
+ * kiosk surface — long enough to sit out the detailOpen=false transient of a
+ * detail-forced rotation (activity recreation), short enough that a real turn
+ * to landscape still feels immediate.
+ */
+private const val SURFACE_SETTLE_MS = 500L
+
 @Composable
 private fun ScreenHost(tab: Tab, modifier: Modifier = Modifier, phone: Boolean = false) {
     Box(modifier = modifier) {
@@ -185,7 +202,7 @@ private fun ScreenHost(tab: Tab, modifier: Modifier = Modifier, phone: Boolean =
             // Only the phone instance forces a detail chart to landscape; the
             // kiosk is already wide.
             Tab.Ilmasto -> IlmastoScreen(forceLandscapeDetail = phone)
-            Tab.Energia -> EnergiaScreen()
+            Tab.Energia -> EnergiaScreen(forceLandscapeDetail = phone)
             Tab.Bussit -> BussitScreen()
             Tab.Kalenteri -> KalenteriScreen()
             Tab.Tapahtumat -> TapahtumatScreen()

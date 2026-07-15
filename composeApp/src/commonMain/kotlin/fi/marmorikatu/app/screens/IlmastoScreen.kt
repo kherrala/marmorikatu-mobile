@@ -3,7 +3,6 @@ package fi.marmorikatu.app.screens
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,7 +11,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,7 +23,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import fi.marmorikatu.core.model.RuuviReading
 import fi.marmorikatu.core.model.RuuviSensors
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,7 +44,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import fi.marmorikatu.app.components.MkBanner
 import fi.marmorikatu.app.platform.LockLandscapeWhileVisible
@@ -61,8 +57,9 @@ import fi.marmorikatu.app.components.MkCardHead
 import fi.marmorikatu.app.components.MkFreshness
 import fi.marmorikatu.app.components.MkGauge
 import fi.marmorikatu.app.components.MkVentilationDiagram
+import fi.marmorikatu.app.components.VentZone
 import fi.marmorikatu.app.components.MkLineChart
-import fi.marmorikatu.app.components.MkMetricDetail
+import fi.marmorikatu.app.components.MkMetricDetailPage
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.components.MkSeries
 import fi.marmorikatu.app.components.MkStatTile
@@ -120,6 +117,11 @@ data class FocusMetric(
      */
     val tagKey: String? = null,
     val tagValue: String? = null,
+    /**
+     * Multiplier applied to the stored series so the chart matches the shown
+     * unit — e.g. the Ruuvi pressure is stored in Pa but displayed in hPa.
+     */
+    val scale: Float = 1f,
 )
 
 /** Ilmasto (climate): a sticky sub-tab bar scroll-spies over stacked sections. */
@@ -158,8 +160,8 @@ fun IlmastoScreen(
     if (forceLandscapeDetail) {
         val uiSignals: UiSignals = koinInject()
         // Synchronous commit (SideEffect), not a coroutine — see KotiScreen.
-        SideEffect { uiSignals.detailOpen.value = focus != null }
-        DisposableEffect(Unit) { onDispose { uiSignals.detailOpen.value = false } }
+        SideEffect { uiSignals.setDetailOpen("ilmasto", focus != null) }
+        DisposableEffect(Unit) { onDispose { uiSignals.setDetailOpen("ilmasto", false) } }
         if (focus != null) LockLandscapeWhileVisible()
     }
 
@@ -188,27 +190,23 @@ fun IlmastoScreen(
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
         val f = focus
         if (f != null) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(colors.appBg)
-                    // Swipe the focus page to the right to return to the readouts.
-                    .pointerInput(f.label) {
-                        var dragged = 0f
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                if (dragged > 64.dp.toPx()) closeFocus()
-                                dragged = 0f
-                            },
-                            onHorizontalDrag = { _, delta -> dragged += delta },
-                        )
-                    }
-                    .verticalScroll(rememberScrollState())
-                    .padding(MkSpacing.pagePad),
-                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
-            ) {
-                MetricFocusView(f, focusSeries, focusLoading, onBack = closeFocus)
-            }
+            val focusRange by viewModel.focusRange.collectAsState()
+            val chart = if (focusSeries.size < 2) emptyList()
+            else listOf(MkSeries(name = null, values = focusSeries, color = colors.accent, area = true))
+            MkMetricDetailPage(
+                icon = f.icon,
+                label = f.label,
+                value = f.value,
+                unit = f.unit,
+                series = chart,
+                labels = ilmastoAxisLabels(focusRange),
+                stats = emptyList(),
+                range = focusRange,
+                onRangeChange = viewModel::setFocusRange,
+                onBack = closeFocus,
+                loading = focusLoading,
+                swipeKey = f.label,
+            )
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize().background(colors.appBg),
@@ -233,7 +231,7 @@ fun IlmastoScreen(
                 item(key = "lampo") {
                     Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap)) {
                         HistoryCard(snapshot, viewModel)
-                        RoomsCard(rooms, heating)
+                        RoomsCard(rooms, heating, openFocus)
                     }
                 }
                 item(key = "ilma") { AirQualityCard(snapshot, openFocus) }
@@ -252,34 +250,6 @@ fun IlmastoScreen(
                 }
             }
         }
-    }
-}
-
-/** The tapped readout's 24 h history chart, with a "Takaisin" affordance. */
-@Composable
-private fun ColumnScope.MetricFocusView(
-    focus: FocusMetric,
-    series: List<Float>,
-    loading: Boolean,
-    onBack: () -> Unit,
-) {
-    val colors = MkTheme.colors
-    val chart = if (series.size < 2) emptyList()
-    else listOf(MkSeries(name = null, values = series, color = colors.accent, area = true))
-    MkMetricDetail(
-        icon = focus.icon,
-        label = focus.label,
-        value = focus.value,
-        unit = focus.unit,
-        series = chart,
-        labels = ilmastoAxisLabels(TimeRangeOption.H24),
-        stats = emptyList(),
-        onBack = onBack,
-    )
-    if (loading) {
-        Text("Ladataan historiaa…", style = MkTheme.type.label, color = colors.inkLo)
-    } else if (series.size < 2) {
-        Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
     }
 }
 
@@ -458,7 +428,21 @@ private fun HeatPumpCard(hp: HeatPumpStatus, onFocus: (FocusMetric) -> Unit) {
                 hp.running -> "Käy"
                 else -> "Seis"
             }
-            Text(state, style = MkTheme.type.readout(13), color = if (hp.running) colors.accent else colors.inkMid)
+            // The running state opens the compressor's power-draw history — the
+            // same series behind the home screen's Maalämpö KPI.
+            Text(
+                text = state,
+                style = MkTheme.type.readout(13),
+                color = if (hp.running) colors.accent else colors.inkMid,
+                modifier = if (hp.available) {
+                    Modifier
+                        .clip(RoundedCornerShape(MkRadius.sm))
+                        .clickable {
+                            onFocus(FocusMetric(MkIcons.ThermometerHot, "Maalämpö", state, "kW", "hvac", "Lampopumppu_teho"))
+                        }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                } else Modifier,
+            )
         }
         if (!hp.available) {
             Text(NO_DATA, style = MkTheme.type.readout(15), color = colors.inkLo)
@@ -536,7 +520,8 @@ private fun VentilationCard(
             { onFocus(FocusMetric(MkIcons.FanFill, "Lämmöntalteenotto", Fmt.int(it), "%", "hvac_lto", "lto")) }
         }
         // The MVHR system diagram (design): the four duct temperatures around the
-        // heat-recovery core, with the live LTO efficiency.
+        // heat-recovery core, with the live LTO efficiency. Tapping a duct corner
+        // opens that temperature's history chart.
         val hv = snapshot.hvac
         MkVentilationDiagram(
             outdoorC = hv?.outdoorC ?: ventilation.outdoorC,
@@ -546,6 +531,19 @@ private fun VentilationCard(
             preHeatC = hv?.supplyPreHeatC ?: ventilation.supplyPreHeatC,
             ltoPct = lto,
             modifier = Modifier.padding(vertical = MkSpacing.x2),
+            onZoneClick = { zone ->
+                val duct = when (zone) {
+                    VentZone.Outdoor -> Triple("Ulkoilma", hv?.outdoorC ?: ventilation.outdoorC, "Ulkolampotila")
+                    VentZone.Exhaust -> Triple("Jäteilma", hv?.exhaustC ?: ventilation.exhaustC, "Jateilma")
+                    VentZone.Extract -> Triple("Poistoilma", hv?.extractC ?: ventilation.extractC, "Poistoilma")
+                    VentZone.Supply -> Triple("Tuloilma", hv?.supplyPostHeatC ?: ventilation.supplyC, "Tuloilma_jalkeen_lammityksen")
+                }
+                val (label, celsius, field) = duct
+                // A corner with no live reading has nothing to chart — ignore the tap.
+                celsius?.let {
+                    onFocus(FocusMetric(MkIcons.Wind, label, Fmt.oneDecimal(it), "°C", "hvac", field))
+                }
+            },
         )
         Box(
             modifier = Modifier
@@ -768,12 +766,14 @@ private fun ltoStatus(value: Double): String = when {
 private fun AnturitSection(ruuvi: Map<String, RuuviReading>, onFocus: (FocusMetric) -> Unit) {
     val c = MkTheme.colors
     data class Anturi(val name: String, val icon: ImageVector, val value: String, val warn: Boolean, val focus: FocusMetric?)
-    // Each Ruuvi temperature opens its 24 h history (ruuvi/temperature filtered to
-    // that sensor). Pressure has no per-sensor detail here (the user asked for the
-    // temperatures), so it stays a plain readout.
+    // Each Ruuvi reading opens its history chart (ruuvi/temperature or
+    // ruuvi/pressure, filtered to the sensor that supplied the value).
     fun tempFocus(name: String, icon: ImageVector, valueStr: String, sensor: String) =
         FocusMetric(icon, name, valueStr, "°C", "ruuvi", "temperature", tagKey = "sensor_name", tagValue = sensor)
-    val pressureHpa = ruuvi.values.firstNotNullOfOrNull { it.pressure }?.let { it / 100.0 }
+    // Keep the sensor that supplied the pressure so its history can be focused
+    // (stored in Pa; shown — and charted, via scale — in hPa).
+    val pressureSrc = ruuvi.values.firstNotNullOfOrNull { r -> r.pressure?.let { r.sensorName to it } }
+    val pressureHpa = pressureSrc?.second?.let { it / 100.0 }
     val rows = buildList {
         ruuvi[RuuviSensors.FRIDGE]?.temperature?.let {
             val v = Fmt.oneDecimal(it)
@@ -792,7 +792,15 @@ private fun AnturitSection(ruuvi: Map<String, RuuviReading>, onFocus: (FocusMetr
             add(Anturi("Ulkoilma", MkIcons.Tree, "$v °C", false, tempFocus("Ulkoilma", MkIcons.Tree, v, RuuviSensors.OUTDOOR)))
         }
         pressureHpa?.let {
-            add(Anturi("Ilmanpaine", MkIcons.Gauge, "${Fmt.int(it)} hPa", false, null))
+            add(
+                Anturi(
+                    "Ilmanpaine", MkIcons.Gauge, "${Fmt.int(it)} hPa", false,
+                    FocusMetric(
+                        MkIcons.Gauge, "Ilmanpaine", Fmt.int(it), "hPa", "ruuvi", "pressure",
+                        tagKey = "sensor_name", tagValue = pressureSrc?.first, scale = 0.01f,
+                    ),
+                ),
+            )
         }
     }
     if (rows.isEmpty()) return
@@ -838,7 +846,11 @@ private fun AnturitSection(ruuvi: Map<String, RuuviReading>, onFocus: (FocusMetr
 // ── Room list ───────────────────────────────────────────────────────────────
 
 @Composable
-private fun RoomsCard(rooms: List<RoomTemperature>, heating: List<HeatingDemand>) {
+private fun RoomsCard(
+    rooms: List<RoomTemperature>,
+    heating: List<HeatingDemand>,
+    onFocus: (FocusMetric) -> Unit,
+) {
     val colors = MkTheme.colors
     MkCard {
         MkCardHead("Huoneet")
@@ -850,21 +862,41 @@ private fun RoomsCard(rooms: List<RoomTemperature>, heating: List<HeatingDemand>
         rooms.forEach { room ->
             val known = Rooms.byMqttKey[room.key]
             val demand = demandByKey[room.key]?.percent ?: 0
+            val icon = floorIcon(known?.floor ?: room.floor)
             RoomRow(
-                icon = floorIcon(known?.floor ?: room.floor),
+                icon = icon,
                 name = room.name,
                 celsius = room.celsius,
                 demandPct = demand,
+                // Each room temperature opens its history chart (the `rooms`
+                // measurement field this sensor writes).
+                onClick = known?.influxField?.let { field ->
+                    {
+                        onFocus(
+                            FocusMetric(icon, room.name, Fmt.oneDecimal(room.celsius), "°C", "rooms", field),
+                        )
+                    }
+                },
             )
         }
     }
 }
 
 @Composable
-private fun RoomRow(icon: ImageVector, name: String, celsius: Double, demandPct: Int) {
+private fun RoomRow(
+    icon: ImageVector,
+    name: String,
+    celsius: Double,
+    demandPct: Int,
+    onClick: (() -> Unit)? = null,
+) {
     val colors = MkTheme.colors
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = MkSpacing.x2),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(MkRadius.sm))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(vertical = MkSpacing.x2),
         horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -893,6 +925,10 @@ private fun RoomRow(icon: ImageVector, name: String, celsius: Double, demandPct:
             style = MkTheme.type.readout(16),
             color = colors.inkHi,
         )
+        // Chevron hints the row drills into a history chart.
+        if (onClick != null) {
+            Icon(MkIcons.CaretRight, null, tint = colors.inkLo, modifier = Modifier.size(14.dp))
+        }
     }
 }
 

@@ -3,18 +3,15 @@ package fi.marmorikatu.app.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,7 +21,6 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -55,7 +51,7 @@ import fi.marmorikatu.app.components.MkClimateCard
 import fi.marmorikatu.app.components.rememberTickingAge
 import fi.marmorikatu.app.components.MkDoorAlert
 import fi.marmorikatu.app.components.rememberBase64Painter
-import fi.marmorikatu.app.components.MkMetricDetail
+import fi.marmorikatu.app.components.MkMetricDetailPage
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.components.MkSeries
 import fi.marmorikatu.app.components.MkStatTile
@@ -78,8 +74,8 @@ import kotlin.time.Instant
 
 /**
  * Koti (home): the attention strip, an optional door alert, the climate card,
- * and a 2-column KPI grid. Tapping a KPI swaps the page for its [MkMetricDetail]
- * with a "Takaisin" affordance.
+ * and a 2-column KPI grid. Tapping a KPI swaps the page for its
+ * [MkMetricDetailPage] with a "Takaisin" affordance.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -127,8 +123,8 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     // Commit the signal synchronously at composition-apply (SideEffect), not on a
     // coroutine (LaunchedEffect) — otherwise the forced rotation can outrun it and
     // the shell briefly swaps to the kiosk surface, disposing this detail.
-    SideEffect { uiSignals.detailOpen.value = detailOpen }
-    DisposableEffect(Unit) { onDispose { uiSignals.detailOpen.value = false } }
+    SideEffect { uiSignals.setDetailOpen("koti", detailOpen) }
+    DisposableEffect(Unit) { onDispose { uiSignals.setDetailOpen("koti", false) } }
 
     // A tapped news notification (routed here by the shell) opens the news reader.
     val openNewsReader by uiSignals.openNewsReader.collectAsState()
@@ -149,122 +145,80 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     }
 
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
-        val selected = selKey?.let { key -> state.kpis.firstOrNull { it.key == key } }
+        // The weather widget's outdoor detail ("ulko") lives outside the grid KPIs.
+        val selected = selKey?.let { key ->
+            state.kpis.firstOrNull { it.key == key } ?: state.outdoorKpi?.takeIf { it.key == key }
+        }
         val room = roomDetailIndex?.let { state.rooms.getOrNull(it) }
         // Detail charts render in their own scroll container, separate from the
         // dashboard's [scrollState], so opening/closing one leaves it untouched.
         if (selected != null) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize().background(colors.appBg)) {
-                // Fill the viewport so the chart uses the full height (no dead space
-                // below it); a card taller than the viewport still scrolls.
-                val cardHeight = maxHeight - MkSpacing.pagePad * 2
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(MkSpacing.pagePad),
-                    verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
-                ) {
-                // Load this metric's history at the chosen window from InfluxDB.
-                val hasSource = selected.detailMeasurement != null && selected.detailField != null
-                LaunchedEffect(selected.key, detailRange, hasSource) {
-                    if (hasSource) {
-                        viewModel.loadKpiDetail(
-                            selected.detailMeasurement!!,
-                            selected.detailField!!,
-                            selected.detailTagKey,
-                            selected.detailTagValue,
-                            detailRange,
-                        )
-                    }
-                }
-                val loaded = if (hasSource) kpiDetailSeries else selected.seriesValues
-                val series = if (loaded.size < 2) emptyList() else listOf(
-                    MkSeries(
-                        name = null,
-                        values = loaded,
-                        color = lineColor(selected.detailStatus, colors),
-                        area = true,
-                    ),
-                )
-                MkMetricDetail(
-                    icon = selected.icon,
-                    label = selected.label,
-                    value = selected.value,
-                    unit = selected.unit ?: selected.detailUnit,
-                    series = series,
-                    labels = chartLabels(detailRange),
-                    stats = selected.stats,
-                    status = selected.detailStatus,
-                    range = if (hasSource) detailRange else null,
-                    onRangeChange = if (hasSource) ({ viewModel.setDetailRange(it) }) else null,
-                    onBack = { viewModel.closeDetail() },
-                    fillHeight = true,
-                    // Swipe the card to the right to go back to the grid.
-                    modifier = Modifier.height(cardHeight).pointerInput(selKey) {
-                        var dragged = 0f
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                if (dragged > 56.dp.toPx()) viewModel.closeDetail()
-                                dragged = 0f
-                            },
-                            onHorizontalDrag = { _, delta -> dragged += delta },
-                        )
-                    },
-                )
-                if (hasSource && kpiDetailLoading) {
-                    Text("Ladataan historiaa…", style = MkTheme.type.label, color = colors.inkLo)
-                } else if (hasSource && loaded.size < 2) {
-                    Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
-                }
+            // Load this metric's history at the chosen window from InfluxDB.
+            // Keyed on the source fields too: the outdoor KPI re-resolves its
+            // sensor (ruuvi → hvac → thermia) per refresh, so the chart must
+            // follow the source the headline value came from.
+            val hasSource = selected.detailMeasurement != null && selected.detailField != null
+            LaunchedEffect(selected.key, detailRange, selected.detailMeasurement, selected.detailField, selected.detailTagValue) {
+                if (hasSource) {
+                    viewModel.loadKpiDetail(
+                        selected.detailMeasurement!!,
+                        selected.detailField!!,
+                        selected.detailTagKey,
+                        selected.detailTagValue,
+                        detailRange,
+                    )
                 }
             }
+            val loaded = if (hasSource) kpiDetailSeries else selected.seriesValues
+            val series = if (loaded.size < 2) emptyList() else listOf(
+                MkSeries(
+                    name = null,
+                    values = loaded,
+                    color = lineColor(selected.detailStatus, colors),
+                    area = true,
+                ),
+            )
+            MkMetricDetailPage(
+                icon = selected.icon,
+                label = selected.label,
+                value = selected.value,
+                unit = selected.unit ?: selected.detailUnit,
+                series = series,
+                labels = chartLabels(detailRange),
+                stats = selected.stats,
+                status = selected.detailStatus,
+                range = if (hasSource) detailRange else null,
+                onRangeChange = if (hasSource) ({ viewModel.setDetailRange(it) }) else null,
+                onBack = { viewModel.closeDetail() },
+                loading = kpiDetailLoading,
+                hasHistory = hasSource,
+                swipeKey = selected.key,
+            )
         } else if (room != null) {
             // Room temperature detail — opened by tapping the climate card's value.
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(colors.appBg)
-                    .verticalScroll(rememberScrollState())
-                    .padding(MkSpacing.pagePad),
-                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
-            ) {
-                val field = room.historyField
-                LaunchedEffect(room.name, detailRange, field) {
-                    if (field != null) viewModel.loadKpiDetail("rooms", field, null, null, detailRange)
-                }
-                val series = if (kpiDetailSeries.size < 2) emptyList() else listOf(
-                    MkSeries(name = null, values = kpiDetailSeries, color = colors.accent, area = true),
-                )
-                MkMetricDetail(
-                    icon = room.icon ?: MkIcons.Thermometer,
-                    label = room.name,
-                    value = room.temp,
-                    unit = "°C",
-                    series = series,
-                    labels = chartLabels(detailRange),
-                    stats = emptyList(),
-                    status = "accent",
-                    range = if (field != null) detailRange else null,
-                    onRangeChange = if (field != null) ({ viewModel.setDetailRange(it) }) else null,
-                    onBack = { viewModel.closeDetail() },
-                    modifier = Modifier.pointerInput(room.name) {
-                        var dragged = 0f
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                if (dragged > 56.dp.toPx()) viewModel.closeDetail()
-                                dragged = 0f
-                            },
-                            onHorizontalDrag = { _, delta -> dragged += delta },
-                        )
-                    },
-                )
-                if (field != null && kpiDetailLoading) {
-                    Text("Ladataan historiaa…", style = MkTheme.type.label, color = colors.inkLo)
-                } else if (field != null && kpiDetailSeries.size < 2) {
-                    Text("Ei historiaa saatavilla.", style = MkTheme.type.label, color = colors.inkLo)
-                }
+            val field = room.historyField
+            LaunchedEffect(room.name, detailRange, field) {
+                if (field != null) viewModel.loadKpiDetail("rooms", field, null, null, detailRange)
             }
+            val series = if (kpiDetailSeries.size < 2) emptyList() else listOf(
+                MkSeries(name = null, values = kpiDetailSeries, color = colors.accent, area = true),
+            )
+            MkMetricDetailPage(
+                icon = room.icon ?: MkIcons.Thermometer,
+                label = room.name,
+                value = room.temp,
+                unit = "°C",
+                series = series,
+                labels = chartLabels(detailRange),
+                stats = emptyList(),
+                status = "accent",
+                range = if (field != null) detailRange else null,
+                onRangeChange = if (field != null) ({ viewModel.setDetailRange(it) }) else null,
+                onBack = { viewModel.closeDetail() },
+                loading = kpiDetailLoading,
+                hasHistory = field != null,
+                swipeKey = room.name,
+            )
         } else {
             Column(
                 modifier = Modifier
@@ -326,6 +280,8 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                     outdoorSource = outdoorTemp?.primary?.source,
                     outdoorAlternatives = outdoorTemp?.alternatives.orEmpty()
                         .map { WeatherReading(it.source, it.celsius) },
+                    // The headline temperature opens the outdoor-temperature history.
+                    onClick = { viewModel.openKpiDetail("ulko") },
                 )
             }
 

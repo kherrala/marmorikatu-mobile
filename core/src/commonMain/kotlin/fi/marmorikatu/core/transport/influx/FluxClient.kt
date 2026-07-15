@@ -51,12 +51,19 @@ class FluxClient(
         val tagFilter = if (tagKey != null && tagValue != null) {
             "\n              |> filter(fn: (r) => r.$tagKey == \"$tagValue\")"
         } else ""
+        // group(_field) collapses every tag series of a field into one table
+        // before the window mean — a field stored under several tags (e.g.
+        // electricity/price_with_tax's two price sources) would otherwise come
+        // back as separate series that the CSV parse concatenates out of time
+        // order. The explicit sort keeps each field's points chronological.
         val flux = """
             from(bucket: "$bucket")
               |> range(start: $range)
               |> filter(fn: (r) => r._measurement == "$measurement")
               |> filter(fn: (r) => $predicate)$tagFilter
+              |> group(columns: ["_field"])
               |> aggregateWindow(every: $every, fn: mean, createEmpty: false)
+              |> sort(columns: ["_time"])
               |> keep(columns: ["_time", "_value", "_field"])
         """.trimIndent()
         return runQuery(flux)
