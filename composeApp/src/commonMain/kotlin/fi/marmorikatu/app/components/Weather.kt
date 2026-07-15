@@ -1,6 +1,7 @@
 package fi.marmorikatu.app.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.core.model.WeatherForecast
+import fi.marmorikatu.core.model.WeatherWarning
 import fi.marmorikatu.core.model.WeatherHour
 import kotlin.math.PI
 import kotlin.math.acos
@@ -72,6 +74,16 @@ fun MkWeatherWidget(
     val outdoorTemp = outdoorTempOverride ?: now.temperature
 
     MkCard(modifier = modifier, interactive = onClick != null, onClick = onClick) {
+        // Deduced weather warnings (helle / myrsky) sit atop the card so they're
+        // the first thing read — empty on a calm day, so nothing shows.
+        if (forecast.warnings.isNotEmpty()) {
+            Column(
+                modifier = Modifier.padding(bottom = MkSpacing.x2),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                forecast.warnings.forEach { WeatherWarningBanner(it) }
+            }
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
@@ -305,6 +317,47 @@ private fun WeatherHourCell(hour: WeatherHour, night: Boolean) {
  * falls back to matching the Finnish condition word. The icon set has no fog /
  * plain-cloud glyph, so overcast and fog reuse the cloud-with-sun/moon pair.
  */
+/** A helle / myrsky warning banner shown atop the weather card. */
+@Composable
+private fun WeatherWarningBanner(w: WeatherWarning) {
+    val c = MkTheme.colors
+    val icon = when (w.kind) {
+        "helle" -> MkIcons.ThermometerHot
+        "myrsky" -> MkIcons.Wind
+        else -> MkIcons.Warning
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(MkRadius.sm))
+            .background(c.warmDim)
+            .border(1.dp, c.warmBorder, RoundedCornerShape(MkRadius.sm))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = c.warm, modifier = Modifier.size(20.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = w.title.ifBlank { "Säävaroitus" },
+                style = MkTheme.type.readout(13, FontWeight.SemiBold),
+                color = c.inkHi,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (w.detail.isNotBlank()) {
+                Text(
+                    text = w.detail,
+                    style = MkTheme.type.readout(11, FontWeight.Normal),
+                    color = c.inkMid,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 private fun weatherIcon(code: Int?, condition: String, night: Boolean): ImageVector {
     code?.let {
         return when (it) {

@@ -9,6 +9,19 @@ data class WeatherForecast(
     val current: WeatherNow = WeatherNow(),
     @SerialName("hourly_next_4h") val hourlyNext4h: List<WeatherHour> = emptyList(),
     @SerialName("daily_forecast") val dailyForecast: List<WeatherDay> = emptyList(),
+    /** Deduced weather warnings for today (helle / myrsky); empty when none. */
+    val warnings: List<WeatherWarning> = emptyList(),
+)
+
+/** A deduced weather warning shown on the weather card (from the weather service). */
+@Serializable
+data class WeatherWarning(
+    /** `helle` | `myrsky` — drives the icon/tone. */
+    val kind: String = "",
+    /** Headline, e.g. "Hellevaroitus". */
+    val title: String = "",
+    /** One-line specifics, e.g. "Päivän lämpötila nousee 27 asteeseen." */
+    val detail: String = "",
 )
 
 @Serializable
