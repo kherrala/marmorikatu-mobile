@@ -156,6 +156,9 @@ fun ValotScreen(
                     )
                 }
             }
+            // Trailing space so tapping the last floor scrolls it to the very top
+            // even when that floor has few areas (the list bottoms out otherwise).
+            item(key = "tailspace") { Spacer(Modifier.fillParentMaxHeight(0.9f)) }
             }
         }
     }
@@ -212,8 +215,9 @@ private fun FloorTabs(
     val c = MkTheme.colors
     // A solid strip so the list doesn't show through as it scrolls beneath it.
     // Horizontal page padding is applied here now that the bar sits outside the
-    // list (it used to inherit the LazyColumn's contentPadding as a sticky header).
-    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(horizontal = MkSpacing.pagePad, vertical = 2.dp)) {
+    // list; the top padding clears the header's -14dp content tuck + soft edge so
+    // the pills aren't hidden under the chrome.
+    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(start = MkSpacing.pagePad, end = MkSpacing.pagePad, top = MkSpacing.x5, bottom = 2.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -214,8 +214,10 @@ fun IlmastoScreen(
                 // soft-edge (the content tucks up by -14dp), so it's hoisted out of
                 // the list. Tapping a tab anchor-scrolls to its section.
                 Box(
+                    // top padding clears the header's -14dp content tuck + soft edge
+                    // so the pills sit fully below the chrome, not under it.
                     modifier = Modifier.fillMaxWidth().background(colors.appBg)
-                        .padding(horizontal = MkSpacing.pagePad, vertical = 4.dp),
+                        .padding(start = MkSpacing.pagePad, end = MkSpacing.pagePad, top = MkSpacing.x5, bottom = 4.dp),
                 ) {
                     SubTabBar(
                         active = activeSub,
@@ -253,6 +255,9 @@ fun IlmastoScreen(
                         )
                     }
                 }
+                // Trailing space so tapping the last tab can scroll its section to
+                // the very top even when it's short (the list bottoms out otherwise).
+                item(key = "tailspace") { Spacer(Modifier.fillParentMaxHeight(0.9f)) }
                 }
             }
         }

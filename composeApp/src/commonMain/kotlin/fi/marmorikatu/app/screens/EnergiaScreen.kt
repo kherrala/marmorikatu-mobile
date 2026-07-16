@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -200,6 +201,9 @@ fun EnergiaScreen(
                     item(key = "kulutus") { KulutusSection(cost, range, costLoading, viewModel::setRange, viewModel::openFocus) }
                     item(key = "optimointi") { HeatingOptiCard(heatingOpti, viewModel::openFocus) }
                     item(key = "valot") { LightUsageCard(lightUsage) }
+                    // Trailing space so tapping the last tab scrolls its section to
+                    // the very top even when it's short.
+                    item(key = "tailspace") { Spacer(Modifier.fillParentMaxHeight(0.9f)) }
                 }
             }
         }
@@ -291,8 +295,9 @@ private fun EnergyRange.toTimeRange(): TimeRangeOption = when (this) {
 private fun EnSubTabs(active: EnSection, onSelect: (EnSection) -> Unit) {
     val c = MkTheme.colors
     // Horizontal page padding is applied here now that the bar sits outside the
-    // list (it used to inherit the LazyColumn's contentPadding as a sticky header).
-    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(horizontal = MkSpacing.pagePad, vertical = 2.dp)) {
+    // list; the top padding clears the header's -14dp content tuck + soft edge so
+    // the pills aren't hidden under the chrome.
+    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(start = MkSpacing.pagePad, end = MkSpacing.pagePad, top = MkSpacing.x5, bottom = 2.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
