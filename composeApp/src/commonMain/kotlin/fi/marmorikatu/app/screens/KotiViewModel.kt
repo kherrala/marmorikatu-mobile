@@ -588,6 +588,15 @@ class KotiViewModel(
                 refresh(showSpinner = false)
             }
         }
+        // The forecast advances slowly, so reload it on its own slow cadence — the
+        // 12 s KPI loop skips it — so the next-hours window keeps moving forward
+        // without a manual pull.
+        viewModelScope.launch {
+            while (true) {
+                delay(WEATHER_REFRESH_MS)
+                loadWeather()
+            }
+        }
     }
 
     @OptIn(ExperimentalTime::class)
@@ -1478,6 +1487,9 @@ class KotiViewModel(
 
         /** How often the KPI snapshots silently re-fetch, so the tiles stay live. */
         const val AUTO_REFRESH_MS = 12_000L
+
+        /** How often the weather forecast reloads so its next-hours window advances. */
+        const val WEATHER_REFRESH_MS = 10 * 60 * 1000L
 
         /**
          * TimeRangeOption → (Flux range, every) for [ClimateRepository.temperatureHistory].

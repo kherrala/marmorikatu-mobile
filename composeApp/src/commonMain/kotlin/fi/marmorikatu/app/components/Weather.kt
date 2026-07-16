@@ -70,7 +70,8 @@ fun MkWeatherWidget(
     val c = MkTheme.colors
     val now = forecast.current
     val icon = weatherIcon(now.weatherCode, now.condition, night)
-    val hours = forecast.hourlyNext4h.take(4)
+    // Sparse next-~12 h points (every ~3 h) from the backend; show up to five.
+    val hours = forecast.hourlyNext4h.take(5)
     val outdoorTemp = outdoorTempOverride ?: now.temperature
 
     MkCard(modifier = modifier, interactive = onClick != null, onClick = onClick) {
