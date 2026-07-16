@@ -39,7 +39,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -76,55 +75,56 @@ fun ValotScreen(
     val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(setOf<String>()) }
 
-    // Item index of each floor header, so the tab bar can scroll to it. Layout is
-    // presets(0), tab bar(1), then per floor: header + one item per area.
+    // Item index of each floor header, so the fixed tab bar can scroll to it. The
+    // bar is now a fixed bar above the list, so the list is presets(0), then per
+    // floor: header + one item per area (floors start at index 1).
     val floors = state.floors
     val headerIndex = remember(floors) {
         val map = LinkedHashMap<Floor, Int>()
-        var idx = 2
+        var idx = 1
         floors.forEach { f -> map[f.floor] = idx; idx += 1 + f.areas.size }
         map
     }
-    val stickyOffsetPx = with(LocalDensity.current) { -64.dp.roundToPx() }
     val activeFloor by remember(floors) {
         derivedStateOf {
-            // +1 so a floor counts as "current" once its header reaches the sticky
-            // bar, even while the previous floor's last card still peeks below it.
-            val i = (listState.firstVisibleItemIndex + 1).coerceAtLeast(2)
+            // +1 so a floor counts as "current" once its header reaches the top,
+            // even while the previous floor's last card still peeks below it.
+            val i = (listState.firstVisibleItemIndex + 1).coerceAtLeast(1)
             floors.lastOrNull { (headerIndex[it.floor] ?: Int.MAX_VALUE) <= i }?.floor
                 ?: floors.firstOrNull()?.floor
         }
     }
 
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
-        LazyColumn(
-            state = listState,
-            modifier = modifier.fillMaxSize().background(colors.appBg),
-            contentPadding = PaddingValues(
-                start = MkSpacing.pagePad,
-                end = MkSpacing.pagePad,
-                top = MkSpacing.x4,
-                bottom = MkSpacing.x4 + MkSpacing.scrollBottomGap,
-            ),
-            verticalArrangement = Arrangement.spacedBy(11.dp),
-        ) {
-            item(key = "presets") {
-                PresetRow(active = state.activePreset, onApply = viewModel::applyPreset)
-            }
+        Column(modifier = modifier.fillMaxSize().background(colors.appBg)) {
+            // Fixed floor tabs below the app header — they stay put while the list
+            // scrolls beneath them (as a stickyHeader they slid up under the header's
+            // soft edge, since the content tucks up by -14dp). Tapping jumps to a floor.
+            FloorTabs(
+                floors = floors,
+                active = activeFloor,
+                onSelect = { floor ->
+                    headerIndex[floor]?.let { idx ->
+                        scope.launch { listState.animateScrollToItem(idx) }
+                    }
+                },
+            )
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentPadding = PaddingValues(
+                    start = MkSpacing.pagePad,
+                    end = MkSpacing.pagePad,
+                    top = MkSpacing.x2,
+                    bottom = MkSpacing.x4 + MkSpacing.scrollBottomGap,
+                ),
+                verticalArrangement = Arrangement.spacedBy(11.dp),
+            ) {
+                item(key = "presets") {
+                    PresetRow(active = state.activePreset, onApply = viewModel::applyPreset)
+                }
 
-            stickyHeader(key = "tabs") {
-                FloorTabs(
-                    floors = floors,
-                    active = activeFloor,
-                    onSelect = { floor ->
-                        headerIndex[floor]?.let { idx ->
-                            scope.launch { listState.animateScrollToItem(idx, stickyOffsetPx) }
-                        }
-                    },
-                )
-            }
-
-            if (failure) {
+                if (failure) {
                 item(key = "failure") {
                     MkBanner(
                         icon = MkIcons.Warning,
@@ -155,6 +155,7 @@ fun ValotScreen(
                         onToggleLight = { id, on -> viewModel.toggle(id, on) },
                     )
                 }
+            }
             }
         }
     }
@@ -209,8 +210,10 @@ private fun FloorTabs(
     onSelect: (Floor) -> Unit,
 ) {
     val c = MkTheme.colors
-    // A solid strip so content doesn't show through the sticky bar as it scrolls.
-    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(vertical = 2.dp)) {
+    // A solid strip so the list doesn't show through as it scrolls beneath it.
+    // Horizontal page padding is applied here now that the bar sits outside the
+    // list (it used to inherit the LazyColumn's contentPadding as a sticky header).
+    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(horizontal = MkSpacing.pagePad, vertical = 2.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

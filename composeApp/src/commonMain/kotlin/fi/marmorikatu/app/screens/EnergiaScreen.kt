@@ -146,16 +146,16 @@ fun EnergiaScreen(
     }
     val scope = rememberCoroutineScope()
     val sections = EnSection.entries
-    // Layout: sticky tabs = item 0, then one item per section (Hinta = 1 … Valot = 5).
+    // The tab bar is a fixed bar above the list, so the list is just one item per
+    // section (Hinta = 0 … Valot = 4).
     val barPx = with(LocalDensity.current) { 56.dp.roundToPx() }
-    // The current section is the last one whose top has scrolled up to (or past) the
-    // sticky bar — read from layout offsets so it's correct even with the tab bar as
-    // the first (pinned) item.
+    // The current section is the last one whose top has scrolled up to (or near) the
+    // top of the list, read from layout offsets.
     val activeSection by remember {
         derivedStateOf {
-            val secs = listState.layoutInfo.visibleItemsInfo.filter { it.index in 1..sections.size }
+            val secs = listState.layoutInfo.visibleItemsInfo.filter { it.index in sections.indices }
             val current = secs.lastOrNull { it.offset <= barPx } ?: secs.firstOrNull()
-            current?.let { sections[it.index - 1] } ?: EnSection.Hinta
+            current?.let { sections[it.index] } ?: EnSection.Hinta
         }
     }
 
@@ -174,32 +174,33 @@ fun EnergiaScreen(
                 onBack = viewModel::closeFocus,
             )
         } else {
-            LazyColumn(
-                state = listState,
-                modifier = modifier.fillMaxSize().background(MkTheme.colors.appBg),
-                contentPadding = PaddingValues(
-                    start = MkSpacing.pagePad,
-                    end = MkSpacing.pagePad,
-                    top = MkSpacing.x2,
-                    bottom = MkSpacing.pagePad + MkSpacing.scrollBottomGap,
-                ),
-                verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
-            ) {
-                stickyHeader(key = "tabs") {
-                    EnSubTabs(
-                        active = activeSection,
-                        onSelect = { section ->
-                            scope.launch {
-                                listState.animateScrollToItem(sections.indexOf(section) + 1, -barPx)
-                            }
-                        },
-                    )
+            Column(modifier = modifier.fillMaxSize().background(MkTheme.colors.appBg)) {
+                // Fixed sub-tab bar below the app header — it stays put while the list
+                // scrolls beneath it (a stickyHeader slid up under the header's soft
+                // edge, since the content tucks up by -14dp).
+                EnSubTabs(
+                    active = activeSection,
+                    onSelect = { section ->
+                        scope.launch { listState.animateScrollToItem(sections.indexOf(section)) }
+                    },
+                )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = PaddingValues(
+                        start = MkSpacing.pagePad,
+                        end = MkSpacing.pagePad,
+                        top = MkSpacing.x2,
+                        bottom = MkSpacing.pagePad + MkSpacing.scrollBottomGap,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+                ) {
+                    item(key = "hinta") { PriceCard(priceState, viewModel::openFocus) }
+                    item(key = "mittari") { MetersCard(liveEnergy, viewModel::openFocus) }
+                    item(key = "kulutus") { KulutusSection(cost, range, costLoading, viewModel::setRange, viewModel::openFocus) }
+                    item(key = "optimointi") { HeatingOptiCard(heatingOpti, viewModel::openFocus) }
+                    item(key = "valot") { LightUsageCard(lightUsage) }
                 }
-                item(key = "hinta") { PriceCard(priceState, viewModel::openFocus) }
-                item(key = "mittari") { MetersCard(liveEnergy, viewModel::openFocus) }
-                item(key = "kulutus") { KulutusSection(cost, range, costLoading, viewModel::setRange, viewModel::openFocus) }
-                item(key = "optimointi") { HeatingOptiCard(heatingOpti, viewModel::openFocus) }
-                item(key = "valot") { LightUsageCard(lightUsage) }
             }
         }
     }
@@ -289,7 +290,9 @@ private fun EnergyRange.toTimeRange(): TimeRangeOption = when (this) {
 @Composable
 private fun EnSubTabs(active: EnSection, onSelect: (EnSection) -> Unit) {
     val c = MkTheme.colors
-    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(vertical = 2.dp)) {
+    // Horizontal page padding is applied here now that the bar sits outside the
+    // list (it used to inherit the LazyColumn's contentPadding as a sticky header).
+    Box(modifier = Modifier.fillMaxWidth().background(c.appBg).padding(horizontal = MkSpacing.pagePad, vertical = 2.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp),

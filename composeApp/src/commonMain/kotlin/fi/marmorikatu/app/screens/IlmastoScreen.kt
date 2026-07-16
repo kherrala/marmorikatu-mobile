@@ -178,9 +178,9 @@ fun IlmastoScreen(
     }
     val scope = rememberCoroutineScope()
     // Scroll-spy: the highlighted sub-tab follows the top-most visible section.
-    // The list is [sticky tabs, Lämpö, Ilma, Maalämpö, Ilmanvaihto, Jäähdytys],
-    // so the sections start at item index 1 (index 0 is the sticky tab bar).
-    val sectionStart = 1
+    // The tab bar is now a fixed bar above the list (not a list item), so the
+    // sections are the list's own items starting at index 0.
+    val sectionStart = 0
     val activeSub by remember {
         derivedStateOf {
             IlmastoSub.entries[(listState.firstVisibleItemIndex - sectionStart).coerceIn(0, IlmastoSub.entries.lastIndex)]
@@ -208,27 +208,32 @@ fun IlmastoScreen(
                 swipeKey = f.label,
             )
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().background(colors.appBg),
-                state = listState,
-                contentPadding = PaddingValues(
-                    start = MkSpacing.pagePad,
-                    end = MkSpacing.pagePad,
-                    top = MkSpacing.x4,
-                    bottom = MkSpacing.x4 + MkSpacing.scrollBottomGap,
-                ),
-                verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
-            ) {
-                // Sticky sub-tab bar: tapping a tab anchor-scrolls to its section.
-                stickyHeader(key = "tabs") {
-                    Box(modifier = Modifier.fillMaxWidth().background(colors.appBg).padding(vertical = 4.dp)) {
-                        SubTabBar(
-                            active = activeSub,
-                            onSelect = { s -> scope.launch { listState.animateScrollToItem(s.ordinal + sectionStart) } },
-                        )
-                    }
+            Column(modifier = Modifier.fillMaxSize().background(colors.appBg)) {
+                // Fixed sub-tab bar: it stays put below the app header while the list
+                // scrolls beneath it. As a stickyHeader it slid up under the header's
+                // soft-edge (the content tucks up by -14dp), so it's hoisted out of
+                // the list. Tapping a tab anchor-scrolls to its section.
+                Box(
+                    modifier = Modifier.fillMaxWidth().background(colors.appBg)
+                        .padding(horizontal = MkSpacing.pagePad, vertical = 4.dp),
+                ) {
+                    SubTabBar(
+                        active = activeSub,
+                        onSelect = { s -> scope.launch { listState.animateScrollToItem(s.ordinal + sectionStart) } },
+                    )
                 }
-                item(key = "lampo") {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    state = listState,
+                    contentPadding = PaddingValues(
+                        start = MkSpacing.pagePad,
+                        end = MkSpacing.pagePad,
+                        top = MkSpacing.x2,
+                        bottom = MkSpacing.x4 + MkSpacing.scrollBottomGap,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+                ) {
+                    item(key = "lampo") {
                     Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap)) {
                         HistoryCard(snapshot, viewModel)
                         RoomsCard(rooms, heating, openFocus)
@@ -247,6 +252,7 @@ fun IlmastoScreen(
                             color = colors.inkLo,
                         )
                     }
+                }
                 }
             }
         }
