@@ -46,10 +46,13 @@ val LIGHT_AREAS: List<LightArea> = listOf(
     LightArea("yla_aula", Floor.YLAKERTA, "Aula", MkIcons.Stack, listOf(
         AreaLight(26, "Kattovalo"), AreaLight(3, "LED"), AreaLight(25, "Rappuset"),
         AreaLight(24, "Ikkunavalo"))),
+    // PLC indices 22/23 and 28/30 were mapped to the wrong bedrooms — Aarni's card
+    // toggled Seela's fixtures and vice versa — so the id sets are swapped here to
+    // match the physical rooms (kept in sync with LIGHT_LABELS in the backend).
     LightArea("yla_aarni", Floor.YLAKERTA, "Aarni", MkIcons.Bed, listOf(
-        AreaLight(22, "Kattovalo"), AreaLight(23, "Ikkunavalo"))),
-    LightArea("yla_seela", Floor.YLAKERTA, "Seela", MkIcons.Bed, listOf(
         AreaLight(28, "Kattovalo"), AreaLight(30, "Ikkunavalo"))),
+    LightArea("yla_seela", Floor.YLAKERTA, "Seela", MkIcons.Bed, listOf(
+        AreaLight(22, "Kattovalo"), AreaLight(23, "Ikkunavalo"))),
     LightArea("yla_aikuiset", Floor.YLAKERTA, "Aikuiset", MkIcons.Bed, listOf(
         AreaLight(33, "Kattovalo"), AreaLight(32, "Ikkunavalo"), AreaLight(31, "Vaatehuone"))),
     LightArea("yla_kylpy", Floor.YLAKERTA, "Kylpyhuone", MkIcons.Bathtub, listOf(
