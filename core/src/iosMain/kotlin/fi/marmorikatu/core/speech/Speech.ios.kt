@@ -1,6 +1,7 @@
 package fi.marmorikatu.core.speech
 
 import fi.marmorikatu.core.config.AssistantGender
+import fi.marmorikatu.core.config.SpeechLanguage
 import fi.marmorikatu.core.log.logger
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
@@ -34,17 +35,23 @@ import kotlin.coroutines.resume
  * Native STT via the Speech framework, streaming microphone buffers from
  * AVAudioEngine into a live recognition request.
  *
- * Finnish support is not guaranteed on every iOS version or device, so
- * [isAvailable] checks the recogniser at runtime; when it says no, the caller
- * falls back to the server Whisper pipeline.
+ * Finnish support is not guaranteed on every iOS version or device (many iPads
+ * ship without it), so [isAvailable] checks the recogniser at runtime; when it
+ * says no, the user can switch the assistant to English in settings, which every
+ * device supports.
  */
 @OptIn(ExperimentalForeignApi::class)
 actual class PlatformStt actual constructor() : SpeechToText {
     private val log = logger("stt-native")
     override val name = "ios-speech"
 
-    private val recognizer: SFSpeechRecognizer? =
-        SFSpeechRecognizer(locale = NSLocale(localeIdentifier = "fi_FI"))
+    // Rebuilt whenever the language changes; starts on the house default.
+    private var recognizer: SFSpeechRecognizer? =
+        SFSpeechRecognizer(locale = NSLocale(localeIdentifier = SpeechLanguage.Finnish.iosLocale))
+
+    override fun useLanguage(language: SpeechLanguage) {
+        recognizer = SFSpeechRecognizer(locale = NSLocale(localeIdentifier = language.iosLocale))
+    }
 
     private val audioEngine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest? = null
@@ -136,31 +143,55 @@ actual class PlatformStt actual constructor() : SpeechToText {
     }
 }
 
-/** Native TTS via AVSpeechSynthesizer with the Finnish system voice. */
+/** Native TTS via AVSpeechSynthesizer in the user's chosen [SpeechLanguage]. */
 actual class PlatformTts actual constructor() : SpeechOutput {
     private val log = logger("tts-native")
     override val name = "ios-avspeech"
 
     private val synthesizer = AVSpeechSynthesizer()
 
-    // The active voice; reselected by persona. iOS *does* expose voice gender,
-    // so this is a reliable match when the device has both fi-FI voices.
+    // The active voice, reselected on any language or persona change. iOS *does*
+    // expose voice gender, so the persona match is reliable when the language has
+    // both voices; language drives which set of voices we pick from.
+    private var language: SpeechLanguage = SpeechLanguage.Finnish
+    private var gender: AssistantGender = AssistantGender.Nainen
     private var voice: AVSpeechSynthesisVoice? =
-        AVSpeechSynthesisVoice.voiceWithLanguage("fi-FI")
+        AVSpeechSynthesisVoice.voiceWithLanguage(SpeechLanguage.Finnish.bcp47)
 
     override fun useVoice(gender: AssistantGender) {
-        val fiVoices = AVSpeechSynthesisVoice.speechVoices()
+        this.gender = gender
+        reselectVoice()
+    }
+
+    override fun useLanguage(language: SpeechLanguage) {
+        this.language = language
+        reselectVoice()
+    }
+
+    /**
+     * Pick a voice in the active [language] matching the [gender] persona. Match
+     * on the primary subtag ("fi"/"en") so regional variants (en-GB, en-AU) still
+     * count. Falls back to the compact system voice for the language, so a device
+     * with no installed voice list still speaks.
+     */
+    private fun reselectVoice() {
+        val voices = AVSpeechSynthesisVoice.speechVoices()
             .filterIsInstance<AVSpeechSynthesisVoice>()
-            .filter { it.language == "fi-FI" }
-        if (fiVoices.isEmpty()) return
+            .filter { it.language.startsWith(language.prefix) }
+        if (voices.isEmpty()) {
+            voice = AVSpeechSynthesisVoice.voiceWithLanguage(language.bcp47)
+            return
+        }
+        // Prefer the exact locale (fi-FI, en-US) over a regional cousin.
+        fun rank(v: AVSpeechSynthesisVoice) = if (v.language == language.bcp47) 0 else 1
         val target = if (gender == AssistantGender.Mies) {
             AVSpeechSynthesisVoiceGender.AVSpeechSynthesisVoiceGenderMale
         } else {
             AVSpeechSynthesisVoiceGender.AVSpeechSynthesisVoiceGenderFemale
         }
-        voice = fiVoices.firstOrNull { it.gender == target }
-            ?: fiVoices.firstOrNull { it.gender == AVSpeechSynthesisVoiceGender.AVSpeechSynthesisVoiceGenderUnspecified }
-            ?: fiVoices.first()
+        voice = voices.filter { it.gender == target }.minByOrNull(::rank)
+            ?: voices.filter { it.gender == AVSpeechSynthesisVoiceGender.AVSpeechSynthesisVoiceGenderUnspecified }.minByOrNull(::rank)
+            ?: voices.minByOrNull(::rank)
     }
 
     /**

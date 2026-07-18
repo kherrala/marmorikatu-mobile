@@ -8,6 +8,7 @@ import fi.marmorikatu.core.background.BackgroundMode
 import fi.marmorikatu.core.haptics.Haptics
 import fi.marmorikatu.core.config.AssistantGender
 import fi.marmorikatu.core.config.ConfigStore
+import fi.marmorikatu.core.config.SpeechLanguage
 import fi.marmorikatu.core.lifecycle.ConnectionManager
 import fi.marmorikatu.core.model.Announcement
 import fi.marmorikatu.core.model.ChatEvent
@@ -115,6 +116,23 @@ class ShellViewModel(
         platformTts.useVoice(value)
     }
 
+    /**
+     * The voice language. Finnish is the default, but its native STT/TTS assets
+     * are absent on some devices (many iPads), where the assistant silently does
+     * nothing — switching to English gives a working voice on any device.
+     */
+    private val _speechLanguage = MutableStateFlow(configStore.config.value.speechLanguage)
+    val speechLanguage: StateFlow<SpeechLanguage> = _speechLanguage.asStateFlow()
+
+    fun setSpeechLanguage(value: SpeechLanguage) {
+        _speechLanguage.value = value
+        configStore.update { it.copy(speechLanguage = value) }
+        platformStt.useLanguage(value)
+        // Reapply the language and then the persona, so the voice matches both.
+        platformTts.useLanguage(value)
+        platformTts.useVoice(_assistantGender.value)
+    }
+
     fun start() = connections.start()
 
     fun setSurface(surface: Surface) {
@@ -164,7 +182,10 @@ class ShellViewModel(
         if (configStore.config.value.backgroundEnabled && backgroundMode.supported) {
             backgroundMode.setEnabled(true)
         }
-        // Apply the persisted persona to the native TTS engine at startup.
+        // Apply the persisted language + persona to the native engines at
+        // startup (language first, so the persona picks within the right locale).
+        platformStt.useLanguage(_speechLanguage.value)
+        platformTts.useLanguage(_speechLanguage.value)
         platformTts.useVoice(_assistantGender.value)
         viewModelScope.launch {
             announcementsRepo.announcements.collect { event ->

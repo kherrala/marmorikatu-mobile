@@ -35,6 +35,7 @@ import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.core.config.AssistantGender
+import fi.marmorikatu.core.config.SpeechLanguage
 
 /**
  * The user-facing preferences. Everything here persists across launches; the
@@ -56,6 +57,7 @@ fun SettingsSheet(
     var haptics by remember { mutableStateOf(viewModel.hapticsEnabled) }
     var background by remember { mutableStateOf(viewModel.backgroundEnabled) }
     var gender by remember { mutableStateOf(viewModel.assistantGender.value) }
+    var language by remember { mutableStateOf(viewModel.speechLanguage.value) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -132,6 +134,32 @@ fun SettingsSheet(
                 )
             }
 
+            Text(
+                "PUHEEN KIELI",
+                style = type.readout(10),
+                color = colors.inkLo,
+                modifier = Modifier.padding(top = MkSpacing.x2),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+            ) {
+                LangChip(
+                    name = "Suomi",
+                    detail = "puhe & tunnistus",
+                    selected = language == SpeechLanguage.Finnish,
+                    onClick = { language = SpeechLanguage.Finnish; viewModel.setSpeechLanguage(SpeechLanguage.Finnish) },
+                    modifier = Modifier.weight(1f),
+                )
+                LangChip(
+                    name = "English",
+                    detail = "TTS & STT",
+                    selected = language == SpeechLanguage.English,
+                    onClick = { language = SpeechLanguage.English; viewModel.setSpeechLanguage(SpeechLanguage.English) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+
             MkButton(
                 text = "Siirry lapsen tilaan",
                 onClick = {
@@ -183,6 +211,35 @@ private fun PersonaChip(
             Text(name, style = type.body.copy(fontWeight = FontWeight.SemiBold), color = colors.inkHi)
             Text(voice, style = type.readout(10), color = colors.inkLo)
         }
+    }
+}
+
+/** One speech-language option: name + a mono caption, ringed when selected. */
+@Composable
+private fun LangChip(
+    name: String,
+    detail: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MkTheme.colors
+    val type = MkTheme.type
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(MkRadius.md))
+            .background(colors.surfaceRaised)
+            .border(
+                1.5.dp,
+                if (selected) colors.accent else colors.borderSubtle,
+                RoundedCornerShape(MkRadius.md),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 13.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(name, style = type.body.copy(fontWeight = FontWeight.SemiBold), color = colors.inkHi)
+        Text(detail, style = type.readout(10), color = colors.inkLo)
     }
 }
 

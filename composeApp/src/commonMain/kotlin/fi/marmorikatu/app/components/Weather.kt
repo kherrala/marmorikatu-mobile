@@ -394,10 +394,10 @@ private fun weatherIcon(code: Int?, condition: String, night: Boolean): ImageVec
     }
 }
 
-/** Backend hourly times arrive ISO-like ("2026-07-11T15:00"); show `HH:MM`. */
+/** Backend hourly times arrive ISO-like ("2026-07-11T15:00"); show just the hour ("15"). */
 private fun hourLabel(time: String): String {
     val t = time.substringAfter('T', time)
-    return if (t.length >= 5) t.substring(0, 5) else t
+    return t.substringBefore(':')
 }
 
 /** Simple day/night split for the glyph — the icon set has no twilight variant. */

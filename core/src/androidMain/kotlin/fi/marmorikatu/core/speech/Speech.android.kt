@@ -9,6 +9,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import fi.marmorikatu.core.config.AssistantGender
+import fi.marmorikatu.core.config.SpeechLanguage
 import fi.marmorikatu.core.log.logger
 import fi.marmorikatu.core.platform.AndroidContext
 import kotlinx.coroutines.CompletableDeferred
@@ -23,14 +24,21 @@ import java.util.Locale
 import kotlin.coroutines.resume
 
 /**
- * Native STT via Android SpeechRecognizer with `fi-FI`. Mostly powered by
- * Google's recognition service (network); availability checked at runtime.
+ * Native STT via Android SpeechRecognizer. Mostly powered by Google's
+ * recognition service (network); availability checked at runtime. The language
+ * follows the user's [SpeechLanguage] choice.
  */
 actual class PlatformStt actual constructor() : SpeechToText {
     private val log = logger("stt-native")
     override val name = "android-speechrecognizer"
 
     private var recognizer: SpeechRecognizer? = null
+
+    @Volatile private var languageTag: String = SpeechLanguage.Finnish.bcp47
+
+    override fun useLanguage(language: SpeechLanguage) {
+        languageTag = language.bcp47
+    }
 
     override suspend fun isAvailable(): Boolean = withContext(Dispatchers.Main) {
         SpeechRecognizer.isRecognitionAvailable(AndroidContext.app)
@@ -72,8 +80,8 @@ actual class PlatformStt actual constructor() : SpeechToText {
         })
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fi-FI")
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "fi-FI")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             // Some recognisers reject the request without a calling package.
@@ -99,7 +107,7 @@ actual class PlatformStt actual constructor() : SpeechToText {
         SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "verkkovirhe"
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "tunnistin on varattu"
         SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
-        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "suomea ei tueta laitteella"
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "kieltä ei tueta laitteella"
         else -> "puheentunnistus epäonnistui ($error)"
     }
 
@@ -111,29 +119,31 @@ actual class PlatformStt actual constructor() : SpeechToText {
         getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
 }
 
-/** Native TTS via Android TextToSpeech with a Finnish voice. */
+/** Native TTS via Android TextToSpeech in the user's chosen [SpeechLanguage]. */
 actual class PlatformTts actual constructor() : SpeechOutput {
     private val log = logger("tts-native")
     override val name = "android-tts"
 
     private var tts: TextToSpeech? = null
-    private var finnishSupported = false
+    private var languageSupported = false
     private val initialized = CompletableDeferred<Boolean>()
 
-    // The persona to voice; applied once the engine is ready and again on every
-    // change. Volatile because it is read from the speak() coroutine.
+    // The persona and language to voice; applied once the engine is ready and
+    // again on every change. Volatile because they are read from the speak()
+    // coroutine and the language may be set before the engine finishes init.
     @Volatile private var desiredGender: AssistantGender = AssistantGender.Nainen
+    @Volatile private var language: SpeechLanguage = SpeechLanguage.Finnish
 
     init {
         tts = TextToSpeech(AndroidContext.app) { status ->
             val engine = tts
             if (status == TextToSpeech.SUCCESS && engine != null) {
-                val result = engine.setLanguage(Locale.forLanguageTag("fi-FI"))
-                finnishSupported = result != TextToSpeech.LANG_MISSING_DATA &&
-                    result != TextToSpeech.LANG_NOT_SUPPORTED
+                applyLanguage(engine)
                 installListener(engine)
                 applyVoice(engine)
-                initialized.complete(finnishSupported)
+                // isAvailable() reports the *engine* being ready; a specific
+                // language being missing surfaces per-language via applyLanguage.
+                initialized.complete(true)
             } else {
                 initialized.complete(false)
             }
@@ -145,44 +155,65 @@ actual class PlatformTts actual constructor() : SpeechOutput {
         tts?.let { if (initialized.isCompleted) applyVoice(it) }
     }
 
+    override fun useLanguage(language: SpeechLanguage) {
+        this.language = language
+        tts?.let {
+            if (initialized.isCompleted) {
+                applyLanguage(it)
+                applyVoice(it)
+            }
+        }
+    }
+
+    /** Point the engine at the current [language]; record whether it is present. */
+    private fun applyLanguage(engine: TextToSpeech) {
+        val result = engine.setLanguage(Locale.forLanguageTag(language.bcp47))
+        languageSupported = result != TextToSpeech.LANG_MISSING_DATA &&
+            result != TextToSpeech.LANG_NOT_SUPPORTED
+    }
+
     /**
-     * Pick a fi-FI voice matching [desiredGender]. Android exposes no gender
-     * field, so we rank the installed Finnish voices by name/feature hints
-     * ("female"/"male", or Google's speaker-letter convention) and, absent any
-     * hint, split the sorted set in two so the two personas at least get
+     * Pick a voice in the current [language] matching [desiredGender]. Android
+     * exposes no gender field, so we rank the installed voices by name/feature
+     * hints ("female"/"male", or Google's speaker-letter convention) and, absent
+     * any hint, split the sorted set in two so the two personas at least get
      * *distinct* voices. Falls back to the engine default when there's nothing
      * to choose from.
      */
     private fun applyVoice(engine: TextToSpeech) {
-        val finnish = runCatching { engine.voices }.getOrNull().orEmpty()
-            .filter { it.locale?.language == "fi" }
-        if (finnish.isEmpty()) return
+        val prefix = language.prefix
+        val candidates = runCatching { engine.voices }.getOrNull().orEmpty()
+            .filter { it.locale?.language == prefix }
+        if (candidates.isEmpty()) return
 
         // Android exposes no gender field; 1 = male, 0 = female, -1 = no hint.
-        // Google's fi-FI speaker letters alternate gender (…a/c/e ≈ female,
-        // …b/d/f ≈ male); some engines put "male"/"female" in the name outright.
+        // Google's speaker letters alternate gender (…a/c/e ≈ female, …b/d/f ≈
+        // male); some engines put "male"/"female" in the name outright.
         fun hint(v: Voice): Int {
             val n = v.name.lowercase()
             return when {
-                "female" in n || Regex("-fi[ace]\\b|#female").containsMatchIn(n) -> 0
-                "male" in n || Regex("-fi[bdf]\\b|#male").containsMatchIn(n) -> 1
+                "female" in n || Regex("-..[ace]\\b|#female").containsMatchIn(n) -> 0
+                "male" in n || Regex("-..[bdf]\\b|#male").containsMatchIn(n) -> 1
                 else -> -1
             }
         }
         val wantMale = desiredGender == AssistantGender.Mies
-        val labelled = finnish.filter { hint(it) != -1 }
+        val labelled = candidates.filter { hint(it) != -1 }
         val chosen = when {
             labelled.isNotEmpty() ->
                 labelled.firstOrNull { (hint(it) == 1) == wantMale } ?: labelled.first()
             // No hints: split the name-sorted voices so each persona at least
             // gets a stable, distinct voice.
-            finnish.size >= 2 -> finnish.sortedBy { it.name }.let { if (wantMale) it.last() else it.first() }
-            else -> finnish.first()
+            candidates.size >= 2 -> candidates.sortedBy { it.name }.let { if (wantMale) it.last() else it.first() }
+            else -> candidates.first()
         }
         runCatching { engine.setVoice(chosen) }
     }
 
-    override suspend fun isAvailable(): Boolean = initialized.await()
+    // Ready only when the engine initialised *and* the chosen language's voice
+    // data is installed; otherwise the caller paces the stream itself instead of
+    // speaking into a language the device can't synthesise.
+    override suspend fun isAvailable(): Boolean = initialized.await() && languageSupported
 
     /**
      * One listener for the engine's lifetime, dispatching by utterance id.

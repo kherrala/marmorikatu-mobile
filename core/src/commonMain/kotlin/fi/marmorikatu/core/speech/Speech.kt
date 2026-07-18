@@ -3,6 +3,7 @@ package fi.marmorikatu.core.speech
 import fi.marmorikatu.core.audio.AudioPlayer
 import fi.marmorikatu.core.audio.AudioRecorder
 import fi.marmorikatu.core.config.AssistantGender
+import fi.marmorikatu.core.config.SpeechLanguage
 import fi.marmorikatu.core.repository.AssistantRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -27,12 +28,19 @@ sealed interface SttEvent {
 
 interface SpeechToText {
     val name: String
-    /** Whether this engine can transcribe Finnish on this device. */
+    /** Whether this engine can transcribe the active language on this device. */
     suspend fun isAvailable(): Boolean
     /** Starts listening; the flow completes after a Final or Error event. */
     fun listen(): Flow<SttEvent>
     /** Stops capture early (push-to-talk release). */
     suspend fun stopListening()
+
+    /**
+     * Set the recognition language. Native engines rebuild their recogniser for
+     * the new locale; the server engine ignores it. No-op default so the server
+     * implementations need not care.
+     */
+    fun useLanguage(language: SpeechLanguage) {}
 }
 
 interface SpeechOutput {
@@ -49,6 +57,13 @@ interface SpeechOutput {
      * with a single fixed voice.
      */
     fun useVoice(gender: AssistantGender) {}
+
+    /**
+     * Set the spoken language. Native engines reselect a voice for the new
+     * locale (honouring the current persona where the locale has both genders);
+     * no-op for the server engine, which has a single fixed Finnish voice.
+     */
+    fun useLanguage(language: SpeechLanguage) {}
 }
 
 /**
