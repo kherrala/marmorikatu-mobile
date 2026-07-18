@@ -365,31 +365,43 @@ private fun nextSunLabel(rise: String, set: String): String {
 }
 
 /**
- * Condition → glyph. Prefers the WMO [code] the backend sends (Open-Meteo), and
- * falls back to matching the Finnish condition word. The icon set has no fog /
- * plain-cloud glyph, so overcast and fog reuse the cloud-with-sun/moon pair.
+ * Condition → glyph. Prefers the WMO [code] the backend sends (Open-Meteo) and
+ * falls back to matching the Finnish condition word. Each precipitation family
+ * has its own cloud glyph so heavy rain reads as a rain cloud (not a lone
+ * droplet); only the light drizzle codes keep the bare droplet.
+ *
+ * WMO code families: 0 clear · 1–2 partly cloudy · 3 overcast · 45/48 fog ·
+ * 51–57 drizzle · 61–67 rain · 71–77 snow · 80–82 rain showers · 85/86 snow
+ * showers · 95–99 thunderstorm.
  */
-
 private fun weatherIcon(code: Int?, condition: String, night: Boolean): ImageVector {
     code?.let {
         return when (it) {
             0 -> if (night) MkIcons.Moon else MkIcons.Sun
-            1, 2, 3 -> if (night) MkIcons.CloudMoon else MkIcons.CloudSun
-            45, 48 -> if (night) MkIcons.CloudMoon else MkIcons.CloudSun
-            in 51..67 -> MkIcons.Drop
-            in 71..77 -> MkIcons.Snowflake
-            in 80..82 -> MkIcons.Drop
-            85, 86 -> MkIcons.Snowflake
-            in 95..99 -> MkIcons.Lightning
-            else -> if (night) MkIcons.CloudMoon else MkIcons.CloudSun
+            1, 2 -> if (night) MkIcons.CloudMoon else MkIcons.CloudSun
+            3 -> MkIcons.Cloud
+            45, 48 -> MkIcons.CloudFog
+            51, 53, 55 -> MkIcons.Drop                 // drizzle: a light droplet
+            56, 57 -> MkIcons.CloudSnow                // freezing drizzle → wintry
+            in 61..65 -> MkIcons.CloudRain             // rain incl. heavy (65)
+            66, 67 -> MkIcons.CloudSnow                // freezing rain → wintry
+            in 71..77 -> MkIcons.CloudSnow
+            in 80..82 -> MkIcons.CloudRain
+            85, 86 -> MkIcons.CloudSnow
+            in 95..99 -> MkIcons.CloudLightning
+            else -> MkIcons.Cloud
         }
     }
     val s = condition.lowercase()
     return when {
-        s.contains("ukkon") -> MkIcons.Lightning
-        s.contains("lumi") || s.contains("räntä") -> MkIcons.Snowflake
-        s.contains("sade") || s.contains("kuuro") || s.contains("tihku") -> MkIcons.Drop
-        s.contains("pilv") || s.contains("sumu") -> if (night) MkIcons.CloudMoon else MkIcons.CloudSun
+        s.contains("ukkon") -> MkIcons.CloudLightning
+        s.contains("räntä") || s.contains("lumi") -> MkIcons.CloudSnow
+        s.contains("tihku") -> MkIcons.Drop
+        s.contains("sade") || s.contains("kuuro") -> MkIcons.CloudRain
+        s.contains("sumu") || s.contains("usva") -> MkIcons.CloudFog
+        s.contains("puolipilv") || s.contains("melko selke") ->
+            if (night) MkIcons.CloudMoon else MkIcons.CloudSun
+        s.contains("pilv") -> MkIcons.Cloud
         else -> if (night) MkIcons.Moon else MkIcons.Sun
     }
 }
