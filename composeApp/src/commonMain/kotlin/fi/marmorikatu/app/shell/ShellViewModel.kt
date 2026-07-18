@@ -202,16 +202,14 @@ class ShellViewModel(
     // --- Voice ---------------------------------------------------------------
 
     /**
-     * Tap the mic. From Idle/Ready (VALMIS) this starts one turn — listen →
-     * answer → back to Ready with the overlay still open. While the assistant is
-     * actively listening/thinking/speaking, a tap stops and closes it (LOPETA).
+     * Tap the mic. It always (re)starts a listening turn: from Idle/Ready it
+     * simply begins, and while the assistant is thinking or speaking it *barges
+     * in* — interrupting the current response (silencing the voice) and
+     * listening again immediately, so the user can ask a follow-up without
+     * waiting for the answer to finish. The mic never closes the overlay; that
+     * is done by swiping down or ✕.
      */
-    fun onMic() {
-        when (_voice.value) {
-            VoiceState.Idle, VoiceState.Ready -> startTurn(null)
-            else -> stopListening()
-        }
-    }
+    fun onMic() = startTurn(null)
 
     /** Fire a canned prompt from the quick-command grid as one turn. */
     fun runQuickCommand(prompt: String) = startTurn(prompt)
@@ -223,7 +221,10 @@ class ShellViewModel(
      * A farewell-only utterance ("kiitos") signs off and closes.
      */
     private fun startTurn(initial: String?) {
+        // Barge-in: cancel any in-flight turn and silence the voice at once, so a
+        // tap during a response stops the answer immediately before relistening.
         listenJob?.cancel()
+        platformTts.stop()
         listenJob = viewModelScope.launch {
             try {
                 val text = if (initial != null) initial else {
@@ -330,8 +331,12 @@ class ShellViewModel(
                     }
                 }
             }
+            // A turn that streamed nothing usable is a failure the user must see —
+            // otherwise the overlay just settles back to Ready in silence. (The
+            // stream-level detail is logged in BridgeApi.chatStream.)
+            if (!spokeAny) _voiceHint.value = "en saanut vastausta"
         } catch (e: Exception) {
-            _voiceHint.value = e.message
+            _voiceHint.value = e.message ?: "yhteysvirhe"
         }
     }
 

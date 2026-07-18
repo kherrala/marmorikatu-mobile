@@ -13,8 +13,11 @@ import platform.AVFAudio.AVAudioEngine
 import platform.AVFAudio.AVAudioPCMBuffer
 import platform.AVFAudio.AVAudioSession
 import platform.AVFAudio.AVAudioSessionCategoryOptionDefaultToSpeaker
+import platform.AVFAudio.AVAudioSessionCategoryOptionDuckOthers
 import platform.AVFAudio.AVAudioSessionCategoryPlayAndRecord
+import platform.AVFAudio.AVAudioSessionCategoryPlayback
 import platform.AVFAudio.AVAudioSessionModeMeasurement
+import platform.AVFAudio.AVAudioSessionModeSpokenAudio
 import platform.AVFAudio.AVSpeechBoundary
 import platform.AVFAudio.AVSpeechSynthesisVoice
 import platform.AVFAudio.AVSpeechSynthesisVoiceGender
@@ -144,6 +147,7 @@ actual class PlatformStt actual constructor() : SpeechToText {
 }
 
 /** Native TTS via AVSpeechSynthesizer in the user's chosen [SpeechLanguage]. */
+@OptIn(ExperimentalForeignApi::class)
 actual class PlatformTts actual constructor() : SpeechOutput {
     private val log = logger("tts-native")
     override val name = "ios-avspeech"
@@ -222,8 +226,31 @@ actual class PlatformTts actual constructor() : SpeechOutput {
 
     override suspend fun isAvailable(): Boolean = voice != null
 
+    /**
+     * Claim the shared audio session for playback before speaking. The STT path
+     * leaves it in `PlayAndRecord` + `Measurement` mode (which disables output
+     * processing and silences synthesis); switching to `Playback`/`SpokenAudio`
+     * here makes AVSpeechSynthesizer actually audible after a listening turn.
+     */
+    private fun activatePlaybackSession() {
+        val session = AVAudioSession.sharedInstance()
+        val ok = session.setCategory(
+            AVAudioSessionCategoryPlayback,
+            mode = AVAudioSessionModeSpokenAudio,
+            options = AVAudioSessionCategoryOptionDuckOthers,
+            error = null,
+        )
+        val active = session.setActive(true, error = null)
+        log.d { "playback session category=$ok active=$active" }
+    }
+
     override suspend fun speak(text: String) {
-        val fiVoice = voice ?: return
+        val fiVoice = voice ?: run {
+            log.w { "speak() skipped: no voice for the selected language" }
+            return
+        }
+        activatePlaybackSession()
+        log.d { "speak(): '${text.take(40)}' voice=${fiVoice.language}" }
         suspendCancellableCoroutine { cont ->
             val utterance = AVSpeechUtterance.speechUtteranceWithString(text)
             utterance.voice = fiVoice

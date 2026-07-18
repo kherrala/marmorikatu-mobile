@@ -66,17 +66,26 @@ class BridgeApi(
      * them; the flow completes after the terminal [ChatEvent.Done].
      */
     fun chatStream(messages: List<ChatMessage>): Flow<ChatEvent> = flow {
-        httpClient.preparePost("$base/chat/stream") {
-            contentType(ContentType.Application.Json)
-            setBody(chatBody(messages))
-            timeout {
-                requestTimeoutMillis = 300_000
-                socketTimeoutMillis = 120_000
+        log.d { "chatStream → POST $base/chat/stream (${messages.size} msgs)" }
+        var events = 0
+        try {
+            httpClient.preparePost("$base/chat/stream") {
+                contentType(ContentType.Application.Json)
+                setBody(chatBody(messages))
+                timeout {
+                    requestTimeoutMillis = 300_000
+                    socketTimeoutMillis = 120_000
+                }
+            }.execute { response ->
+                log.d { "chatStream ← status ${response.status}" }
+                response.bodyAsChannel().readSseEvents { sse ->
+                    parseChatEvent(sse.data)?.let { events++; emit(it) }
+                }
             }
-        }.execute { response ->
-            response.bodyAsChannel().readSseEvents { sse ->
-                parseChatEvent(sse.data)?.let { emit(it) }
-            }
+            log.d { "chatStream done: $events events" }
+        } catch (e: Exception) {
+            log.e(e) { "chatStream failed after $events events" }
+            throw e
         }
     }
 

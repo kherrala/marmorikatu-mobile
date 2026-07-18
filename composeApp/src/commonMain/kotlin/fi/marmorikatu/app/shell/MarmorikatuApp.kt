@@ -72,6 +72,8 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import fi.marmorikatu.app.components.MkIconButton
@@ -279,6 +281,18 @@ private fun BoxScope.VoiceOverlay(
     if (voice == VoiceState.Idle) return
     val colors = MkTheme.colors
 
+    // Swipe down (on the avatar area) to dismiss — the content below scrolls, so
+    // the gesture lives on the non-scrolling avatar rather than the whole sheet.
+    val swipeDownToDismiss = Modifier.pointerInput(Unit) {
+        var drag = 0f
+        detectVerticalDragGestures(
+            onDragStart = { drag = 0f },
+            onDragCancel = { drag = 0f },
+            onVerticalDrag = { _, dy -> drag += dy },
+            onDragEnd = { if (drag > 120f) onDismiss() },
+        )
+    }
+
     Box(
         modifier = Modifier
             .matchParentSize()
@@ -291,7 +305,8 @@ private fun BoxScope.VoiceOverlay(
             // Kiosk: two columns — avatar on the left, conversation on the right.
             Row(Modifier.fillMaxSize()) {
                 Box(
-                    modifier = Modifier.fillMaxWidth(0.42f).fillMaxHeight().background(glow),
+                    modifier = Modifier.fillMaxWidth(0.42f).fillMaxHeight().background(glow)
+                        .then(swipeDownToDismiss),
                     contentAlignment = Alignment.BottomCenter,
                 ) {
                     MkAssistantAvatar(
@@ -312,7 +327,7 @@ private fun BoxScope.VoiceOverlay(
                         voice, voiceHint, stream, kiosk = true, onRunCommand,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
-                    BottomButton(voice, onMic, onDismiss)
+                    BottomButton(voice, onMic)
                 }
             }
         } else {
@@ -336,7 +351,10 @@ private fun BoxScope.VoiceOverlay(
                     verticalArrangement = Arrangement.Top,
                 ) {
                     Spacer(Modifier.height(MkSpacing.x2))
-                    Box(Modifier.fillMaxWidth().background(glow), contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier.fillMaxWidth().background(glow).then(swipeDownToDismiss),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         MkAssistantAvatar(
                             state = voice,
                             gender = gender,
@@ -353,7 +371,7 @@ private fun BoxScope.VoiceOverlay(
                     modifier = Modifier.fillMaxWidth().padding(bottom = MkSpacing.x4, top = MkSpacing.x2),
                     contentAlignment = Alignment.Center,
                 ) {
-                    BottomButton(voice, onMic, onDismiss)
+                    BottomButton(voice, onMic)
                 }
             }
         }
@@ -389,14 +407,19 @@ private fun VoiceStatePill(voice: VoiceState, modifier: Modifier = Modifier) {
     }
 }
 
-/** The bottom control: PUHU to continue when resting, LOPETA to stop when active. */
+/**
+ * The bottom mic control. It always drives the mic (never closes the overlay —
+ * that's swipe-down / ✕): PUHU when resting, KESKEYTÄ while the assistant is
+ * answering (a tap barges in and listens again), KUUNTELEN… while listening.
+ */
 @Composable
-private fun BottomButton(voice: VoiceState, onMic: () -> Unit, onDismiss: () -> Unit) {
-    if (voice == VoiceState.Ready) {
-        MkVoiceButton(onClick = onMic, label = "PUHU")
-    } else {
-        MkVoiceButton(onClick = onDismiss, label = "LOPETA")
+private fun BottomButton(voice: VoiceState, onMic: () -> Unit) {
+    val label = when (voice) {
+        VoiceState.Thinking, VoiceState.Speaking -> "KESKEYTÄ"
+        VoiceState.Listening -> "KUUNTELEN…"
+        else -> "PUHU"
     }
+    MkVoiceButton(onClick = onMic, label = label)
 }
 
 /**
