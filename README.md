@@ -113,7 +113,7 @@ feed, and the SSE/NDJSON stream formats are all documented in
 
 ### Voice
 
-<p align="center"><img src="docs/screenshots/voice-assistant.gif" width="260" alt="Voice assistant: tap the mic, quick commands appear, and it listens"></p>
+<p align="center"><img src="docs/screenshots/voice-assistant-demo.gif" width="260" alt="Voice assistant: tap the mic, quick commands appear, and it listens"></p>
 
 Tapping the mic opens the voice dock — a quick-command menu plus a live
 "listening" state — and speaks the assistant's reply back.

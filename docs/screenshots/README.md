@@ -22,7 +22,7 @@ else is real house data.
 | `13-kalenteri.png` | Kalenteri — waste schedule + (blurred) family calendar |
 | `14-tapahtumat-camera.png` | Tapahtumat — announcement feed + live camera |
 | `15-voice-assistant.png` | Voice assistant — listening + quick commands |
-| `voice-assistant.gif` | Voice assistant — short demo clip |
+| `voice-assistant-demo.gif` | Voice assistant — short demo clip |
 
 Regenerate them all with:
 
