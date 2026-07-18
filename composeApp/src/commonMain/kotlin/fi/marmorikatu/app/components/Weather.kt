@@ -2,34 +2,47 @@ package fi.marmorikatu.app.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
+import fi.marmorikatu.core.model.WeatherDay
 import fi.marmorikatu.core.model.WeatherForecast
-import fi.marmorikatu.core.model.WeatherWarning
 import fi.marmorikatu.core.model.WeatherHour
+import fi.marmorikatu.core.model.WeatherWarning
 import kotlin.math.PI
 import kotlin.math.acos
 import kotlin.math.asin
@@ -39,6 +52,7 @@ import kotlin.math.sin
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
+import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
@@ -57,6 +71,8 @@ fun MkWeatherWidget(
     forecast: WeatherForecast,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    /** Opens the full 7-day forecast page from the footer "7 vrk" link. */
+    onForecast: (() -> Unit)? = null,
     night: Boolean = isNightNow(),
     /**
      * On-site outdoor temperature that overrides the forecast's own reading for
@@ -70,21 +86,13 @@ fun MkWeatherWidget(
     val c = MkTheme.colors
     val now = forecast.current
     val icon = weatherIcon(now.weatherCode, now.condition, night)
-    // Sparse next-~12 h points (every ~3 h) from the backend; show up to five.
-    val hours = forecast.hourlyNext4h.take(5)
+    // Sparse next-~24 h points (every ~3 h) from the backend; show up to eight.
+    val hours = forecast.hourlyNext4h.take(8)
     val outdoorTemp = outdoorTempOverride ?: now.temperature
 
     MkCard(modifier = modifier, interactive = onClick != null, onClick = onClick) {
-        // Deduced weather warnings (helle / myrsky) sit atop the card so they're
-        // the first thing read — empty on a calm day, so nothing shows.
-        if (forecast.warnings.isNotEmpty()) {
-            Column(
-                modifier = Modifier.padding(bottom = MkSpacing.x2),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                forecast.warnings.forEach { WeatherWarningBanner(it) }
-            }
-        }
+        // Weather warnings (helle / myrsky) are surfaced in the home attention strip
+        // like every other alert, not inside this card (design).
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
@@ -115,13 +123,13 @@ fun MkWeatherWidget(
                         modifier = Modifier.alignByBaseline(),
                         maxLines = 1,
                     )
-                    Text(
+                    // Marquee so a long condition ("Kevyttä tihkua") reads in full
+                    // beside the temperature instead of being ellipsised.
+                    MarqueeText(
                         text = now.condition.ifBlank { "Ulkosää" }.replaceFirstChar { it.uppercase() },
                         style = MkTheme.type.heading,
                         color = c.inkMid,
-                        modifier = Modifier.alignByBaseline().padding(start = 8.dp).weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 8.dp).weight(1f),
                     )
                 }
                 Row(
@@ -188,27 +196,43 @@ fun MkWeatherWidget(
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                hours.forEach { hour -> WeatherHourCell(hour, night) }
+                hours.forEach { hour -> WeatherHourCell(hour, night, Modifier.weight(1f)) }
             }
         }
 
-        // Bottom meta: wind · humidity · sun times.
+        // Bottom meta: wind · humidity · the next sun event, then the 7-day link.
         val meta = buildList {
             // The backend's `wind_speed_ms` is mislabelled: Open-Meteo returns km/h
             // (its default), so convert to real m/s (the Finnish convention) here.
             now.windSpeedMs?.let { add(MkIcons.Wind to "${Fmt.oneDecimal(it / 3.6)} m/s") }
             now.humidity?.let { add(MkIcons.DropHalf to "${Fmt.int(it)} %") }
-            homeSunTimes()?.let { (rise, set) -> add(MkIcons.Sun to "↑$rise ↓$set") }
+            // Only the sun event that's actually ahead — sunrise before it rises,
+            // sunset through the day (design shows one, not both).
+            homeSunTimes()?.let { (rise, set) -> add(MkIcons.SunHorizon to nextSunLabel(rise, set)) }
         }
-        if (meta.isNotEmpty()) {
+        if (meta.isNotEmpty() || onForecast != null) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
-                horizontalArrangement = Arrangement.spacedBy(MkSpacing.x5),
+                horizontalArrangement = Arrangement.spacedBy(MkSpacing.x4),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 meta.forEach { (metaIcon, text) -> WeatherMeta(metaIcon, text) }
+                if (onForecast != null) {
+                    Spacer(Modifier.weight(1f))
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(MkRadius.round))
+                            .clickable(onClick = onForecast)
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("7 vrk", style = MkTheme.type.readout(12), color = c.accent, maxLines = 1)
+                        Icon(MkIcons.CaretRight, null, tint = c.accent, modifier = Modifier.size(13.dp))
+                    }
+                }
             }
         }
     }
@@ -286,9 +310,10 @@ private fun WeatherMeta(icon: ImageVector, text: String) {
 
 /** One column of the next-hours strip. */
 @Composable
-private fun WeatherHourCell(hour: WeatherHour, night: Boolean) {
+private fun WeatherHourCell(hour: WeatherHour, night: Boolean, modifier: Modifier = Modifier) {
     val c = MkTheme.colors
     Column(
+        modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -304,8 +329,9 @@ private fun WeatherHourCell(hour: WeatherHour, night: Boolean) {
             tint = c.inkMid,
             modifier = Modifier.size(18.dp),
         )
+        // Forecast temperatures are whole degrees — no decimals (design).
         Text(
-            text = hour.temperature?.let { "${Fmt.oneDecimal(it)}°" } ?: "–",
+            text = hour.temperature?.let { "${Fmt.int(it)}°" } ?: "–",
             style = MkTheme.type.readout(13),
             color = c.inkHi,
             maxLines = 1,
@@ -314,50 +340,35 @@ private fun WeatherHourCell(hour: WeatherHour, night: Boolean) {
 }
 
 /**
+ * The next sun event as a signed clock — "↑HH:MM" for the coming sunrise,
+ * "↓HH:MM" for the coming sunset — so the footer shows only the one still ahead
+ * (design shows a single sun time, not both).
+ */
+@OptIn(ExperimentalTime::class)
+private fun nextSunLabel(rise: String, set: String): String {
+    fun mins(hhmm: String): Int? {
+        val p = hhmm.split(":")
+        val h = p.getOrNull(0)?.toIntOrNull() ?: return null
+        val m = p.getOrNull(1)?.toIntOrNull() ?: return null
+        return h * 60 + m
+    }
+    val nowMin = Clock.System.now()
+        .toLocalDateTime(TimeZone.of("Europe/Helsinki"))
+        .let { it.hour * 60 + it.minute }
+    val r = mins(rise)
+    val s = mins(set)
+    return when {
+        r != null && nowMin < r -> "↑$rise" // before dawn → sunrise is next
+        s != null && nowMin < s -> "↓$set"  // daytime → sunset is next
+        else -> "↑$rise"                     // after dusk → tomorrow's sunrise
+    }
+}
+
+/**
  * Condition → glyph. Prefers the WMO [code] the backend sends (Open-Meteo), and
  * falls back to matching the Finnish condition word. The icon set has no fog /
  * plain-cloud glyph, so overcast and fog reuse the cloud-with-sun/moon pair.
  */
-/** A helle / myrsky warning banner shown atop the weather card. */
-@Composable
-private fun WeatherWarningBanner(w: WeatherWarning) {
-    val c = MkTheme.colors
-    val icon = when (w.kind) {
-        "helle" -> MkIcons.ThermometerHot
-        "myrsky" -> MkIcons.Wind
-        else -> MkIcons.Warning
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(MkRadius.sm))
-            .background(c.warmDim)
-            .border(1.dp, c.warmBorder, RoundedCornerShape(MkRadius.sm))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, contentDescription = null, tint = c.warm, modifier = Modifier.size(20.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = w.title.ifBlank { "Säävaroitus" },
-                style = MkTheme.type.readout(13, FontWeight.SemiBold),
-                color = c.inkHi,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (w.detail.isNotBlank()) {
-                Text(
-                    text = w.detail,
-                    style = MkTheme.type.readout(11, FontWeight.Normal),
-                    color = c.inkMid,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
-}
 
 private fun weatherIcon(code: Int?, condition: String, night: Boolean): ImageVector {
     code?.let {
@@ -395,3 +406,197 @@ private fun isNightNow(): Boolean {
     val hour = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).hour
     return hour < 6 || hour >= 21
 }
+
+// ── Full 7-day forecast page ─────────────────────────────────────────────────
+
+/**
+ * The full weather page the home widget's "7 vrk" link opens (design's `saa`
+ * screen): the current-conditions [weatherCard] up top, the coming days as a
+ * min–max temperature ladder, and the deduced weather warnings (or an all-clear).
+ */
+@Composable
+fun MkWeatherForecastSheet(
+    forecast: WeatherForecast,
+    weatherCard: @Composable () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = MkTheme.colors
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(c.appBg)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = MkSpacing.pagePad, vertical = MkSpacing.x3),
+            verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
+        ) {
+            MkButton(
+                text = "Takaisin",
+                onClick = onDismiss,
+                variant = MkButtonVariant.Ghost,
+                size = MkButtonSize.Sm,
+                icon = MkIcons.CaretLeft,
+            )
+
+            weatherCard()
+
+            val days = forecast.dailyForecast
+            if (days.isNotEmpty()) {
+                ForecastKicker("Seuraavat päivät")
+                // One shared temperature span so every day's bar reads on the same
+                // scale; guard the degenerate all-equal case so the bars still show.
+                val lows = days.mapNotNull { it.tempMin }
+                val highs = days.mapNotNull { it.tempMax }
+                val span = ((lows + highs).minOrNull() ?: 0.0) to ((lows + highs).maxOrNull() ?: 1.0)
+                MkCard(padding = MkCardPadding.None) {
+                    Column(modifier = Modifier.padding(6.dp)) {
+                        days.forEachIndexed { i, day -> ForecastDayRow(day, i, span) }
+                    }
+                }
+            }
+
+            ForecastKicker("Säävaroitukset")
+            if (forecast.warnings.isEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(MkRadius.md))
+                        .background(c.surfaceCard)
+                        .border(1.dp, c.borderSubtle, RoundedCornerShape(MkRadius.md))
+                        .padding(horizontal = 13.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(MkIcons.Check, null, tint = c.statusOk, modifier = Modifier.size(18.dp))
+                    Text("Ei voimassa olevia säävaroituksia", style = MkTheme.type.body, color = c.inkMid)
+                }
+            } else {
+                forecast.warnings.forEach { ForecastWarningRow(it) }
+            }
+        }
+    }
+}
+
+/** A mono uppercase section kicker for the forecast page. */
+@Composable
+private fun ForecastKicker(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = MkTheme.type.kicker,
+        color = MkTheme.colors.inkLo,
+        modifier = Modifier.padding(top = 2.dp),
+    )
+}
+
+/** One day of the 7-day ladder: name · glyph · rain% · low — bar — high. */
+@Composable
+private fun ForecastDayRow(day: WeatherDay, index: Int, span: Pair<Double, Double>) {
+    val c = MkTheme.colors
+    val (dow, date) = forecastDayLabels(day.date, index)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.width(74.dp)) {
+            Text(dow, style = MkTheme.type.body.copy(fontSize = 13.sp), color = c.inkHi, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(date, style = MkTheme.type.readout(10, FontWeight.Normal), color = c.inkLo, maxLines = 1)
+        }
+        Icon(
+            weatherIcon(null, day.condition, night = false),
+            null,
+            tint = c.inkMid,
+            modifier = Modifier.size(20.dp),
+        )
+        Text(
+            text = day.precipitationProbability?.let { "${Fmt.int(it)}%" }.orEmpty(),
+            style = MkTheme.type.readout(10, FontWeight.Normal),
+            color = c.accent,
+            modifier = Modifier.width(30.dp),
+            maxLines = 1,
+        )
+        Text(
+            text = day.tempMin?.let { "${Fmt.int(it)}°" } ?: "–",
+            style = MkTheme.type.readout(12, FontWeight.Normal),
+            color = c.inkLo,
+            modifier = Modifier.width(26.dp),
+            maxLines = 1,
+        )
+        // Min–max bar, positioned within the week's shared span with weighted pads.
+        val (lo, hi) = span
+        val range = (hi - lo).takeIf { it > 0.0 } ?: 1.0
+        val left = (((day.tempMin ?: lo) - lo) / range).toFloat().coerceIn(0f, 1f)
+        val right = ((hi - (day.tempMax ?: hi)) / range).toFloat().coerceIn(0f, 1f)
+        val mid = (1f - left - right).coerceIn(0.02f, 1f)
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .height(5.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(c.surfaceInset),
+        ) {
+            if (left > 0f) Spacer(Modifier.weight(left))
+            Box(
+                modifier = Modifier
+                    .weight(mid)
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(Brush.horizontalGradient(listOf(c.accent, c.warm))),
+            )
+            if (right > 0f) Spacer(Modifier.weight(right))
+        }
+        Text(
+            text = day.tempMax?.let { "${Fmt.int(it)}°" } ?: "–",
+            style = MkTheme.type.readout(12),
+            color = c.inkHi,
+            modifier = Modifier.width(28.dp),
+            maxLines = 1,
+        )
+    }
+}
+
+/** One forecast warning as a warm-tinted alert row (helle / myrsky). */
+@Composable
+private fun ForecastWarningRow(w: WeatherWarning) {
+    val c = MkTheme.colors
+    val icon = when (w.kind) {
+        "helle" -> MkIcons.ThermometerHot
+        "myrsky" -> MkIcons.Wind
+        else -> MkIcons.Warning
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(MkRadius.md))
+            .background(c.warmDim)
+            .border(1.dp, c.warmBorder, RoundedCornerShape(MkRadius.md))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = c.warm, modifier = Modifier.size(20.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(w.title.ifBlank { "Säävaroitus" }, style = MkTheme.type.readout(13, FontWeight.SemiBold), color = c.inkHi, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (w.detail.isNotBlank()) {
+                Text(w.detail, style = MkTheme.type.readout(11, FontWeight.Normal), color = c.inkMid, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+/** "Tänään / Huomenna / Ke" plus "d.M." for a forecast day's ISO date. */
+private fun forecastDayLabels(dateIso: String, index: Int): Pair<String, String> {
+    val date = runCatching { LocalDate.parse(dateIso) }.getOrNull()
+    val dow = when (index) {
+        0 -> "Tänään"
+        1 -> "Huomenna"
+        else -> date?.let { FIN_DOW.getOrNull(it.dayOfWeek.ordinal) } ?: ""
+    }
+    val label = date?.let { "${it.dayOfMonth}.${it.monthNumber}." } ?: ""
+    return dow to label
+}
+
+/** Finnish weekday shorthands, Monday-first to match `DayOfWeek.ordinal`. */
+private val FIN_DOW = listOf("Ma", "Ti", "Ke", "To", "Pe", "La", "Su")

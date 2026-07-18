@@ -7,6 +7,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
+import fi.marmorikatu.core.config.AssistantGender
 import fi.marmorikatu.core.log.logger
 import fi.marmorikatu.core.platform.AndroidContext
 import kotlinx.coroutines.CompletableDeferred
@@ -76,10 +78,12 @@ actual class PlatformStt actual constructor() : SpeechToText {
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             // Some recognisers reject the request without a calling package.
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, AndroidContext.app.packageName)
-            // Stop on silence rather than waiting for the engine's own default.
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1_500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1_500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1_000L)
+            // Wait out mid-sentence pauses before finalising, so a slow or
+            // thinking speaker isn't cut off. (These are hints; Google's
+            // recogniser may clamp them, but longer is better than the ~1 s default.)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2_800L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2_800L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1_500L)
         }
         rec.startListening(intent)
         awaitClose {
@@ -116,6 +120,10 @@ actual class PlatformTts actual constructor() : SpeechOutput {
     private var finnishSupported = false
     private val initialized = CompletableDeferred<Boolean>()
 
+    // The persona to voice; applied once the engine is ready and again on every
+    // change. Volatile because it is read from the speak() coroutine.
+    @Volatile private var desiredGender: AssistantGender = AssistantGender.Nainen
+
     init {
         tts = TextToSpeech(AndroidContext.app) { status ->
             val engine = tts
@@ -124,11 +132,54 @@ actual class PlatformTts actual constructor() : SpeechOutput {
                 finnishSupported = result != TextToSpeech.LANG_MISSING_DATA &&
                     result != TextToSpeech.LANG_NOT_SUPPORTED
                 installListener(engine)
+                applyVoice(engine)
                 initialized.complete(finnishSupported)
             } else {
                 initialized.complete(false)
             }
         }
+    }
+
+    override fun useVoice(gender: AssistantGender) {
+        desiredGender = gender
+        tts?.let { if (initialized.isCompleted) applyVoice(it) }
+    }
+
+    /**
+     * Pick a fi-FI voice matching [desiredGender]. Android exposes no gender
+     * field, so we rank the installed Finnish voices by name/feature hints
+     * ("female"/"male", or Google's speaker-letter convention) and, absent any
+     * hint, split the sorted set in two so the two personas at least get
+     * *distinct* voices. Falls back to the engine default when there's nothing
+     * to choose from.
+     */
+    private fun applyVoice(engine: TextToSpeech) {
+        val finnish = runCatching { engine.voices }.getOrNull().orEmpty()
+            .filter { it.locale?.language == "fi" }
+        if (finnish.isEmpty()) return
+
+        // Android exposes no gender field; 1 = male, 0 = female, -1 = no hint.
+        // Google's fi-FI speaker letters alternate gender (…a/c/e ≈ female,
+        // …b/d/f ≈ male); some engines put "male"/"female" in the name outright.
+        fun hint(v: Voice): Int {
+            val n = v.name.lowercase()
+            return when {
+                "female" in n || Regex("-fi[ace]\\b|#female").containsMatchIn(n) -> 0
+                "male" in n || Regex("-fi[bdf]\\b|#male").containsMatchIn(n) -> 1
+                else -> -1
+            }
+        }
+        val wantMale = desiredGender == AssistantGender.Mies
+        val labelled = finnish.filter { hint(it) != -1 }
+        val chosen = when {
+            labelled.isNotEmpty() ->
+                labelled.firstOrNull { (hint(it) == 1) == wantMale } ?: labelled.first()
+            // No hints: split the name-sorted voices so each persona at least
+            // gets a stable, distinct voice.
+            finnish.size >= 2 -> finnish.sortedBy { it.name }.let { if (wantMale) it.last() else it.first() }
+            else -> finnish.first()
+        }
+        runCatching { engine.setVoice(chosen) }
     }
 
     override suspend fun isAvailable(): Boolean = initialized.await()

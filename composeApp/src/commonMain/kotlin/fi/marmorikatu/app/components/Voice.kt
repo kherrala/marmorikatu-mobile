@@ -51,8 +51,12 @@ import fi.marmorikatu.app.theme.rememberSpin
 import fi.marmorikatu.app.theme.rememberWaveHeights
 import androidx.compose.foundation.clickable
 
-/** The four states of the persistent voice assistant. */
-enum class VoiceState { Idle, Listening, Thinking, Speaking }
+/**
+ * The states of the persistent voice assistant. [Ready] (VALMIS) is the resting
+ * state after an answer: the overlay stays open with the conversation stream so
+ * the user can read it and continue, until they dismiss it.
+ */
+enum class VoiceState { Idle, Listening, Thinking, Speaking, Ready }
 
 /** Size ladder shared by the voice controls (orb ignores [Kid]). */
 enum class MkVoiceSize { Md, Lg, Kid }
@@ -299,7 +303,7 @@ fun MkVoiceDock(
                 VoiceState.Listening -> "Kuuntelen…"
                 VoiceState.Thinking -> "Käsittelen…"
                 VoiceState.Speaking -> transcript ?: "Marmori"
-                VoiceState.Idle -> ""
+                else -> ""
             }
             Text(
                 text = line1,
@@ -323,7 +327,7 @@ fun MkVoiceDock(
                     VoiceState.Listening -> hint ?: "puhu nyt"
                     VoiceState.Thinking -> "hetki…"
                     VoiceState.Speaking -> hint ?: ""
-                    VoiceState.Idle -> ""
+                    else -> ""
                 }
                 Text(
                     text = line2,

@@ -23,6 +23,8 @@ data class AppConfig(
     val kidMode: Boolean = false,
     val useNativeStt: Boolean = true,
     val useNativeTts: Boolean = true,
+    /** The assistant persona: avatar face + native TTS voice. */
+    val assistantGender: AssistantGender = AssistantGender.Nainen,
     /** Vibrate on announcements. Priority-0 alerts ignore this and always buzz. */
     val hapticsEnabled: Boolean = true,
     /** Keep listening for events while the app is in the background. */

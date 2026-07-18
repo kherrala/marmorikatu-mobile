@@ -25,9 +25,6 @@ val appModule: Module = module {
             micPermission = get(),
             haptics = get(),
             backgroundMode = get(),
-            audioPlayer = get(),
-            serverStt = get<SpeechToText>(named("serverStt")),
-            serverTts = get<SpeechOutput>(named("serverTts")),
             platformStt = get<SpeechToText>(named("platformStt")),
             platformTts = get<SpeechOutput>(named("platformTts")),
         )

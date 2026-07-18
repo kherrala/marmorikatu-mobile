@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import fi.marmorikatu.app.components.Detection
 import fi.marmorikatu.app.platform.LockLandscapeWhileVisible
+import fi.marmorikatu.app.shell.Tab
 import fi.marmorikatu.app.shell.UiSignals
 import org.koin.compose.koinInject
 import fi.marmorikatu.app.components.MkAttentionStrip
@@ -55,7 +56,8 @@ import fi.marmorikatu.app.components.MkMetricDetailPage
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.components.MkSeries
 import fi.marmorikatu.app.components.MkStatTile
-import fi.marmorikatu.app.components.GarbageNextCard
+import fi.marmorikatu.app.components.CalendarNextCard
+import fi.marmorikatu.app.components.MkWeatherForecastSheet
 import fi.marmorikatu.app.components.MkWeatherWidget
 import fi.marmorikatu.app.components.WeatherReading
 import fi.marmorikatu.app.components.TimeRangeOption
@@ -88,8 +90,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     val weather by viewModel.weather.collectAsState()
     val outdoorTemp by viewModel.outdoorTemp.collectAsState()
     val nextGarbage by viewModel.nextGarbage.collectAsState()
-    val updatedAt by viewModel.updatedAt.collectAsState()
-    val metricsUpdatedAt by viewModel.metricsUpdatedAt.collectAsState()
+    val nextCalendarEvent by viewModel.nextCalendarEvent.collectAsState()
     val newsReading by viewModel.newsReading.collectAsState()
     val colors = MkTheme.colors
 
@@ -106,6 +107,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     // VM-backed so it survives the landscape recreation the camera viewer forces.
     val cameraOpen by viewModel.cameraOpen.collectAsState()
     var newsOpen by remember { mutableStateOf(false) }
+    var forecastOpen by remember { mutableStateOf(false) }
     // Attention chips can be dismissed (tap) and restored from a collapsed strip.
     var dismissedAttn by remember { mutableStateOf(setOf<String>()) }
     var showDismissed by remember { mutableStateOf(false) }
@@ -274,37 +276,49 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
             }
 
             weather?.let { w ->
+                val alternatives = outdoorTemp?.alternatives.orEmpty()
+                    .map { WeatherReading(it.source, it.celsius) }
                 MkWeatherWidget(
                     forecast = w,
                     outdoorTempOverride = outdoorTemp?.primary?.celsius,
                     outdoorSource = outdoorTemp?.primary?.source,
-                    outdoorAlternatives = outdoorTemp?.alternatives.orEmpty()
-                        .map { WeatherReading(it.source, it.celsius) },
-                    // The headline temperature opens the outdoor-temperature history.
+                    outdoorAlternatives = alternatives,
+                    // The headline temperature opens the outdoor-temperature history;
+                    // the footer "7 vrk" link opens the full forecast page.
                     onClick = { viewModel.openKpiDetail("ulko") },
+                    onForecast = { forecastOpen = true },
+                )
+                if (forecastOpen) {
+                    MkWeatherForecastSheet(
+                        forecast = w,
+                        weatherCard = {
+                            MkWeatherWidget(
+                                forecast = w,
+                                outdoorTempOverride = outdoorTemp?.primary?.celsius,
+                                outdoorSource = outdoorTemp?.primary?.source,
+                                outdoorAlternatives = alternatives,
+                            )
+                        },
+                        onDismiss = { forecastOpen = false },
+                    )
+                }
+            }
+
+            // The calendar/waste slot sits right under the weather widget (design):
+            // the next family-calendar event plus the next pickup, in one tappable
+            // row that opens the calendar detail view.
+            if (nextCalendarEvent != null || nextGarbage != null) {
+                CalendarNextCard(
+                    eventTime = nextCalendarEvent?.time,
+                    eventTitle = nextCalendarEvent?.title,
+                    garbage = nextGarbage,
+                    onClick = { uiSignals.requestNav(Tab.Kalenteri.key) },
                 )
             }
 
-            if (state.rooms.isNotEmpty()) {
-                val safeIndex = roomIndex.coerceIn(0, state.rooms.size - 1)
-                SectionLabel("Lämpötilat", updatedAtEpochSeconds = updatedAt)
-                MkClimateCard(
-                    rooms = state.rooms,
-                    index = safeIndex,
-                    onIndexChange = { roomIndex = it },
-                    targetEnabled = false, // no per-room write path exists
-                    colorTempByBand = true, // design: warm ≥22°, accent ≤19.5°
-                    onTempClick = { viewModel.openRoomDetail(safeIndex) },
-                )
-            }
-
-            // Next garbage pickup sits between the temperatures card and the news,
-            // matching the design's calendar/waste slot.
-            nextGarbage?.let { g -> GarbageNextCard(next = g) }
-
-            // News sits directly under the climate card, above the KPI grid (design).
+            // News sits under the calendar widget, above the KPI grid (design).
+            // The design drops the section subheadings — cards stack directly.
             news.firstOrNull()?.let { top ->
-                SectionLabel("Uutiset")
                 NewsCard(top, onOpen = { newsOpen = true }, onRead = viewModel::toggleReadNews, reading = newsReading)
                 if (newsOpen) {
                     MkArticleViewer(
@@ -325,8 +339,20 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 }
             }
 
-            if (state.kpis.isNotEmpty()) SectionLabel("Mittarit", updatedAtEpochSeconds = metricsUpdatedAt)
             KpiGrid(state.kpis) { viewModel.openKpiDetail(it) }
+
+            // The room temperatures card now sits at the foot of the home stack (design).
+            if (state.rooms.isNotEmpty()) {
+                val safeIndex = roomIndex.coerceIn(0, state.rooms.size - 1)
+                MkClimateCard(
+                    rooms = state.rooms,
+                    index = safeIndex,
+                    onIndexChange = { roomIndex = it },
+                    targetEnabled = false, // no per-room write path exists
+                    colorTempByBand = true, // design: warm ≥22°, accent ≤19.5°
+                    onTempClick = { viewModel.openRoomDetail(safeIndex) },
+                )
+            }
 
             when {
                 state.loading && state.kpis.isEmpty() ->
@@ -382,12 +408,13 @@ private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit, onRead: () -> Unit,
                     style = MkTheme.type.readout(10).copy(letterSpacing = 0.1.em),
                     color = c.inkLo,
                 )
-                Text(
+                // Smaller than a card heading, and marquee-scrolled so the whole
+                // headline can be read even when it overflows one line.
+                fi.marmorikatu.app.components.MarqueeText(
                     text = news.title,
-                    style = MkTheme.type.heading,
+                    style = MkTheme.type.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
                     color = c.inkHi,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }

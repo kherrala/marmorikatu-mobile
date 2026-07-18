@@ -479,7 +479,7 @@ private fun PriceTag(text: String, status: String) {
 /** 270° arc gauge with a centred mono readout. */
 @Composable
 fun MkGauge(
-    value: Float,
+    value: Float?,
     max: Float,
     label: String,
     modifier: Modifier = Modifier,
@@ -497,7 +497,7 @@ fun MkGauge(
         "info" -> colors.statusInfo
         else -> colors.accent
     }
-    val frac = if (max == 0f) 0f else (value / max).coerceIn(0f, 1f)
+    val frac = if (value == null || max == 0f) 0f else (value / max).coerceIn(0f, 1f)
 
     Column(
         modifier = modifier,
@@ -529,17 +529,26 @@ fun MkGauge(
                     style = Stroke(width = stroke, cap = StrokeCap.Round),
                 )
             }
-            Row(verticalAlignment = Alignment.Bottom) {
+            if (value == null) {
+                // No figure yet — still show the ring, with an em-dash placeholder.
                 Text(
-                    text = formatDecimals(value, decimals),
+                    text = "–",
                     style = MkTheme.type.readout(24, FontWeight.SemiBold),
-                    color = progressColor,
-                )
-                Text(
-                    text = unit,
-                    style = MkTheme.type.readout(13),
                     color = colors.inkLo,
                 )
+            } else {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = formatDecimals(value, decimals),
+                        style = MkTheme.type.readout(24, FontWeight.SemiBold),
+                        color = progressColor,
+                    )
+                    Text(
+                        text = unit,
+                        style = MkTheme.type.readout(13),
+                        color = colors.inkLo,
+                    )
+                }
             }
         }
         Text(

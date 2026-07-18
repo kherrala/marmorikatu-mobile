@@ -191,6 +191,51 @@ class FluxClient(
     }
 
     /**
+     * For each light, the epoch-seconds of its last recorded *off* (`is_on == 0`)
+     * in the past 24 h. A light that is currently on turned on just after this,
+     * so it's the on-since seed for the Valot on-time chips. Lights on for the
+     * whole window won't appear (the caller defaults them to ~24 h ago). One
+     * sweep at launch; live changes then come from MQTT. Empty on failure.
+     */
+    suspend fun lightLastOffTimes(): Map<Int, Long> {
+        val flux = """
+            from(bucket: "$bucket")
+              |> range(start: -24h)
+              |> filter(fn: (r) => r._measurement == "lights" and r._field == "is_on" and r.switch_type == "primary")
+              |> filter(fn: (r) => r._value == 0)
+              |> group(columns: ["light_id"])
+              |> last()
+              |> keep(columns: ["light_id", "_time"])
+        """.trimIndent()
+        return parseTimes(postFlux(flux), "light_id")
+    }
+
+    /** Parse `<keyColumn>, _time` rows into key(Int) → epoch seconds. */
+    @OptIn(kotlin.time.ExperimentalTime::class)
+    private fun parseTimes(csv: String?, keyColumn: String): Map<Int, Long> {
+        if (csv == null) return emptyMap()
+        val result = mutableMapOf<Int, Long>()
+        var keyIdx = -1
+        var timeIdx = -1
+        csv.lineSequence().forEach { rawLine ->
+            val line = rawLine.trim('\r', '\n')
+            if (line.isBlank()) return@forEach
+            if (line.startsWith("#")) { keyIdx = -1; return@forEach }
+            val cells = line.split(",")
+            if (keyIdx < 0) {
+                keyIdx = cells.indexOf(keyColumn)
+                timeIdx = cells.indexOf("_time")
+                return@forEach
+            }
+            if (keyIdx < 0 || timeIdx < 0 || cells.size <= maxOf(keyIdx, timeIdx)) return@forEach
+            val id = cells[keyIdx].toIntOrNull() ?: return@forEach
+            val epoch = runCatching { kotlin.time.Instant.parse(cells[timeIdx]).epochSeconds }.getOrNull() ?: return@forEach
+            result[id] = epoch
+        }
+        return result
+    }
+
+    /**
      * Per-bucket metered energy (kWh) over [range], summed across the heat-pump
      * and aux meters — the cost-trend sparkline on the Energia tab. Each meter's
      * `Total_Active_Energy` is a monotonic counter, so `spread` (max − min) per

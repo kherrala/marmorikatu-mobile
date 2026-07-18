@@ -34,16 +34,21 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.window.Dialog
+import fi.marmorikatu.app.components.CalendarNextCard
 import fi.marmorikatu.app.components.GarbageScheduleCard
 import fi.marmorikatu.app.components.MkButton
+import fi.marmorikatu.app.components.MkButtonSize
 import fi.marmorikatu.app.components.MkButtonVariant
 import fi.marmorikatu.app.components.MkCard
 import fi.marmorikatu.app.components.MkFreshness
 import fi.marmorikatu.app.components.MkPullToRefresh
 import fi.marmorikatu.app.icons.MkIcons
+import fi.marmorikatu.app.shell.Tab
+import fi.marmorikatu.app.shell.UiSignals
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
 import fi.marmorikatu.app.theme.MkTheme
+import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 
 /**
@@ -59,6 +64,7 @@ fun KalenteriScreen(viewModel: KalenteriViewModel = koinViewModel()) {
     LaunchedEffect(Unit) { viewModel.refresh() }
 
     val c = MkTheme.colors
+    val uiSignals: UiSignals = koinInject()
     var selected by remember { mutableStateOf<CalendarSelection?>(null) }
 
     MkPullToRefresh(refreshing = refreshing, onRefresh = viewModel::refresh) {
@@ -73,12 +79,25 @@ fun KalenteriScreen(viewModel: KalenteriViewModel = koinViewModel()) {
             verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
         ) {
 
-            item {
-                Text(
-                    text = "Kalenteri",
-                    style = MkTheme.type.title,
-                    color = c.inkHi,
-                    modifier = Modifier.fillMaxWidth(),
+            // A way back to the home screen this detail view opens from (design).
+            // The app title itself is supplied by the shell header.
+            item(key = "back") {
+                MkButton(
+                    text = "Takaisin",
+                    onClick = { uiSignals.requestNav(Tab.Koti.key) },
+                    variant = MkButtonVariant.Ghost,
+                    size = MkButtonSize.Sm,
+                    icon = MkIcons.CaretLeft,
+                )
+            }
+
+            // The same compact widget the home screen shows: the summary you
+            // tapped to get here, carried over as this view's header.
+            item(key = "summary") {
+                CalendarNextCard(
+                    eventTime = state.days.firstOrNull()?.events?.firstOrNull()?.time,
+                    eventTitle = state.days.firstOrNull()?.events?.firstOrNull()?.title,
+                    garbage = state.garbage.firstOrNull(),
                 )
             }
 

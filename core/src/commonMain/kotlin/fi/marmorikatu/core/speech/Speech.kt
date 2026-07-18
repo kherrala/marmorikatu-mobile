@@ -2,6 +2,7 @@ package fi.marmorikatu.core.speech
 
 import fi.marmorikatu.core.audio.AudioPlayer
 import fi.marmorikatu.core.audio.AudioRecorder
+import fi.marmorikatu.core.config.AssistantGender
 import fi.marmorikatu.core.repository.AssistantRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -40,6 +41,14 @@ interface SpeechOutput {
     /** Speaks one sentence/utterance; suspends until playback finishes. */
     suspend fun speak(text: String)
     fun stop()
+
+    /**
+     * Pick the spoken voice for the given persona. Native engines choose a
+     * matching fi-FI female/male voice (best-effort — falls back to the system
+     * default when the device has only one Finnish voice). No-op for engines
+     * with a single fixed voice.
+     */
+    fun useVoice(gender: AssistantGender) {}
 }
 
 /**

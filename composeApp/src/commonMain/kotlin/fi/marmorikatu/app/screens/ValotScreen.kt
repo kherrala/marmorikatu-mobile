@@ -38,7 +38,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import kotlinx.coroutines.delay
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -120,10 +124,6 @@ fun ValotScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(11.dp),
             ) {
-                item(key = "presets") {
-                    PresetRow(active = state.activePreset, onApply = viewModel::applyPreset)
-                }
-
                 if (failure) {
                 item(key = "failure") {
                     MkBanner(
@@ -145,61 +145,36 @@ fun ValotScreen(
                 item(key = "fh:${floor.floor.name}") {
                     FloorHeader(floor = floor, onFloorOff = { viewModel.floorOff(floor.floor) })
                 }
-                items(floor.areas, key = { "a:${it.key}" }) { area ->
-                    AreaGroupCard(
-                        area = area,
-                        expanded = area.key in expanded,
-                        onToggleExpand = {
-                            expanded = if (area.key in expanded) expanded - area.key else expanded + area.key
-                        },
-                        onToggleLight = { id, on -> viewModel.toggle(id, on) },
-                    )
+                // Areas in a 2-column grid: pairs of compact cards side by side,
+                // top-aligned so an expanded (taller) card grows in place while its
+                // neighbour stays put (design).
+                floor.areas.chunked(2).forEachIndexed { rowIdx, pair ->
+                    item(key = "ar:${floor.floor.name}:$rowIdx") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            pair.forEach { area ->
+                                Box(modifier = Modifier.weight(1f)) {
+                                    AreaGroupCard(
+                                        area = area,
+                                        expanded = area.key in expanded,
+                                        onToggleExpand = {
+                                            expanded = if (area.key in expanded) expanded - area.key else expanded + area.key
+                                        },
+                                        onToggleLight = { id, on -> viewModel.toggle(id, on) },
+                                    )
+                                }
+                            }
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
                 }
             }
             // Trailing space so tapping the last floor scrolls it to the very top
             // even when that floor has few areas (the list bottoms out otherwise).
             item(key = "tailspace") { Spacer(Modifier.fillParentMaxHeight(0.9f)) }
-            }
-        }
-    }
-}
-
-/** The scene presets, four to a row (Aamuvalot / Iltavalot / Elokuva / Terassi / Kotiinpaluu / Kaikki pois). */
-@Composable
-private fun PresetRow(active: KotiScene?, onApply: (KotiScene) -> Unit) {
-    val c = MkTheme.colors
-    val shape = RoundedCornerShape(MkRadius.md)
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        // Four columns per row (design grid); a short last row is padded so the
-        // remaining chips keep their quarter-width rather than stretching.
-        KotiScene.entries.chunked(4).forEach { rowScenes ->
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                rowScenes.forEach { s ->
-                    val on = s == active
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(84.dp)
-                            .clip(shape)
-                            .background(if (on) c.accent else c.surfaceCard)
-                            .border(1.dp, if (on) c.accent else c.borderSubtle, shape)
-                            .clickable { onApply(s) }
-                            .padding(vertical = 12.dp, horizontal = 4.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Icon(s.icon, null, tint = if (on) c.inkOnAccent else c.inkMid, modifier = Modifier.size(22.dp))
-                        Spacer(Modifier.height(7.dp))
-                        Text(
-                            text = s.label,
-                            style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
-                            color = if (on) c.inkOnAccent else c.inkMid,
-                            maxLines = 2,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                }
-                repeat(4 - rowScenes.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
@@ -279,7 +254,12 @@ private fun FloorHeader(floor: ValotFloor, onFloorOff: () -> Unit) {
     }
 }
 
-/** A collapsible area card: header (icon + name + count + chevron), expands to per-fixture rows. */
+/**
+ * A compact area card for the 2-column grid: an icon tile + on-count summary,
+ * with the area name below. Tapping expands it in place — a caret appears and
+ * the per-fixture toggle rows unfold beneath, the card growing taller within
+ * its column (the house has no dimmer, so there are no brightness levels).
+ */
 @Composable
 private fun AreaGroupCard(
     area: ValotArea,
@@ -288,57 +268,89 @@ private fun AreaGroupCard(
     onToggleLight: (Int, Boolean) -> Unit,
 ) {
     val c = MkTheme.colors
-    val shape = RoundedCornerShape(MkRadius.lg)
+    val shape = RoundedCornerShape(MkRadius.md)
+    // How long the group has been on, ticking every second (00:05, 27:34, 1:07:12).
+    var nowSec by remember { mutableStateOf(0L) }
+    LaunchedEffect(area.onSinceSec) {
+        if (area.onSinceSec == null) return@LaunchedEffect
+        while (true) {
+            nowSec = nowEpochSec()
+            delay(1000)
+        }
+    }
+    val onFor: Long? = area.onSinceSec?.let { (nowSec - it).coerceAtLeast(0L) }
+    // Per-area hue only shows while a light is on: a solid hue tile + white glyph.
+    // Off, the tile is neutral (grey) so the grid stays calm until something's lit.
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(c.surfaceCard)
-            .border(1.dp, c.borderSubtle, shape)
-            .animateContentSize()
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .border(1.dp, if (area.isOn) area.hue.copy(alpha = 0.5f) else c.borderSubtle, shape)
+            .animateContentSize(),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().clickable { onToggleExpand() },
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggleExpand() }
+                .padding(horizontal = 11.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(MkRadius.sm))
-                    .background(if (area.isOn) c.accent else c.surfaceInset),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    area.icon, null,
-                    tint = if (area.isOn) c.inkOnAccent else c.inkLo,
-                    modifier = Modifier.size(19.dp),
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(MkRadius.sm))
+                        .background(if (area.isOn) area.hue else c.surfaceInset),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        area.icon, null,
+                        tint = if (area.isOn) Color.White else c.inkLo,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                if (onFor != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier = Modifier.padding(end = 6.dp),
+                    ) {
+                        Icon(MkIcons.Clock, null, tint = c.inkLo, modifier = Modifier.size(11.dp))
+                        Text(formatOnFor(onFor), style = MkTheme.type.readout(10), color = c.inkMid, maxLines = 1)
+                    }
+                }
+                Text(
+                    // Shortened to "2/2" when the timer is showing, so both fit.
+                    text = when {
+                        area.isOn && onFor != null -> "${area.onCount}/${area.total}"
+                        area.isOn -> "${area.onCount}/${area.total} valoa"
+                        else -> "Pois"
+                    },
+                    style = MkTheme.type.readout(11),
+                    color = if (area.isOn) c.accent else c.inkLo,
+                    maxLines = 1,
                 )
+                if (expanded) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(MkIcons.CaretUp, null, tint = c.inkLo, modifier = Modifier.size(13.dp))
+                }
             }
             Text(
                 text = area.name,
-                style = MkTheme.type.heading,
+                style = MkTheme.type.body.copy(fontWeight = FontWeight.Medium),
                 color = c.inkHi,
                 maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = if (area.isOn) "${area.onCount}/${area.total} valoa" else "Pois",
-                style = MkTheme.type.readout(13),
-                color = if (area.isOn) c.accent else c.inkLo,
-            )
-            Icon(
-                if (expanded) MkIcons.CaretUp else MkIcons.CaretDown,
-                null,
-                tint = c.inkLo,
-                modifier = Modifier.size(16.dp),
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
         }
 
         if (expanded) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                modifier = Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 area.lights.forEach { light -> LightToggleRow(light, onToggleLight) }
             }
         }
@@ -392,4 +404,16 @@ private fun CenteredNote(text: String) {
     ) {
         Text(text = text, style = MkTheme.type.body.copy(fontWeight = FontWeight.Medium), color = MkTheme.colors.inkLo)
     }
+}
+
+@OptIn(ExperimentalTime::class)
+private fun nowEpochSec(): Long = Clock.System.now().epochSeconds
+
+/** Clock-style on-time: 00:05 (5 s), 27:34 (min:sec), 1:07:12 (h:m:s). */
+private fun formatOnFor(seconds: Long): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    val s = seconds % 60
+    fun p(n: Long) = n.toString().padStart(2, '0')
+    return if (h > 0) "$h:${p(m)}:${p(s)}" else "${p(m)}:${p(s)}"
 }

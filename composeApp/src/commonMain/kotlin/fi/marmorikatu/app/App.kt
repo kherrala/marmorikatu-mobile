@@ -48,7 +48,7 @@ private const val KIOSK_TARGET_DP = 880f
  * reconnect can't flash the brand moment on and off — it reads as a deliberate
  * launch screen, not a glitch, and gives the startup checklist a beat to be read.
  */
-private const val SPLASH_MIN_TOTAL_MS = 2_000L
+private const val SPLASH_MIN_TOTAL_MS = 1_000L
 
 /**
  * How long the boot splash waits before offering a manual way past it. A

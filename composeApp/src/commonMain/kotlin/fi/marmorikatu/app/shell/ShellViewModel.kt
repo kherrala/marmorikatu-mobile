@@ -3,10 +3,10 @@ package fi.marmorikatu.app.shell
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fi.marmorikatu.app.components.VoiceState
-import fi.marmorikatu.core.audio.AudioPlayer
 import fi.marmorikatu.core.audio.MicPermission
 import fi.marmorikatu.core.background.BackgroundMode
 import fi.marmorikatu.core.haptics.Haptics
+import fi.marmorikatu.core.config.AssistantGender
 import fi.marmorikatu.core.config.ConfigStore
 import fi.marmorikatu.core.lifecycle.ConnectionManager
 import fi.marmorikatu.core.model.Announcement
@@ -17,13 +17,21 @@ import fi.marmorikatu.core.repository.AssistantRepository
 import fi.marmorikatu.core.speech.SpeechOutput
 import fi.marmorikatu.core.speech.SpeechToText
 import fi.marmorikatu.core.speech.SttEvent
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+/**
+ * One item in the conversation stream — a user request or a single response
+ * sentence. [seq] is a stable id for list-placement animations.
+ */
+data class VoiceStreamItem(val seq: Int, val text: String, val isUser: Boolean)
 
 /**
  * Owns the app chrome: which surface and tab are showing, the theme, and the
@@ -41,9 +49,6 @@ class ShellViewModel(
     private val micPermission: MicPermission,
     private val haptics: Haptics,
     private val backgroundMode: BackgroundMode,
-    private val audioPlayer: AudioPlayer,
-    private val serverStt: SpeechToText,
-    private val serverTts: SpeechOutput,
     private val platformStt: SpeechToText,
     private val platformTts: SpeechOutput,
 ) : ViewModel() {
@@ -66,12 +71,24 @@ class ShellViewModel(
     private val _voice = MutableStateFlow(VoiceState.Idle)
     val voice: StateFlow<VoiceState> = _voice.asStateFlow()
 
-    /** Live partial transcript while listening, or the spoken sentence. */
-    private val _voiceLine = MutableStateFlow<String?>(null)
-    val voiceLine: StateFlow<String?> = _voiceLine.asStateFlow()
-
     private val _voiceHint = MutableStateFlow<String?>(null)
     val voiceHint: StateFlow<String?> = _voiceHint.asStateFlow()
+
+    /**
+     * The conversation stream: user requests and each spoken response sentence
+     * as separate items, newest FIRST (index 0). The overlay renders the newest
+     * big at the top and slides older ones down, fading. Persists across the
+     * session so re-opening the overlay shows the backlog.
+     */
+    private val _stream = MutableStateFlow<List<VoiceStreamItem>>(emptyList())
+    val stream: StateFlow<List<VoiceStreamItem>> = _stream.asStateFlow()
+
+    private var streamSeq = 0
+    private fun pushStream(text: String, isUser: Boolean) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        _stream.update { (listOf(VoiceStreamItem(streamSeq++, t, isUser)) + it).take(MAX_STREAM) }
+    }
 
     /** Unread announcements drive the bell badge. */
     val recentAnnouncements: StateFlow<List<Announcement>> = announcementsRepo.recent
@@ -85,15 +102,18 @@ class ShellViewModel(
     private val history = mutableListOf<ChatMessage>()
 
     /**
-     * Prefer the phone's own speech engines: they answer instantly and work
-     * without the house server. Both fall back to the server pipeline when the
-     * platform reports the engine unavailable (notably Finnish STT on iOS).
+     * The assistant persona: drives the avatar face and the spoken voice. A
+     * StateFlow so the live overlay's avatar switches the moment it changes in
+     * settings.
      */
-    val useNativeStt: Boolean get() = configStore.config.value.useNativeStt
-    val useNativeTts: Boolean get() = configStore.config.value.useNativeTts
+    private val _assistantGender = MutableStateFlow(configStore.config.value.assistantGender)
+    val assistantGender: StateFlow<AssistantGender> = _assistantGender.asStateFlow()
 
-    fun setUseNativeStt(value: Boolean) = configStore.update { it.copy(useNativeStt = value) }
-    fun setUseNativeTts(value: Boolean) = configStore.update { it.copy(useNativeTts = value) }
+    fun setAssistantGender(value: AssistantGender) {
+        _assistantGender.value = value
+        configStore.update { it.copy(assistantGender = value) }
+        platformTts.useVoice(value)
+    }
 
     fun start() = connections.start()
 
@@ -144,6 +164,8 @@ class ShellViewModel(
         if (configStore.config.value.backgroundEnabled && backgroundMode.supported) {
             backgroundMode.setEnabled(true)
         }
+        // Apply the persisted persona to the native TTS engine at startup.
+        platformTts.useVoice(_assistantGender.value)
         viewModelScope.launch {
             announcementsRepo.announcements.collect { event ->
                 if (_tab.value != Tab.Tapahtumat) _unreadCount.value += 1
@@ -158,157 +180,184 @@ class ShellViewModel(
 
     // --- Voice ---------------------------------------------------------------
 
-    /** Tap the dock's mic: one press-to-talk turn. */
+    /**
+     * Tap the mic. From Idle/Ready (VALMIS) this starts one turn — listen →
+     * answer → back to Ready with the overlay still open. While the assistant is
+     * actively listening/thinking/speaking, a tap stops and closes it (LOPETA).
+     */
     fun onMic() {
-        if (_voice.value != VoiceState.Idle) {
-            stopListening()
-            return
+        when (_voice.value) {
+            VoiceState.Idle, VoiceState.Ready -> startTurn(null)
+            else -> stopListening()
         }
+    }
+
+    /** Fire a canned prompt from the quick-command grid as one turn. */
+    fun runQuickCommand(prompt: String) = startTurn(prompt)
+
+    /**
+     * One turn: (optionally listen →) answer, then settle in [VoiceState.Ready]
+     * with the overlay still open — no auto-relisten, no auto-close. The user
+     * continues by tapping the mic or a quick command, or dismisses with X/LOPETA.
+     * A farewell-only utterance ("kiitos") signs off and closes.
+     */
+    private fun startTurn(initial: String?) {
         listenJob?.cancel()
         listenJob = viewModelScope.launch {
-            if (!micPermission.ensureGranted()) {
-                _voiceHint.value = "mikrofonilupa puuttuu"
-                return@launch
-            }
-            val stt = pickStt().also { activeStt = it }
-            _voice.value = VoiceState.Listening
-            _voiceLine.value = null
-            _voiceHint.value = null
-
-            // Never sit in Listening forever: an engine can go quiet without
-            // ever emitting a Final or an Error.
-            val watchdog = launch {
-                delay(LISTEN_TIMEOUT_MS)
-                if (_voice.value == VoiceState.Listening) {
-                    runCatching { stt.stopListening() }
-                    _voiceHint.value = "en kuullut mitään"
-                    _voice.value = VoiceState.Idle
-                }
-            }
-
             try {
-                stt.listen().collect { event ->
-                    when (event) {
-                        is SttEvent.Partial -> _voiceHint.value = event.text
-                        is SttEvent.Final -> {
-                            watchdog.cancel()
-                            converse(event.text)
-                        }
-                        is SttEvent.Error -> {
-                            watchdog.cancel()
-                            onSttFailure(stt, event.message)
-                        }
+                val text = if (initial != null) initial else {
+                    if (!micPermission.ensureGranted()) {
+                        _voiceHint.value = "mikrofonilupa puuttuu"
+                        return@launch
                     }
+                    listenOnce()
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _voiceHint.value = e.message
+                if (text.isNullOrBlank()) return@launch
+                if (isFarewell(text)) {
+                    speak(GOODBYES.random())
+                    _voice.value = VoiceState.Idle   // farewell closes
+                    return@launch
+                }
+                respond(text)
             } finally {
-                watchdog.cancel()
                 activeStt = null
-                if (_voice.value == VoiceState.Listening) _voice.value = VoiceState.Idle
-            }
-        }
-    }
-
-    /**
-     * A native engine that cannot hear — no Finnish model, no recogniser on the
-     * device — is worth one retry through the server pipeline before giving up.
-     */
-    private suspend fun onSttFailure(failed: SpeechToText, message: String) {
-        if (failed !== serverStt) {
-            _voiceHint.value = "kokeillaan palvelinta…"
-            activeStt = serverStt
-            val recovered = runCatching {
-                var text: String? = null
-                serverStt.listen().collect { event ->
-                    if (event is SttEvent.Final) text = event.text
+                // Settle into Ready (overlay stays) unless we were cancelled by a
+                // new turn / LOPETA (which owns the state), or a farewell closed us.
+                if (coroutineContext[Job]?.isActive == true && _voice.value != VoiceState.Idle) {
+                    _voice.value = VoiceState.Ready
+                    _voiceHint.value = null
                 }
-                text
-            }.getOrNull()
-            if (!recovered.isNullOrBlank()) {
-                converse(recovered)
-                return
             }
         }
-        _voiceHint.value = message
-        _voice.value = VoiceState.Idle
     }
 
     /**
-     * Fire a canned prompt from the "PIKAKOMENNOT" panel without speaking —
-     * skips STT and hands the text straight to the assistant.
+     * One listening turn. Returns the recognised text, or null when the user
+     * stayed silent / the engine failed. The native engine finalises on its own
+     * silence detection; the timeout is a backstop for an engine that never
+     * closes its flow.
      */
-    fun runQuickCommand(prompt: String) {
-        listenJob?.cancel()
-        listenJob = viewModelScope.launch {
-            runCatching { activeStt?.stopListening() }
-            activeStt = null
-            converse(prompt)
+    private suspend fun listenOnce(): String? {
+        // Gate on availability first: on iOS this triggers the one-time
+        // SFSpeechRecognizer authorization prompt (previously done via pickStt's
+        // isAvailable check, which the conversation refactor dropped — without it
+        // recognition silently does nothing).
+        if (!platformStt.isAvailable()) {
+            _voiceHint.value = "puheentunnistus ei ole käytettävissä"
+            return null
         }
+        val stt = platformStt.also { activeStt = it }
+        _voice.value = VoiceState.Listening
+        _voiceHint.value = null
+        var text: String? = null
+        withTimeoutOrNull(LISTEN_TIMEOUT_MS) {
+            stt.listen().collect { event ->
+                when (event) {
+                    is SttEvent.Partial -> _voiceHint.value = event.text
+                    is SttEvent.Final -> text = event.text
+                    is SttEvent.Error -> _voiceHint.value = event.message
+                }
+            }
+        } ?: runCatching { stt.stopListening() }
+        activeStt = null
+        return text
     }
 
-    /** Release / cancel: the server engine records until told to stop. */
-    fun stopListening() {
-        val stt = activeStt ?: if (useNativeStt) platformStt else serverStt
-        viewModelScope.launch { runCatching { stt.stopListening() } }
-    }
-
-    private suspend fun pickStt(): SpeechToText =
-        if (useNativeStt && platformStt.isAvailable()) platformStt else serverStt
-
-    private suspend fun converse(userText: String) {
+    /**
+     * Understand [userText] and speak the answer: Thinking while the assistant
+     * works, Speaking as each sentence is synthesised on-device. Leaves the
+     * voice state alone on completion — the [conversation] loop reopens the mic.
+     */
+    private suspend fun respond(userText: String) {
+        pushStream(userText, isUser = true)   // the request joins the stream top
         _voice.value = VoiceState.Thinking
-        _voiceLine.value = userText
         _voiceHint.value = null
         history += ChatMessage.user(userText)
 
-        val nativeTts = useNativeTts && platformTts.isAvailable()
+        val nativeTts = platformTts.isAvailable()
         var lastSentence: String? = null
+        var spokeAny = false
 
-        // The bridge delivers each spoken sentence *inside* its `audio` event
-        // (the text alongside the WAV); only older builds send standalone `text`
-        // events. Both must speak — the previous code only spoke `text` events,
-        // so with the current bridge native TTS said nothing at all. Native
-        // speak() suspends until the utterance finishes, which also keeps the
-        // dock in Speaking (and the transcript on screen) until the voice stops,
-        // instead of snapping back to Idle the instant the stream closes.
+        // Each response sentence is pushed to the top of the stream as its own
+        // item (the previous ones slide down and fade) and spoken in turn —
+        // matching how the assistant streams sentences from its tools.
         suspend fun sentence(text: String) {
-            if (text == lastSentence) return
-            lastSentence = text
+            val t = text.trim()
+            if (t.isEmpty() || t == lastSentence) return
+            lastSentence = t
+            spokeAny = true
             _voice.value = VoiceState.Speaking
-            _voiceLine.value = text
-            if (nativeTts) platformTts.speak(text)
+            pushStream(t, isUser = false)
+            // Native speak() suspends until the utterance finishes (paces the
+            // stream and reopens the mic only after we stop talking); without it,
+            // reveal fragments ~1.3 s apart so the stream still grows readably.
+            if (nativeTts) platformTts.speak(t) else delay(1300)
         }
 
         try {
             assistantRepo.chat(history.toList()).collect { event ->
                 when (event) {
-                    is ChatEvent.ToolUse -> _voiceHint.value = event.tool
+                    is ChatEvent.ToolUse -> _voiceHint.value = mcpToolLabel(event.tool)
                     is ChatEvent.Text -> sentence(event.text)
-                    is ChatEvent.Audio -> {
-                        if (!nativeTts) audioPlayer.enqueue(event.wav)
-                        event.text?.let { sentence(it) }
-                    }
+                    // Native TTS speaks the text; the server-synthesised WAV that
+                    // rides this event is ignored (voice is device-only now).
+                    is ChatEvent.Audio -> event.text?.let { sentence(it) }
                     is ChatEvent.Screenshot -> Unit
                     is ChatEvent.Done -> {
                         history += ChatMessage.assistant(event.response)
-                        if (lastSentence == null && event.response.isNotBlank()) {
-                            sentence(event.response)
-                        }
+                        if (!spokeAny && event.response.isNotBlank()) sentence(event.response)
                     }
                 }
             }
         } catch (e: Exception) {
             _voiceHint.value = e.message
         }
+    }
+
+    /** Speak a short line (a goodbye) on-device, pushing it onto the stream. */
+    private suspend fun speak(line: String) {
+        _voice.value = VoiceState.Speaking
+        _voiceHint.value = null
+        pushStream(line, isUser = false)
+        if (platformTts.isAvailable()) platformTts.speak(line)
+    }
+
+    /**
+     * A farewell-only utterance ends the conversation (from the kiosk's
+     * [FAREWELL_PATTERNS]); only matches when the *whole* transcript is one, so
+     * "kiitos paljon avusta" keeps talking but "kiitos" signs off.
+     */
+    private fun isFarewell(text: String): Boolean = FAREWELL_PATTERNS.matches(text.trim())
+
+    /**
+     * "LOPETA": stop the whole conversation now — cancel the loop (which unwinds
+     * any in-flight STT or assistant stream), silence the voice, drop to idle.
+     */
+    fun stopListening() {
+        listenJob?.cancel()
+        listenJob = null
+        val stt = activeStt
+        activeStt = null
+        viewModelScope.launch { runCatching { stt?.stopListening() } }
+        platformTts.stop()
         _voice.value = VoiceState.Idle
         _voiceHint.value = null
     }
 
     private companion object {
-        /** How long the dock stays in Listening before giving up. */
-        const val LISTEN_TIMEOUT_MS = 12_000L
+        /** Backstop for a listening turn the native engine never ends. */
+        const val LISTEN_TIMEOUT_MS = 15_000L
+
+        /** Cap on the conversation stream (requests + response sentences). */
+        const val MAX_STREAM = 40
+
+        /** Farewell-only utterances that end the conversation (kiosk parity). */
+        val FAREWELL_PATTERNS = Regex(
+            "^(heippa|heihei|hei\\s*hei|näkemiin|nähdään|moi\\s*moi|moikka|kiitos|kiitti|" +
+                "lopeta|riittää|selvä|bye|goodbye|see\\s*you)[.!?]?\\s*$",
+            RegexOption.IGNORE_CASE,
+        )
+
+        val GOODBYES = listOf("Heippa!", "Nähdään!", "Moikka!", "Hei hei!")
     }
 }

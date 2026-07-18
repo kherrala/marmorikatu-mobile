@@ -24,6 +24,7 @@ class ConfigStore(private val settings: Settings = Settings()) {
         settings.putBoolean(KEY_KID_MODE, new.kidMode)
         settings.putBoolean(KEY_NATIVE_STT, new.useNativeStt)
         settings.putBoolean(KEY_NATIVE_TTS, new.useNativeTts)
+        settings.putString(KEY_ASSISTANT_GENDER, new.assistantGender.name)
         settings.putBoolean(KEY_HAPTICS, new.hapticsEnabled)
         settings.putBoolean(KEY_BACKGROUND, new.backgroundEnabled)
         _config.value = new
@@ -37,6 +38,7 @@ class ConfigStore(private val settings: Settings = Settings()) {
         kidMode = settings.getBoolean(KEY_KID_MODE, false),
         useNativeStt = settings.getBoolean(KEY_NATIVE_STT, true),
         useNativeTts = settings.getBoolean(KEY_NATIVE_TTS, true),
+        assistantGender = AssistantGender.fromName(settings.getStringOrNull(KEY_ASSISTANT_GENDER)),
         hapticsEnabled = settings.getBoolean(KEY_HAPTICS, true),
         backgroundEnabled = settings.getBoolean(KEY_BACKGROUND, false),
     )
@@ -49,6 +51,7 @@ class ConfigStore(private val settings: Settings = Settings()) {
         const val KEY_KID_MODE = "ui.kidMode"
         const val KEY_NATIVE_STT = "ui.nativeStt"
         const val KEY_NATIVE_TTS = "ui.nativeTts"
+        const val KEY_ASSISTANT_GENDER = "ui.assistantGender"
         const val KEY_HAPTICS = "ui.haptics"
         const val KEY_BACKGROUND = "ui.background"
     }

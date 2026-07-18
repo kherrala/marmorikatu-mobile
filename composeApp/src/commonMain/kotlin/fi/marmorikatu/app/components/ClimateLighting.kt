@@ -291,10 +291,16 @@ fun MkClimateCard(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     if (tempVal != null) {
                         val diff = tempVal - cur.target
+                        // Delta as a tinted pill, warm above target / cool below (design).
+                        val warmSide = diff >= 0
                         Text(
                             text = (if (diff >= 0) "+" else "") + format1(diff) + "°",
-                            style = MkTheme.type.readout(15),
-                            color = colors.inkMid,
+                            style = MkTheme.type.readout(11),
+                            color = if (warmSide) colors.warm else colors.accent,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(MkRadius.round))
+                                .background(if (warmSide) colors.warmDim else colors.accentDim)
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
                         )
                     }
                     Text(

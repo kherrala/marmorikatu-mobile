@@ -53,6 +53,10 @@ class IlmastoViewModel(
     private val _snapshot = MutableStateFlow(IlmastoSnapshot())
     val snapshot: StateFlow<IlmastoSnapshot> = _snapshot.asStateFlow()
 
+    /** Compressor duty over the last 24 h (%), for the Maalämpö "Käyntiaika" tile. */
+    private val _heatPumpDuty = MutableStateFlow<Double?>(null)
+    val heatPumpDuty: StateFlow<Double?> = _heatPumpDuty.asStateFlow()
+
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
 
@@ -152,6 +156,7 @@ class IlmastoViewModel(
                 coroutineScope {
                     launch { loadSummaries() }
                     launch { loadHistory(_snapshot.value.range) }
+                    launch { loadHeatPumpDuty() }
                 }
                 if (!_snapshot.value.failed) _updatedAt.value = nowEpochSeconds()
             } finally {
@@ -167,18 +172,44 @@ class IlmastoViewModel(
         viewModelScope.launch { loadHistory(range) }
     }
 
-    private suspend fun loadSummaries() {
-        _snapshot.update { it.copy(loading = true) }
+    /**
+     * Silent background refresh of the on-demand InfluxDB summaries — the duct
+     * temps (Tuloilmakanava), cooling and efficiency don't ride the live MQTT
+     * flows, so they'd otherwise stay frozen at whatever they were when the tab
+     * opened. Called on a short cadence while the screen is visible.
+     */
+    fun poll() {
+        viewModelScope.launch {
+            runCatching { climate.requestHeatPumpRead() }
+            loadSummaries(silent = true)
+            loadHeatPumpDuty()
+            if (!_snapshot.value.failed) _updatedAt.value = nowEpochSeconds()
+        }
+    }
+
+    private suspend fun loadSummaries(silent: Boolean = false) {
+        if (!silent) _snapshot.update { it.copy(loading = true) }
         val hvac = runCatching { climate.hvacSummary() }.getOrNull()
         val air = runCatching { climate.airQuality() }.getOrNull()
         _snapshot.update {
             it.copy(
-                hvac = hvac,
-                air = air,
+                hvac = hvac ?: it.hvac,
+                air = air ?: it.air,
                 loading = false,
-                failed = hvac == null && air == null,
+                failed = !silent && hvac == null && air == null,
             )
         }
+    }
+
+    /**
+     * Compressor duty cycle over 24 h: the mean of the 0/1 `thermia/compressor`
+     * status bit (downsampled to 30-min bucket means), as a percentage. An empty
+     * series leaves it null so the tile reads "Ei tietoa".
+     */
+    private suspend fun loadHeatPumpDuty() {
+        val series = runCatching { climate.metricHistory("thermia", "compressor", "-24h", "30m") }
+            .getOrDefault(emptyList())
+        _heatPumpDuty.value = if (series.isEmpty()) null else series.average() * 100.0
     }
 
     private suspend fun loadHistory(range: TimeRangeOption) {

@@ -28,6 +28,7 @@ import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Rooms
 import fi.marmorikatu.core.model.SpotPrice
 import fi.marmorikatu.core.model.WeatherForecast
+import fi.marmorikatu.core.model.WeatherWarning
 import fi.marmorikatu.core.repository.AnnouncementsRepository
 import fi.marmorikatu.core.repository.ClimateRepository
 import fi.marmorikatu.core.repository.EnergyRepository
@@ -115,9 +116,11 @@ enum class KotiScene(val label: String, val icon: ImageVector) {
     /** Movie: only the basement billiard light; everything else in the common areas goes dark. */
     Elokuva("Elokuva", MkIcons.FilmSlate),
     /** Terrace: the outdoor terrace light on; other outdoor lights off, indoors untouched. */
-    Terassi("Terassi", MkIcons.Tree),
+    Terassi("Terassi", MkIcons.Umbrella),
     /** Late-night arrival: entrance → foyer → stairs lit, everything else off. */
-    Kotiinpaluu("Kotiinpaluu", MkIcons.House),
+    Kotiinpaluu("Kotiinpaluu", MkIcons.DoorOpen),
+    /** Carport: the carport + its outdoor storage light on, other outdoor lights off. */
+    Autokatos("Autokatos", MkIcons.Warehouse),
     /** Everything in the common areas off (bedrooms untouched). */
     KaikkiPois("Kaikki pois", MkIcons.Power),
 }
@@ -162,6 +165,9 @@ internal fun sceneOnLightIds(scene: KotiScene, lights: List<Light>): Set<Int> {
         // Late-night arrival: light only the path in — front entrance, foyer, and
         // the staircase — and leave everything else dark.
         KotiScene.Kotiinpaluu -> common.filter { !it.isLed() && (it.has("Sisäänkäynti") || it.foyer() || it.stairs()) }
+        // Carport-only (see [sceneScopeLights]): the carport and its outdoor
+        // storage light on, other outdoor lights off, indoors untouched.
+        KotiScene.Autokatos -> common.filter { it.has("Autokatos", "katos") }
         KotiScene.KaikkiPois -> emptyList()
     }.map { it.id }.toSet()
 }
@@ -176,9 +182,9 @@ internal fun sceneScopeLights(scene: KotiScene, lights: List<Light>): List<Light
     val common = lights.filterNot { isBedroomLight(it.name) }
     return when (scene) {
         KotiScene.Elokuva -> common.filter { it.floor == Floor.KELLARI }
-        // Terrace governs only the outdoor lights — flipping the terrace mode never
-        // touches anything indoors.
-        KotiScene.Terassi -> common.filter { it.floor == Floor.ULKO }
+        // Terrace and Carport govern only the outdoor lights — flipping either
+        // never touches anything indoors.
+        KotiScene.Terassi, KotiScene.Autokatos -> common.filter { it.floor == Floor.ULKO }
         else -> common
     }
 }
@@ -288,6 +294,10 @@ class KotiViewModel(
     private val _nextGarbage = MutableStateFlow<GarbagePickup?>(null)
     /** Soonest upcoming waste pickup for the home-screen card; null until loaded / none. */
     val nextGarbage: StateFlow<GarbagePickup?> = _nextGarbage.asStateFlow()
+
+    private val _nextCalendarEvent = MutableStateFlow<CalendarEvent?>(null)
+    /** Soonest family-calendar event for the home-screen calendar widget; null until loaded / none. */
+    val nextCalendarEvent: StateFlow<CalendarEvent?> = _nextCalendarEvent.asStateFlow()
 
     /**
      * The preset whose exact light set is live, if any — derived from the live
@@ -425,7 +435,12 @@ class KotiViewModel(
     private fun loadWeather() {
         viewModelScope.launch {
             val w = runCatching { infoRepo.weather() }.getOrNull()
-            w?.let { _weather.value = it }
+            w?.let {
+                _weather.value = it
+                // Weather warnings ride the home attention strip like every other
+                // alert (design), not a banner inside the weather card.
+                snapshots.update { s -> s.copy(weatherWarnings = weatherWarningItems(it.warnings)) }
+            }
             startupProgress.mark(StartupProgress.KEY_WEATHER, w != null)
         }
     }
@@ -437,6 +452,8 @@ class KotiViewModel(
             if (el == null) { startupProgress.mark(StartupProgress.KEY_CALENDAR, false); return@launch }
             val parsed = CalendarParsing.parseCalendar(el)
             _nextGarbage.value = parsed.garbage.firstOrNull()
+            // The soonest event, matching the design's calNext = calDays[0].items[0].
+            _nextCalendarEvent.value = parsed.days.firstOrNull()?.events?.firstOrNull()
             snapshots.update { it.copy(calendarReminders = calendarReminders(parsed.days)) }
             startupProgress.mark(StartupProgress.KEY_CALENDAR, true)
         }
@@ -486,6 +503,8 @@ class KotiViewModel(
         val roomHistory: Map<String, List<Float>> = emptyMap(),
         /** Today's + tomorrow's family calendar events, as "info" strip reminders. */
         val calendarReminders: List<AttentionItem> = emptyList(),
+        /** Deduced weather warnings (helle / myrsky) as "warn" strip alerts. */
+        val weatherWarnings: List<AttentionItem> = emptyList(),
         /** The bridge's retained last front-yard snapshot (image kept), or null. */
         val cameraSnapshot: Announcement? = null,
         /** Epoch seconds of this fetch; drives the per-refresh KPI flash. */
@@ -649,7 +668,9 @@ class KotiViewModel(
                     // 24 h KPI sparkline series (metricHistory degrades to empty on failure).
                     val co2H = async { climateRepo.metricHistory("ruuvi", "co2") }
                     val indoorH = async { climateRepo.metricHistory("thermia", "indoor_temp") }
-                    val powerH = async { climateRepo.metricHistory("hvac", "Lampopumppu_teho") }
+                    // Maalämpö trends the heating-demand integral (degree-minutes),
+                    // stored by the ThermIQ subscriber as thermia/integral.
+                    val integralH = async { climateRepo.metricHistory("thermia", "integral") }
                     val waterH = async { climateRepo.metricHistory("thermia", "hotwater_temp") }
                     val ulkoH = async { climateRepo.metricHistory("hvac", "Ulkolampotila") }
                     val kosteusH = async { climateRepo.metricHistory("hvac", "Suhteellinen_kosteus") }
@@ -685,7 +706,7 @@ class KotiViewModel(
                         history = mapOf(
                             "co2" to co2H.await(),
                             "sisailma" to indoorH.await(),
-                            "maalampo" to powerH.await(),
+                            "maalampo" to integralH.await(),
                             "vesi" to waterH.await(),
                             "ulko" to ulkoH.await(),
                             "kosteus" to kosteusH.await(),
@@ -698,6 +719,8 @@ class KotiViewModel(
                         roomHistory = snapshots.value.roomHistory,
                         // Preserve calendar reminders (loaded on a separate cadence).
                         calendarReminders = snapshots.value.calendarReminders,
+                        // Preserve weather warnings (loaded on the weather cadence).
+                        weatherWarnings = snapshots.value.weatherWarnings,
                         // Keep the last snapshot if this fetch momentarily failed,
                         // so the camera card doesn't flicker back to black.
                         cameraSnapshot = camShot.await() ?: snapshots.value.cameraSnapshot,
@@ -798,12 +821,29 @@ class KotiViewModel(
                 ),
             )
         }
+        // Ventilation runs on Normaali day-to-day; Tehostus (boost) and Takka are
+        // manual, temporary states — surface them so they aren't left running by
+        // accident. Casa OperatingMode: 0 Poissa, 1 Normaali, 2 Tehostus (higher =
+        // takka, if the unit ever reports it).
+        vent.raw["operatingmode"]?.toInt()?.takeIf { it >= 2 }?.let { m ->
+            val label = if (m >= 3) "takka" else "tehostus"
+            add(
+                AttentionItem(
+                    status = "warn",
+                    icon = MkIcons.Wind,
+                    text = "Ilmanvaihto · $label päällä",
+                    value = "",
+                ),
+            )
+        }
         // Heat-pump fault codes (d19/d20) — always flagged; the design shows the
         // register:bit reference (e.g. "d19:3") as the value.
         if (heatPump.available) for (alarm in heatPump.alarms) add(hpAlarmItem(alarm))
         // Every live MVHR alarm from the ventilation unit, each with its own label.
         for (alarm in vent.alarms) add(ventAlarmItem(alarm))
         addAll(ruuviAlerts(ruuvi))
+        // Deduced weather warnings (helle / myrsky), warn-tier, above the info rows.
+        addAll(snap.weatherWarnings)
         // Today's / tomorrow's family calendar events, as info-tier rows (the strip
         // sorts these last, below any real alarms/warnings).
         addAll(snap.calendarReminders)
@@ -840,6 +880,25 @@ class KotiViewModel(
             }
             .take(3)
     }
+
+    /**
+     * Deduced weather warnings as warn-tier attention rows — the heat/storm alert
+     * that used to sit inside the weather card now reads like every other alert.
+     */
+    private fun weatherWarningItems(warnings: List<WeatherWarning>): List<AttentionItem> =
+        warnings.map { w ->
+            val icon = when (w.kind) {
+                "helle" -> MkIcons.ThermometerHot
+                "myrsky" -> MkIcons.Wind
+                else -> MkIcons.Warning
+            }
+            AttentionItem(
+                status = "warn",
+                icon = icon,
+                text = w.title.ifBlank { "Säävaroitus" },
+                value = "",
+            )
+        }
 
     /** "HH:MM" → minutes-since-midnight, or null if it isn't a clock time. */
     private fun timeToMinutes(hhmm: String): Int? {
@@ -1055,7 +1114,7 @@ class KotiViewModel(
             co2Kpi(snap.air, snap.history["co2"].orEmpty()),
             indoorKpi(heatPump, snap.history["sisailma"].orEmpty()),
             heatPumpKpi(heatPump, snap.hvac?.heatPumpPowerKw, snap.history["maalampo"].orEmpty()),
-            ventilationKpi(),
+            ventilationKpi(snap.hvac),
             hotWaterKpi(heatPump, snap.history["vesi"].orEmpty()),
             humidityKpi(snap.hvac, snap.history["kosteus"].orEmpty()),
         ).map { kpi ->
@@ -1122,18 +1181,25 @@ class KotiViewModel(
         )
     }
 
-    /** Cooling (ilmastointi): live from the `marmorikatu/cooling` pump state. */
-    private fun ventilationKpi(): KotiKpi {
+    /**
+     * The supply-air (Tuloilma) tile: the temperature the MVHR delivers into the
+     * rooms, with a "VIILENNYS" badge while the cooling pump is running (design).
+     */
+    private fun ventilationKpi(hvac: HvacSummary?): KotiKpi {
         val cooling = climateRepo.cooling.value
         val active = cooling.pumpCooling || cooling.coolingPump
         return plainKpi(
             key = "ilmastointi",
             icon = MkIcons.FanFill,
-            label = "Ilmastointi",
-            value = if (active) "Viilentää" else "Pois",
-            unit = null,
-            tag = if (active) "PÄÄLLÄ" else null,
+            label = "Tuloilma",
+            // The air actually delivered to the rooms (Tuloilmakanava, post cooling
+            // battery), not the post-heating-coil sensor.
+            value = (hvac?.supplyDuctC ?: hvac?.supplyPostHeatC)?.let { Fmt.oneDecimal(it) },
+            unit = "°C",
+            tag = if (active) "VIILENNYS" else null,
             tagStatus = MkTagStatus.Ok,
+            detailMeasurement = "hvac",
+            detailField = "Tuloilmakanava",
         )
     }
 
@@ -1144,6 +1210,15 @@ class KotiViewModel(
         value = hp.indoorC?.takeIf { hp.available }?.let { Fmt.oneDecimal(it) },
         unit = "°C",
         spark = spark,
+        // Badge the heat pump's live production mode: hot water vs heating, or
+        // nothing while it's idle.
+        tag = when {
+            !hp.available -> null
+            hp.hotWaterActive -> "VESI"
+            hp.running -> "LÄMPÖ"
+            else -> null
+        },
+        tagStatus = if (hp.hotWaterActive) MkTagStatus.Ok else MkTagStatus.Warn,
         detailMeasurement = "thermia",
         detailField = "indoor_temp",
     )
@@ -1313,31 +1388,32 @@ class KotiViewModel(
      */
     private fun heatPumpKpi(hp: HeatPumpStatus, powerKw: Double?, history: List<Float>): KotiKpi {
         val running = hp.running
+        val integral = hp.integralCmin
         return KotiKpi(
             key = "maalampo",
             icon = MkIcons.ThermometerHot,
             label = "Maalämpö",
+            // The heating-demand integral (degree-minutes); falls back to the
+            // run state only when the integral register isn't reporting.
             value = when {
                 !hp.available -> "Ei tietoa"
+                integral != null -> Fmt.int(integral)
                 running -> "Käy"
                 else -> "Seis"
             },
-            unit = null,
+            unit = if (hp.available && integral != null) "°min" else null,
             statStatus = MkStatStatus.None,
-            tag = when {
-                !hp.available -> null
-                hp.hotWaterActive -> "Käyttövesi"
-                running && powerKw != null -> "${Fmt.oneDecimal(powerKw)} kW"
-                else -> null
-            },
-            tagStatus = MkTagStatus.Ok,
+            // Badge the electric backup heater's step while it's running — expensive
+            // resistance heat, so warn-tinted (design: "3 kW").
+            tag = if (hp.available && hp.auxHeaterActive) "${hp.auxHeaterKw} kW" else null,
+            tagStatus = MkTagStatus.Warn,
             detailStatus = "accent",
-            detailUnit = "kW",
-            // 24 h heat-pump power draw from the `hvac` Lampopumppu_teho field.
+            detailUnit = "°min",
+            // 24 h heating-demand integral from the `thermia` integral field.
             seriesValues = history,
             labels = emptyList(),
-            detailMeasurement = "hvac",
-            detailField = "Lampopumppu_teho",
+            detailMeasurement = "thermia",
+            detailField = "integral",
             stats = buildList {
                 if (powerKw != null) add(MkStat("TEHO", "${Fmt.oneDecimal(powerKw)} kW"))
                 hp.brineDeltaC?.let { add(MkStat("LIUOS Δ", "${Fmt.oneDecimal(it)} °C")) }
@@ -1355,7 +1431,8 @@ class KotiViewModel(
             value = hw?.let { Fmt.oneDecimal(it) } ?: "Ei tietoa",
             unit = if (hw != null) "°C" else null,
             statStatus = MkStatStatus.None,
-            tag = if (hp.available && hp.hotWaterActive) "Lämmitetään" else null,
+            // Badge the live running efficiency (design: "COP 3.6") while the pump runs.
+            tag = hp.cop?.takeIf { hp.available && hp.running }?.let { "COP ${Fmt.oneDecimal(it)}" },
             tagStatus = MkTagStatus.Ok,
             detailStatus = "accent",
             detailUnit = if (hw != null) "°C" else "",

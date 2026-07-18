@@ -1,18 +1,49 @@
 package fi.marmorikatu.app.shell
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
+import fi.marmorikatu.app.components.MkAssistantAvatar
+import fi.marmorikatu.app.components.frameOsc
+import fi.marmorikatu.app.components.rememberFrameMillis
+import fi.marmorikatu.app.theme.MkDot
+import fi.marmorikatu.app.theme.MkRadius
+import fi.marmorikatu.core.config.AssistantGender
+import fi.marmorikatu.app.theme.mkPressScale
 import fi.marmorikatu.app.theme.rememberMkInteractionSource
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,6 +56,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -221,59 +253,368 @@ private val voiceQuickCommands = listOf(
     MkVoiceCommand(MkIcons.House, "Talon yhteenveto", "Anna talon yhteenveto"),
     MkVoiceCommand(MkIcons.Moon, "Iltavalot päälle", "Laita iltavalot päälle"),
     MkVoiceCommand(MkIcons.Drop, "Onko sauna päällä?", "Onko sauna päällä?"),
+    MkVoiceCommand(MkIcons.Lightning, "Sähkön hinta", "Paljonko sähkö maksaa nyt?"),
+    // "Tehosta ilmanvaihtoa" dropped — the assistant has no ventilation-control
+    // tool. "Sammuta kaikki valot" is something it can actually do (set_all_lights).
+    MkVoiceCommand(MkIcons.Power, "Sammuta kaikki valot", "Sammuta kaikki valot"),
 )
 
 /**
- * The active-voice overlay: a full-screen "smokescreen" scrim (dim + tap to
- * close, per the design) with the quick-command panel and dock floating above
- * it. Renders nothing while idle. Must be placed in a fill-size [Box].
+ * The active-voice overlay: a full-screen takeover with the animated assistant
+ * avatar up top and, below it, the state-specific body — quick commands while
+ * listening, a thinking indicator, or the spoken transcript. Renders nothing
+ * while idle. Must be placed in a fill-size [Box].
  */
 @Composable
 private fun BoxScope.VoiceOverlay(
     voice: VoiceState,
     voiceHint: String?,
-    voiceLine: String?,
+    gender: AssistantGender,
+    stream: List<VoiceStreamItem>,
+    kiosk: Boolean,
     onMic: () -> Unit,
     onDismiss: () -> Unit,
     onRunCommand: (String) -> Unit,
-    horizontalPad: Dp,
-    bottomPad: Dp,
 ) {
     if (voice == VoiceState.Idle) return
-    // Smokescreen: dims the dashboard and dismisses the assistant on tap.
+    val colors = MkTheme.colors
+
     Box(
         modifier = Modifier
             .matchParentSize()
-            .background(Color(0x99080A0E))
-            .clickable(
-                interactionSource = rememberMkInteractionSource(),
-                indication = null,
-                onClick = onDismiss,
-            ),
-    )
-    Column(
-        modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = horizontalPad)
-            .padding(bottom = bottomPad),
-        verticalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+            .background(colors.appBg)
+            .statusBarsPadding()
+            .navigationBarsPadding(),
     ) {
-        if (voice == VoiceState.Listening) {
-            MkVoiceQuickCommands(
-                commands = voiceQuickCommands,
-                onRun = { onRunCommand(it.prompt) },
+        val glow = Brush.radialGradient(listOf(colors.accent.copy(alpha = 0.14f), Color.Transparent))
+        if (kiosk) {
+            // Kiosk: two columns — avatar on the left, conversation on the right.
+            Row(Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier.fillMaxWidth(0.42f).fillMaxHeight().background(glow),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    MkAssistantAvatar(
+                        state = voice,
+                        gender = gender,
+                        modifier = Modifier.fillMaxWidth(0.9f).widthIn(max = 520.dp).aspectRatio(320f / 310f),
+                    )
+                    VoiceStatePill(voice, Modifier.align(Alignment.TopStart).padding(22.dp))
+                }
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 28.dp, vertical = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+                ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        MkIconButton(icon = MkIcons.X, label = "Sulje", onClick = onDismiss, round = true)
+                    }
+                    VoiceOverlayContent(
+                        voice, voiceHint, stream, kiosk = true, onRunCommand,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                    BottomButton(voice, onMic, onDismiss)
+                }
+            }
+        } else {
+            // Phone: a vertical stack — avatar high, content, control at the bottom.
+            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    VoiceStatePill(voice)
+                    MkIconButton(icon = MkIcons.X, label = "Sulje", onClick = onDismiss, round = true)
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .widthIn(max = 460.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = MkSpacing.pagePad),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Top,
+                ) {
+                    Spacer(Modifier.height(MkSpacing.x2))
+                    Box(Modifier.fillMaxWidth().background(glow), contentAlignment = Alignment.Center) {
+                        MkAssistantAvatar(
+                            state = voice,
+                            gender = gender,
+                            modifier = Modifier.fillMaxWidth(0.72f).aspectRatio(320f / 310f),
+                        )
+                    }
+                    Spacer(Modifier.height(MkSpacing.x3))
+                    VoiceOverlayContent(
+                        voice, voiceHint, stream, kiosk = false, onRunCommand,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                }
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = MkSpacing.x4, top = MkSpacing.x2),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    BottomButton(voice, onMic, onDismiss)
+                }
+            }
+        }
+    }
+}
+
+/** The state pill (KUUNTELEN / MIETIN… / PUHUN / VALMIS) with a breathing dot. */
+@Composable
+private fun VoiceStatePill(voice: VoiceState, modifier: Modifier = Modifier) {
+    val colors = MkTheme.colors
+    Row(
+        // Rounded background/border applied directly (no clip) so the pill shape
+        // can never crop the label text.
+        modifier = modifier
+            .background(colors.surfaceCard, RoundedCornerShape(MkRadius.round))
+            .border(1.dp, colors.borderSubtle, RoundedCornerShape(MkRadius.round))
+            .padding(horizontal = 13.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        MkDot(color = colors.accent, size = 7.dp, breathing = voice != VoiceState.Ready)
+        Text(
+            text = when (voice) {
+                VoiceState.Listening -> "KUUNTELEN"
+                VoiceState.Thinking -> "MIETIN…"
+                VoiceState.Speaking -> "PUHUN"
+                else -> "VALMIS"
+            },
+            style = MkTheme.type.readout(10),
+            color = colors.accent,
+            maxLines = 1,
+        )
+    }
+}
+
+/** The bottom control: PUHU to continue when resting, LOPETA to stop when active. */
+@Composable
+private fun BottomButton(voice: VoiceState, onMic: () -> Unit, onDismiss: () -> Unit) {
+    if (voice == VoiceState.Ready) {
+        MkVoiceButton(onClick = onMic, label = "PUHU")
+    } else {
+        MkVoiceButton(onClick = onDismiss, label = "LOPETA")
+    }
+}
+
+/**
+ * State-specific overlay body, filling the space between the avatar/bar and the
+ * bottom control. Listening scrolls (equalizer + prompt + quick grid) so it
+ * fits short landscape; the other states let the stream's own list scroll.
+ */
+@Composable
+private fun VoiceOverlayContent(
+    voice: VoiceState,
+    voiceHint: String?,
+    stream: List<VoiceStreamItem>,
+    kiosk: Boolean,
+    onRunCommand: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MkTheme.colors
+    val type = MkTheme.type
+    val hAlign = if (kiosk) Alignment.Start else Alignment.CenterHorizontally
+    val tAlign = if (kiosk) TextAlign.Start else TextAlign.Center
+    when (voice) {
+        VoiceState.Listening -> Column(
+            modifier = modifier.verticalScroll(rememberScrollState()),
+            horizontalAlignment = hAlign,
+            verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+        ) {
+            VoiceEqualizer()
+            Text(
+                text = voiceHint?.takeIf { it.isNotBlank() }
+                    ?: "Puhu nyt — sano esimerkiksi ”laita keittiöön täydet valot”",
+                style = if (kiosk) type.body.copy(fontSize = 22.sp, lineHeight = 30.sp) else type.body,
+                color = colors.inkHi,
+                textAlign = tAlign,
                 modifier = Modifier.fillMaxWidth(),
             )
+            VoiceQuickGrid(onRunCommand = onRunCommand)
         }
-        MkVoiceDock(
-            onMic = onMic,
-            state = voice,
-            hint = voiceHint,
-            transcript = voiceLine,
-            modifier = Modifier.fillMaxWidth(),
+        VoiceState.Thinking -> Column(
+            modifier = modifier,
+            horizontalAlignment = hAlign,
+            verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+        ) {
+            ThinkingDots()
+            voiceHint?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = type.readout(11), color = colors.inkLo, textAlign = tAlign)
+            }
+            if (stream.isNotEmpty()) VoiceStream(stream, kiosk, Modifier.weight(1f, fill = false))
+        }
+        // Speaking + Ready (VALMIS): the stream (its list scrolls), plus the quick
+        // grid under it while resting.
+        else -> Column(
+            modifier = modifier,
+            horizontalAlignment = hAlign,
+            verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+        ) {
+            VoiceStream(stream, kiosk, Modifier.weight(1f, fill = false))
+            if (voice == VoiceState.Ready) VoiceQuickGrid(onRunCommand = onRunCommand)
+        }
+    }
+}
+
+/** The lightbulb quick-actions FAB that opens [LightsQuickSheet]. */
+@Composable
+private fun LightbulbFab(onClick: () -> Unit) {
+    val colors = MkTheme.colors
+    val interaction = rememberMkInteractionSource()
+    Box(
+        modifier = Modifier
+            .mkPressScale(interaction, pressed = 0.94f)
+            .size(56.dp)
+            .clip(CircleShape)
+            .background(colors.surfaceCard)
+            .border(1.dp, colors.borderSubtle, CircleShape)
+            .clickable(interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            MkIcons.LightbulbFill,
+            contentDescription = "Pikatoiminnot · Valot",
+            tint = colors.accent,
+            modifier = Modifier.size(24.dp),
         )
+    }
+}
+
+/** Five bars bouncing while the assistant listens (the design's mk-eq). */
+@Composable
+private fun VoiceEqualizer() {
+    val colors = MkTheme.colors
+    val ms by rememberFrameMillis()
+    Row(
+        modifier = Modifier.height(26.dp),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        val periods = listOf(560f, 460f, 640f, 520f, 600f)
+        val phases = listOf(0f, 90f, 180f, 60f, 240f)
+        periods.forEachIndexed { i, period ->
+            val h = 0.28f + 0.72f * frameOsc(ms + phases[i], period)
+            Box(
+                Modifier
+                    .width(4.dp)
+                    .height(24.dp * h)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(colors.accent),
+            )
+        }
+    }
+}
+
+/** Three pulsing dots while the assistant thinks. */
+@Composable
+private fun ThinkingDots() {
+    val colors = MkTheme.colors
+    val ms by rememberFrameMillis()
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(vertical = MkSpacing.x2),
+    ) {
+        listOf(0f, 180f, 360f).forEach { phase ->
+            val a = 0.3f + 0.7f * frameOsc(ms + phase, 1100f)
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(colors.accent.copy(alpha = a)),
+            )
+        }
+    }
+}
+
+/**
+ * The conversation stream: the newest sentence/request is big and bright at the
+ * top; earlier items slide down and fade stepwise (0.8 → 0.3) as new ones arrive.
+ * User requests are shown quoted in the accent colour, responses in ink. Uses
+ * the display face (Space Grotesk) — 18.5sp phone / 27sp kiosk for the newest.
+ */
+@Composable
+private fun VoiceStream(items: List<VoiceStreamItem>, kiosk: Boolean, modifier: Modifier = Modifier) {
+    val colors = MkTheme.colors
+    val type = MkTheme.type
+    // Newest is at index 0; keep it scrolled into view as items arrive so the
+    // latest sentence is always visible at the top (the list otherwise holds its
+    // position, leaving the new item off-screen above the fold).
+    val listState = rememberLazyListState()
+    LaunchedEffect(items.firstOrNull()?.seq) {
+        if (items.isNotEmpty()) listState.animateScrollToItem(0)
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = if (kiosk) Alignment.Start else Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        itemsIndexed(items, key = { _, it -> it.seq }) { i, item ->
+            val faded = if (i == 0) 1f else (0.8f - (i - 1) * 0.12f).coerceIn(0.3f, 0.8f)
+            val big = i == 0
+            val size = when {
+                big && kiosk -> 27f
+                big -> 18.5f
+                kiosk -> 18f
+                else -> 15f
+            }
+            Text(
+                text = if (item.isUser) "”${item.text}”" else item.text,
+                style = TextStyle(
+                    fontFamily = type.display,
+                    fontWeight = if (big) FontWeight.Medium else FontWeight.Normal,
+                    fontSize = size.sp,
+                    lineHeight = (size * 1.4f).sp,
+                ),
+                color = if (item.isUser) colors.accent else colors.inkHi,
+                textAlign = if (kiosk) TextAlign.Start else TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().alpha(faded).animateItem(),
+            )
+        }
+    }
+}
+
+/** The 2×2 quick-command grid shown while listening (design's PIKAKOMENNOT). */
+@Composable
+private fun VoiceQuickGrid(onRunCommand: (String) -> Unit) {
+    val colors = MkTheme.colors
+    val type = MkTheme.type
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "PIKAKOMENNOT",
+            style = type.readout(10),
+            color = colors.inkLo,
+            modifier = Modifier.align(Alignment.Start),
+        )
+        voiceQuickCommands.chunked(2).forEach { rowCmds ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                rowCmds.forEach { cmd ->
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(MkRadius.md))
+                            .background(colors.surfaceRaised)
+                            .border(1.dp, colors.borderSubtle, RoundedCornerShape(MkRadius.md))
+                            .clickable { onRunCommand(cmd.prompt) }
+                            .padding(horizontal = 12.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    ) {
+                        Icon(cmd.icon, contentDescription = null, tint = colors.accent, modifier = Modifier.size(18.dp))
+                        Text(
+                            cmd.label,
+                            style = type.body.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium),
+                            color = colors.inkHi,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                if (rowCmds.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
     }
 }
 
@@ -292,7 +633,7 @@ private fun tabItems(unread: Int, rail: Boolean): List<MkTabItem> = Tab.entries.
 // Phone
 // ---------------------------------------------------------------------------
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 private fun PhoneSurface(
     viewModel: ShellViewModel,
@@ -304,13 +645,22 @@ private fun PhoneSurface(
     val tab by viewModel.tab.collectAsState()
     val unread by viewModel.unreadCount.collectAsState()
     val voice by viewModel.voice.collectAsState()
-    val voiceLine by viewModel.voiceLine.collectAsState()
     val voiceHint by viewModel.voiceHint.collectAsState()
+    val assistantGender by viewModel.assistantGender.collectAsState()
+    val voiceStream by viewModel.stream.collectAsState()
     val dark by viewModel.dark.collectAsState()
     // A detail chart forces landscape and wants the whole height for the chart —
     // the app header is redundant there (Takaisin + the card's own title cover
     // it), so it collapses while a detail is open.
     val detailOpen by koinInject<UiSignals>().detailOpen.collectAsState()
+
+    // The fold-in light quick-actions sheet, opened from the lightbulb FAB that
+    // sits beside the mic on every tab.
+    var showLights by remember { mutableStateOf(false) }
+    if (showLights) {
+        BackHandler { showLights = false }
+        LightsQuickSheet(onDismiss = { showLights = false })
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
     Column(
@@ -421,19 +771,20 @@ private fun PhoneSurface(
                 ScreenHost(tab = tabs[page], phone = true)
             }
 
-            // Idle, the dock is just a mic button: it floats over the content
-            // rather than reserving a row it does not need. Hidden in a detail
-            // view, where the chart wants every pixel.
+            // Idle, the bottom dock is the lightbulb quick-actions FAB + the mic
+            // button, floating over the content rather than reserving a row.
+            // Hidden in a detail view, where the chart wants every pixel.
             if (voice == VoiceState.Idle && !detailOpen) {
-                MkVoiceDock(
-                    onMic = viewModel::onMic,
-                    state = voice,
-                    hint = voiceHint,
-                    transcript = voiceLine,
+                Row(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(horizontal = MkSpacing.pagePad, vertical = MkSpacing.x2),
-                )
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    LightbulbFab(onClick = { showLights = true })
+                    MkVoiceButton(onClick = viewModel::onMic, size = MkVoiceSize.Lg)
+                }
             }
         }
 
@@ -455,12 +806,12 @@ private fun PhoneSurface(
         VoiceOverlay(
             voice = voice,
             voiceHint = voiceHint,
-            voiceLine = voiceLine,
+            gender = assistantGender,
+            stream = voiceStream,
+            kiosk = false,
             onMic = viewModel::onMic,
             onDismiss = viewModel::stopListening,
             onRunCommand = viewModel::runQuickCommand,
-            horizontalPad = MkSpacing.pagePad,
-            bottomPad = MkSpacing.tabBarHeight + MkSpacing.x2,
         )
     }
 }
@@ -531,8 +882,9 @@ private fun TabletSurface(
     val tab by viewModel.tab.collectAsState()
     val unread by viewModel.unreadCount.collectAsState()
     val voice by viewModel.voice.collectAsState()
-    val voiceLine by viewModel.voiceLine.collectAsState()
     val voiceHint by viewModel.voiceHint.collectAsState()
+    val assistantGender by viewModel.assistantGender.collectAsState()
+    val voiceStream by viewModel.stream.collectAsState()
     val dark by viewModel.dark.collectAsState()
 
     // safeDrawingPadding keeps the rail and content clear of the status bar and,
@@ -633,12 +985,12 @@ private fun TabletSurface(
         VoiceOverlay(
             voice = voice,
             voiceHint = voiceHint,
-            voiceLine = voiceLine,
+            gender = assistantGender,
+            stream = voiceStream,
+            kiosk = true,
             onMic = viewModel::onMic,
             onDismiss = viewModel::stopListening,
             onRunCommand = viewModel::runQuickCommand,
-            horizontalPad = MkSpacing.pagePadTablet,
-            bottomPad = MkSpacing.x4,
         )
     }
 }

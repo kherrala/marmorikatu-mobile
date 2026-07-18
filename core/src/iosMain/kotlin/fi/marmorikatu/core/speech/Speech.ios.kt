@@ -1,5 +1,6 @@
 package fi.marmorikatu.core.speech
 
+import fi.marmorikatu.core.config.AssistantGender
 import fi.marmorikatu.core.log.logger
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
@@ -15,6 +16,7 @@ import platform.AVFAudio.AVAudioSessionCategoryPlayAndRecord
 import platform.AVFAudio.AVAudioSessionModeMeasurement
 import platform.AVFAudio.AVSpeechBoundary
 import platform.AVFAudio.AVSpeechSynthesisVoice
+import platform.AVFAudio.AVSpeechSynthesisVoiceGender
 import platform.AVFAudio.AVSpeechSynthesizer
 import platform.AVFAudio.AVSpeechSynthesizerDelegateProtocol
 import platform.AVFAudio.AVSpeechUtterance
@@ -140,8 +142,26 @@ actual class PlatformTts actual constructor() : SpeechOutput {
     override val name = "ios-avspeech"
 
     private val synthesizer = AVSpeechSynthesizer()
-    private val voice: AVSpeechSynthesisVoice? =
+
+    // The active voice; reselected by persona. iOS *does* expose voice gender,
+    // so this is a reliable match when the device has both fi-FI voices.
+    private var voice: AVSpeechSynthesisVoice? =
         AVSpeechSynthesisVoice.voiceWithLanguage("fi-FI")
+
+    override fun useVoice(gender: AssistantGender) {
+        val fiVoices = AVSpeechSynthesisVoice.speechVoices()
+            .filterIsInstance<AVSpeechSynthesisVoice>()
+            .filter { it.language == "fi-FI" }
+        if (fiVoices.isEmpty()) return
+        val target = if (gender == AssistantGender.Mies) {
+            AVSpeechSynthesisVoiceGender.AVSpeechSynthesisVoiceGenderMale
+        } else {
+            AVSpeechSynthesisVoiceGender.AVSpeechSynthesisVoiceGenderFemale
+        }
+        voice = fiVoices.firstOrNull { it.gender == target }
+            ?: fiVoices.firstOrNull { it.gender == AVSpeechSynthesisVoiceGender.AVSpeechSynthesisVoiceGenderUnspecified }
+            ?: fiVoices.first()
+    }
 
     /**
      * `AVSpeechSynthesizer.delegate` is a weak ObjC property. Held only by

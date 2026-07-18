@@ -183,8 +183,8 @@ class DefaultClimateRepository(
                             extras.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
                         _cooling.update {
                             it.copy(
-                                coilTemp1 = coil("jaahdpatteri_1") ?: it.coilTemp1,
-                                coilTemp2 = coil("jaahdpatteri_2") ?: it.coilTemp2,
+                                coilTemp1 = coil("jaahdpatteri_1").calibratedRtd2() ?: it.coilTemp1,
+                                coilTemp2 = coil("jaahdpatteri_2").calibratedRtd2() ?: it.coilTemp2,
                             )
                         }
                         cache(KEY_TEMPS, text)
@@ -278,8 +278,9 @@ class DefaultClimateRepository(
                     "Ulkolampotila", "LTO_hyotysuhde", "Suhteellinen_kosteus",
                     // Inputs for the computed heat-recovery efficiency.
                     "Tuloilma_ennen_lammitysta", "Tuloilma_asetusarvo",
-                    // MVHR duct temps for the ventilation diagram.
-                    "Poistoilma", "Jateilma", "Tuloilma_jalkeen_lammityksen",
+                    // MVHR duct temps for the ventilation diagram. Tuloilmakanava is
+                    // the air actually delivered to the rooms (post cooling battery).
+                    "Poistoilma", "Jateilma", "Tuloilma_jalkeen_lammityksen", "Tuloilmakanava",
                     FIELD_HEAT_PUMP_POWER, "Alarm_freezing_danger",
                     "Alarm_filter_guard", "Alarm_fan_failure_supply",
                     "Alarm_fan_failure_extract", "Alarm_service_reminder",
@@ -293,15 +294,17 @@ class DefaultClimateRepository(
             "Alarm_service_reminder",
         )
         // The LTO_hyotysuhde field is a not-connected sensor that pins to 0, so
-        // compute recovery efficiency the way the Grafana dashboard /
-        // get_heat_recovery_efficiency do:
-        //   η = (supply_after_HRU − outdoor) / (setpoint − outdoor) × 100
-        // valid only when setpoint ≠ outdoor and the result is in (0, 100].
+        // compute the supply-side recovery efficiency from the exchanger gradient:
+        //   η = (supply_after_HRU − outdoor) / (extract − outdoor) × 100
+        // Extract (room-return) air is the warm side. (This replaces the legacy
+        // Tuloilma_asetusarvo setpoint, which is no longer published.) Valid only
+        // when there's a real gradient — in mild weather outdoor ≈ extract, so the
+        // result is undefined/out of range and left null ("Ei tietoa").
         val outdoor = values["Ulkolampotila"]
         val supplyAfterHru = values["Tuloilma_ennen_lammitysta"]
-        val setpoint = values["Tuloilma_asetusarvo"]
-        val recoveryEfficiency = if (outdoor != null && supplyAfterHru != null && setpoint != null && setpoint != outdoor) {
-            ((supplyAfterHru - outdoor) / (setpoint - outdoor) * 100.0).takeIf { it > 0.0 && it <= 100.0 }
+        val extract = values["Poistoilma"]
+        val recoveryEfficiency = if (outdoor != null && supplyAfterHru != null && extract != null && extract != outdoor) {
+            ((supplyAfterHru - outdoor) / (extract - outdoor) * 100.0).takeIf { it > 0.0 && it <= 100.0 }
         } else {
             null
         }
@@ -317,6 +320,7 @@ class DefaultClimateRepository(
             exhaustC = values["Jateilma"],
             supplyPreHeatC = values["Tuloilma_ennen_lammitysta"],
             supplyPostHeatC = values["Tuloilma_jalkeen_lammityksen"],
+            supplyDuctC = values["Tuloilmakanava"].calibratedRtd2(),
         )
     }
 
@@ -380,6 +384,20 @@ class DefaultClimateRepository(
         const val KEY_HEAT_PUMP = "climate.heatpump"
         const val KEY_TEMPS = "climate.temperatures"
         const val KEY_HEATING = "climate.heating"
+
+        /**
+         * Calibration the PLC applies to the three PT100s on analog module
+         * `_4AI_Pt100_RTD_2` — `Tuloilmakanava`, `Jaahdpatteri_1`, `Jaahdpatteri_2`
+         * — but only in its `AirCondition` visu (and the cooling control), *not* in
+         * the raw MQTT publish. The PLC formula is `(rawInt - 20) / 10`, i.e. these
+         * sensors read 2.0 °C high (long cable runs); the controller subtracts it.
+         * Both our feeds (the live `temperatures` MQTT topic and the InfluxDB
+         * `Tuloilmakanava` field) carry the *uncalibrated* value, so we apply the
+         * same −2.0 °C here to match what the PLC's HVAC page shows. See
+         * ../marmorikatu-plc Tero.export (POU `AirCondition`, lines ~2976–2986).
+         */
+        const val PT100_RTD2_CALIBRATION_C = -2.0
+        fun Double?.calibratedRtd2(): Double? = this?.plus(PT100_RTD2_CALIBRATION_C)
     }
 }
 

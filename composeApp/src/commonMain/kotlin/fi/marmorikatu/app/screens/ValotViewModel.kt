@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.Light
 import fi.marmorikatu.core.repository.LightsRepository
+import fi.marmorikatu.core.transport.influx.FluxClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
@@ -41,6 +43,9 @@ data class ValotArea(
     val key: String,
     val name: String,
     val icon: ImageVector,
+    val hue: androidx.compose.ui.graphics.Color,
+    /** Epoch-seconds the group's earliest currently-on light turned on, else null. */
+    val onSinceSec: Long?,
     val lights: List<ValotLight>,
     val onCount: Int,
 ) {
@@ -58,12 +63,16 @@ data class ValotLight(val id: Int, val label: String, val on: Boolean, val pendi
  */
 class ValotViewModel(
     private val lights: LightsRepository,
+    private val flux: FluxClient,
 ) : ViewModel() {
 
     private val loaded = MutableStateFlow(false)
 
+    /** When each currently-on light turned on (epoch seconds) — drives the timers. */
+    private val _onSince = MutableStateFlow<Map<Int, Long>>(emptyMap())
+
     val uiState: StateFlow<ValotUiState> =
-        combine(lights.lights, loaded) { list, isLoaded ->
+        combine(lights.lights, loaded, _onSince) { list, isLoaded, onSince ->
             val byId = list.associateBy { it.id }
             val floors = VALOT_FLOOR_ORDER.mapNotNull { floor ->
                 val (name, icon) = valotFloorMeta(floor)
@@ -77,7 +86,9 @@ class ValotViewModel(
                             pending = live?.pendingOn != null,
                         )
                     }
-                    ValotArea(area.key, area.name, area.icon, fixtures, fixtures.count { it.on })
+                    // Group on-since = earliest turn-on among its currently-on lights.
+                    val onSinceSec = fixtures.filter { it.on }.mapNotNull { onSince[it.id] }.minOrNull()
+                    ValotArea(area.key, area.name, area.icon, area.hue, onSinceSec, fixtures, fixtures.count { it.on })
                 }
                 if (areas.isEmpty()) null
                 else ValotFloor(floor, name, icon, areas, areas.count { it.isOn })
@@ -120,6 +131,32 @@ class ValotViewModel(
         viewModelScope.launch {
             lights.lights.collect { list ->
                 if (list.isNotEmpty()) _updatedAt.value = nowEpochSeconds()
+            }
+        }
+        // Light on-since: one InfluxDB sweep of the last 24 h seeds the lights that
+        // were already on at launch; after that, MQTT transitions drive it live.
+        viewModelScope.launch {
+            val lastOff = runCatching { flux.lightLastOffTimes() }.getOrDefault(emptyMap())
+            var prevOn = emptySet<Int>()
+            var seeded = false
+            lights.lights.collect { list ->
+                val nowOn = list.filter { it.displayedOn }.map { it.id }.toSet()
+                val now = nowEpochSeconds()
+                _onSince.update { m ->
+                    val nm = m.toMutableMap()
+                    (nowOn - prevOn).forEach { id ->
+                        if (id !in nm) {
+                            // First snapshot: use the swept historical turn-on time
+                            // (last off + a sample), capped at 24 h. Later toggles
+                            // happened just now.
+                            nm[id] = if (!seeded) (lastOff[id] ?: (now - 86_400)) else now
+                        }
+                    }
+                    nm.keys.retainAll(nowOn)   // drop lights that went off
+                    nm
+                }
+                prevOn = nowOn
+                seeded = true
             }
         }
     }

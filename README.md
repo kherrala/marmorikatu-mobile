@@ -57,13 +57,13 @@ the bell.
     <td align="center"><img src="docs/screenshots/10-energia-price.png" width="210"><br><sub>Energia — spot price</sub></td>
     <td align="center"><img src="docs/screenshots/11-energia-consumption.png" width="210"><br><sub>Energia — consumption</sub></td>
     <td align="center"><img src="docs/screenshots/12-bussit.png" width="210"><br><sub>Bussit — departures</sub></td>
-    <td align="center"><img src="docs/screenshots/14-tapahtumat-camera.png" width="210"><br><sub>Tapahtumat — feed &amp; camera</sub></td>
+    <td align="center"><img src="docs/screenshots/14-tapahtumat-camera.png" width="210"><br><sub>Tapahtumat — live event feed</sub></td>
   </tr>
   <tr>
     <td align="center"><img src="docs/screenshots/13-kalenteri.png" width="210"><br><sub>Kalenteri — waste &amp; family calendar</sub></td>
-    <td align="center"><img src="docs/screenshots/02-koti-presets-temps.png" width="210"><br><sub>Koti — presets &amp; room temps</sub></td>
-    <td align="center"><img src="docs/screenshots/15-voice-assistant.png" width="210"><br><sub>Voice — listening + quick commands</sub></td>
-    <td></td>
+    <td align="center"><img src="docs/screenshots/02-koti-presets-temps.png" width="210"><br><sub>Koti — room climate &amp; temperatures</sub></td>
+    <td align="center"><img src="docs/screenshots/16-lights-sheet.png" width="210"><br><sub>Valot — quick-actions sheet (scenes + all-off)</sub></td>
+    <td align="center"><img src="docs/screenshots/15-voice-assistant.png" width="210"><br><sub>Voice — animated avatar + quick commands</sub></td>
   </tr>
 </table>
 

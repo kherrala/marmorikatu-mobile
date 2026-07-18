@@ -205,8 +205,10 @@ object PlcPayloads {
         }
         val bits = reg(16)?.toInt() ?: 0
         fun bit(n: Int): Boolean = (bits shr n) and 1 == 1
-        // Register d13: bit 0 = 3 kW aux heater, bit 1 = 6 kW aux heater.
-        val auxHeaterActive = ((reg(13)?.toInt() ?: 0) and 0b11) != 0
+        // Register d13: bit 0 = 3 kW aux heater, bit 1 = 6 kW aux heater (both = 9 kW).
+        val auxReg = reg(13)?.toInt() ?: 0
+        val auxHeaterKw = (if (auxReg and 0b01 != 0) 3 else 0) + (if (auxReg and 0b10 != 0) 6 else 0)
+        val auxHeaterActive = auxHeaterKw != 0
         // Alarm bitfields d19 (pressure/flow/brine/motor) and d20 (sensor faults).
         val d19 = reg(19)?.toInt() ?: 0
         val d20 = reg(20)?.toInt() ?: 0
@@ -260,6 +262,9 @@ object PlcPayloads {
             currentA = current,
             cop = cop,
             auxHeaterActive = auxHeaterActive,
+            auxHeaterKw = auxHeaterKw,
+            // Register d25 (r19): heating-demand integral A1 in degree-minutes.
+            integralCmin = reg(25),
             alarms = hpAlarms,
             updatedAtEpochSeconds = (obj["timestamp"] as? JsonPrimitive)?.longOrNull,
         )

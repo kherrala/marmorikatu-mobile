@@ -37,14 +37,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.backhandler.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import fi.marmorikatu.app.components.MkBanner
 import fi.marmorikatu.app.platform.LockLandscapeWhileVisible
 import fi.marmorikatu.app.shell.UiSignals
@@ -54,10 +65,10 @@ import fi.marmorikatu.app.components.MkButtonSize
 import fi.marmorikatu.app.components.MkButtonVariant
 import fi.marmorikatu.app.components.MkCard
 import fi.marmorikatu.app.components.MkCardHead
+import fi.marmorikatu.app.components.MkCoolBlue
 import fi.marmorikatu.app.components.MkFreshness
 import fi.marmorikatu.app.components.MkGauge
 import fi.marmorikatu.app.components.MkVentilationDiagram
-import fi.marmorikatu.app.components.VentZone
 import fi.marmorikatu.app.components.MkLineChart
 import fi.marmorikatu.app.components.MkMetricDetailPage
 import fi.marmorikatu.app.components.MkPullToRefresh
@@ -70,6 +81,7 @@ import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkSpacing
+import kotlin.math.ln
 import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.core.model.Cooling
 import fi.marmorikatu.core.model.Floor
@@ -77,6 +89,7 @@ import fi.marmorikatu.core.model.HeatPumpStatus
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Rooms
+import fi.marmorikatu.core.model.VentAlarm
 import fi.marmorikatu.core.model.Ventilation
 import org.koin.compose.viewmodel.koinViewModel
 
@@ -91,12 +104,12 @@ private const val AIR_SENSOR = "Keittiö"
 
 /** The four focused views of the climate screen, matching the design's sub-tabs. */
 private enum class IlmastoSub(val label: String) {
-    Lampo("Lämpötilat"),
-    Ilma("Ilmanlaatu"),
-    Anturit("Anturit"),
-    Maalampo("Maalämpö"),
     Ilmanvaihto("Ilmanvaihto"),
+    Ilma("Ilmanlaatu"),
+    Lampo("Lämpötilat"),
+    Maalampo("Maalämpö"),
     Jaahdytys("Jäähdytys"),
+    Anturit("Anturit"),
 }
 
 /** Axis ticks for the selected window; shares [chartLabels] so both screens agree. */
@@ -131,7 +144,15 @@ fun IlmastoScreen(
     viewModel: IlmastoViewModel = koinViewModel(),
     forceLandscapeDetail: Boolean = false,
 ) {
-    LaunchedEffect(Unit) { viewModel.refresh() }
+    // Full refresh on entry, then a silent poll so the InfluxDB-only readings
+    // (duct temps, cooling, efficiency) keep up with the live MQTT flows.
+    LaunchedEffect(Unit) {
+        viewModel.refresh()
+        while (true) {
+            delay(10_000)
+            viewModel.poll()
+        }
+    }
 
     val colors = MkTheme.colors
     val snapshot by viewModel.snapshot.collectAsState()
@@ -140,6 +161,7 @@ fun IlmastoScreen(
     val ventilation by viewModel.ventilation.collectAsState()
     val cooling by viewModel.cooling.collectAsState()
     val heatPump by viewModel.heatPump.collectAsState()
+    val heatPumpDuty by viewModel.heatPumpDuty.collectAsState()
     val ruuvi by viewModel.ruuvi.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
     val updatedAt by viewModel.updatedAt.collectAsState()
@@ -235,17 +257,20 @@ fun IlmastoScreen(
                     ),
                     verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap),
                 ) {
-                    item(key = "lampo") {
+                    // Section order mirrors the redesign: ventilation first (with the
+                    // system diagram), then air quality, temperatures, heat pump,
+                    // cooling, and the sensor list last.
+                    item(key = "iv") { VentilationCard(snapshot, ventilation, updatedAt) }
+                item(key = "ilma") { AirQualityCard(snapshot, openFocus) }
+                item(key = "lampo") {
                     Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap)) {
                         HistoryCard(snapshot, viewModel)
                         RoomsCard(rooms, heating, openFocus)
                     }
                 }
-                item(key = "ilma") { AirQualityCard(snapshot, openFocus) }
-                item(key = "anturit") { AnturitSection(ruuvi, openFocus) }
-                item(key = "maalampo") { HeatPumpCard(heatPump, openFocus) }
-                item(key = "iv") { VentilationCard(snapshot, ventilation, openFocus) }
+                item(key = "maalampo") { HeatPumpCard(heatPump, heatPumpDuty, openFocus) }
                 item(key = "jaahdytys") { JaahdytysSection(ventilation, cooling, openFocus) }
+                item(key = "anturit") { AnturitSection(ruuvi, openFocus) }
                 if (snapshot.failed) {
                     item(key = "failed") {
                         Text(
@@ -361,34 +386,42 @@ private fun AirQualityCard(snapshot: IlmastoSnapshot, onFocus: (FocusMetric) -> 
             GaugeSlot(onClick = air?.humidity?.let { h ->
                 { onFocus(FocusMetric(MkIcons.DropHalf, "Kosteus", Fmt.int(h.value), "%", "ruuvi", "humidity", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
             }) {
-                if (humidity != null) {
-                    MkGauge(value = humidity.toFloat(), max = 100f, label = "Kosteus", unit = "%", status = "accent", size = 96.dp)
-                } else GaugePlaceholder("Kosteus")
+                MkGauge(value = humidity?.toFloat(), max = 100f, label = "Kosteus", unit = "%", status = "accent", size = 96.dp)
             }
             val co2 = air?.co2
             GaugeSlot(onClick = co2?.let { c ->
                 { onFocus(FocusMetric(MkIcons.Wind, "CO₂", Fmt.int(c.value), "ppm", "ruuvi", "co2", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
             }) {
-                if (co2 != null) {
-                    MkGauge(value = co2.value.toFloat(), max = 1500f, label = "CO₂ ppm", unit = "", status = air.statusOf(co2) ?: "accent", size = 96.dp)
-                } else GaugePlaceholder("CO₂")
+                MkGauge(value = co2?.value?.toFloat(), max = 1500f, label = "CO₂ ppm", unit = "", status = co2?.let { air?.statusOf(it) } ?: "accent", size = 96.dp)
             }
             val pm = air?.pm25
             GaugeSlot(onClick = pm?.let { p ->
                 { onFocus(FocusMetric(MkIcons.Wind, "PM2.5", Fmt.oneDecimal(p.value), "µg/m³", "ruuvi", "pm2_5", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
             }) {
-                if (pm != null) {
-                    MkGauge(value = pm.value.toFloat(), max = 35f, label = "PM2.5", unit = "", status = air.statusOf(pm) ?: "ok", size = 96.dp)
-                } else GaugePlaceholder("PM2.5")
+                MkGauge(value = pm?.value?.toFloat(), max = 35f, label = "PM2.5", unit = "", status = pm?.let { air?.statusOf(it) } ?: "ok", size = 96.dp)
             }
         }
         val voc = air?.voc
-        val temp = air?.temperature
-        if (voc != null || temp != null) {
+        // Dew point, derived from the sensor's own temperature + humidity (design
+        // replaces the plain temperature tile with Kastepiste).
+        val dewC = run {
+            val temp = air?.temperature?.value
+            val rh = air?.humidity?.value
+            if (temp != null && rh != null) dewPointC(temp, rh) else null
+        }
+        if (voc != null || dewC != null) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
                 horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
             ) {
+                // Derived value → no history series to open on tap.
+                MkStatTile(
+                    label = "Kastepiste",
+                    value = dewC?.let { Fmt.oneDecimal(it) } ?: NO_DATA,
+                    unit = dewC?.let { "°C" },
+                    icon = MkIcons.DropHalf,
+                    modifier = Modifier.weight(1f),
+                )
                 MkStatTile(
                     label = "VOC-indeksi",
                     value = voc?.let { Fmt.int(it.value) } ?: NO_DATA,
@@ -398,19 +431,21 @@ private fun AirQualityCard(snapshot: IlmastoSnapshot, onFocus: (FocusMetric) -> 
                     },
                     modifier = Modifier.weight(1f),
                 )
-                MkStatTile(
-                    label = "Lämpötila",
-                    value = temp?.let { Fmt.oneDecimal(it.value) } ?: NO_DATA,
-                    unit = temp?.let { "°C" },
-                    icon = MkIcons.Thermometer,
-                    onClick = temp?.let {
-                        { onFocus(FocusMetric(MkIcons.Thermometer, "Lämpötila", Fmt.oneDecimal(it.value), "°C", "ruuvi", "temperature", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
-                    },
-                    modifier = Modifier.weight(1f),
-                )
             }
         }
     }
+}
+
+/**
+ * Dew point (°C) from temperature and relative humidity via the Magnus-Tetens
+ * approximation — matches what the ventilation unit reports for its own air.
+ */
+private fun dewPointC(tempC: Double, rhPct: Double): Double? {
+    if (rhPct <= 0.0) return null
+    val a = 17.62
+    val b = 243.12
+    val gamma = ln(rhPct / 100.0) + a * tempC / (b + tempC)
+    return b * gamma / (a - gamma)
 }
 
 // ── Maalämpö: live heat-pump register readouts ──────────────────────────────
@@ -425,7 +460,7 @@ private data class HpTile(
 )
 
 @Composable
-private fun HeatPumpCard(hp: HeatPumpStatus, onFocus: (FocusMetric) -> Unit) {
+private fun HeatPumpCard(hp: HeatPumpStatus, dutyPct: Double?, onFocus: (FocusMetric) -> Unit) {
     val colors = MkTheme.colors
     MkCard {
         Row(
@@ -460,17 +495,16 @@ private fun HeatPumpCard(hp: HeatPumpStatus, onFocus: (FocusMetric) -> Unit) {
             return@MkCard
         }
         fun c(v: Double?) = v?.let { "${Fmt.oneDecimal(it)}" }
-        // Two columns of readouts, drawn from the ThermIQ register feed. COP leads
-        // as the headline efficiency metric (design's ph-gauge tile). Tapping a
-        // temperature opens its 24 h chart (thermia measurement fields).
+        // Two columns of readouts from the ThermIQ register feed, in the design's
+        // order: flow/return water, brine out, COP, hot water, then the 24 h
+        // compressor duty. Tapping a temperature opens its chart (thermia fields).
         val tiles = listOf(
-            HpTile("COP", hp.cop?.let { Fmt.oneDecimal(it) }, null, MkIcons.Leaf, null),
             HpTile("Menovesi", c(hp.supplyC), "°C", MkIcons.ThermometerHot, "supply_temp"),
             HpTile("Paluuvesi", c(hp.returnC), "°C", MkIcons.ThermometerCold, "return_temp"),
-            HpTile("Käyttövesi", c(hp.hotWaterC), "°C", MkIcons.DropFill, "hotwater_temp"),
             HpTile("Liuos ulos", c(hp.brineOutC), "°C", MkIcons.Snowflake, "brine_out_temp"),
-            HpTile("Liuos sisään", c(hp.brineInC), "°C", MkIcons.Drop, "brine_in_temp"),
-            HpTile("Ulkona", c(hp.outdoorC), "°C", MkIcons.ThermometerCold, "outdoor_temp"),
+            HpTile("COP", hp.cop?.let { Fmt.oneDecimal(it) }, null, MkIcons.Gauge, null),
+            HpTile("Käyttövesi", c(hp.hotWaterC), "°C", MkIcons.DropFill, "hotwater_temp"),
+            HpTile("Käyntiaika", dutyPct?.let { Fmt.int(it) }, "%", MkIcons.Clock, null),
         )
         tiles.chunked(2).forEach { rowTiles ->
             Row(
@@ -512,9 +546,48 @@ private fun HeatPumpCard(hp: HeatPumpStatus, onFocus: (FocusMetric) -> Unit) {
 private fun VentilationCard(
     snapshot: IlmastoSnapshot,
     ventilation: Ventilation,
-    onFocus: (FocusMetric) -> Unit,
+    updatedAt: Long?,
 ) {
-    val colors = MkTheme.colors
+    val c = MkTheme.colors
+    fun vraw(vararg keys: String): Double? = keys.firstNotNullOfOrNull { ventilation.raw[it.lowercase()] }
+    // Casa IV_tila is 0-indexed: 0=Hiljainen, 1=Normaali, 2=Teho, 3=Takka.
+    val mode = vraw("operatingmode")?.toInt()
+    val modeIndex = (mode ?: 1).coerceIn(0, IV_MODES.lastIndex)
+    val bypassOpen = (vraw("hxbypassopen", "ohitus_auki") ?: 0.0) != 0.0
+    val airflow = vraw("supplyfanspeed", "exhaustfanspeed", "tulopuhallin_nopeus")?.takeIf { it > 0 }
+        ?: IV_DEFAULT_AIRFLOW.getOrNull(modeIndex)?.toDouble()
+    val lto = snapshot.hvac?.recoveryEfficiencyPct ?: vraw("hreefficiency", "lto_hyotysuhde")?.takeIf { it > 0 }
+    val hv = snapshot.hvac
+
+    // The supply air's journey: outside intake → LTO recovery → heating coil →
+    // cooling coil → delivered; the extract air on the way back out.
+    // Prefer the live MQTT ventilation feed (updates continuously) over the
+    // on-demand InfluxDB snapshot; Tuloilmakanava (delivered) is InfluxDB-only.
+    val outdoor = ventilation.outdoorC ?: hv?.outdoorC          // ULKOILMA (intake)
+    val afterLto = ventilation.supplyPreHeatC ?: hv?.supplyPreHeatC
+    val afterHeat = ventilation.supplyC ?: hv?.supplyPostHeatC
+    val delivered = hv?.supplyDuctC ?: afterHeat                // TULOILMA (delivered)
+    val extract = ventilation.extractC ?: hv?.extractC          // POISTOILMA
+    val exhaust = ventilation.exhaustC ?: hv?.exhaustC          // JÄTEILMA
+    fun delta(a: Double?, b: Double?) = if (a != null && b != null) a - b else null
+    val ltoDelta = delta(afterLto, outdoor)
+    val heatDelta = delta(afterHeat, afterLto)
+    val coolDelta = delta(delivered, afterHeat)
+
+    var selected by remember { mutableStateOf("lto") }
+    fun tv(v: Double?) = v?.let { "${Fmt.oneDecimal(it)}°".replace('.', ',') } ?: NO_DATA
+    val explain = when (selected) {
+        "ulko" -> "Raitisilma otetaan sisään ulkosäleiköstä · ${tv(outdoor)}."
+        "lto" -> "LTO-kenno siirtää poistoilman lämpöä tuloilmaan ${signedDelta(ltoDelta)} (${tv(outdoor)} → ${tv(afterLto)})" +
+            (lto?.let { " · hyötysuhde ${Fmt.int(it)} %." } ?: ".")
+        "coilH" -> "Lämmityspatteri (maapiiri) lepotilassa · ${signedDelta(heatDelta)} (${tv(afterLto)} → ${tv(afterHeat)})."
+        "coilC" -> "Jäähdytyspatteri viilentää tuloilman maakylmällä ${signedDelta(coolDelta)} (${tv(afterHeat)} → ${tv(delivered)})."
+        "tulo" -> "Huoneisiin puhallettava ilma · ${tv(delivered)}, viilennetty maakylmällä."
+        "poisto" -> "Huoneista poistettava ilma · ${tv(extract)} (keittiö, kylpyhuoneet, sauna)."
+        "jate" -> "Ulos puhallettava ilma talteenoton jälkeen · ${tv(exhaust)}."
+        else -> ""
+    }
+
     MkCard {
         MkCardHead("Ilmanvaihto")
         if (ventilation.freezingDanger) {
@@ -526,47 +599,194 @@ private fun VentilationCard(
                 modifier = Modifier.padding(bottom = MkSpacing.x3),
             )
         }
-        val lto = snapshot.hvac?.recoveryEfficiencyPct
-        val ltoClick = lto?.let {
-            { onFocus(FocusMetric(MkIcons.FanFill, "Lämmöntalteenotto", Fmt.int(it), "%", "hvac_lto", "lto")) }
-        }
-        // The MVHR system diagram (design): the four duct temperatures around the
-        // heat-recovery core, with the live LTO efficiency. Tapping a duct corner
-        // opens that temperature's history chart.
-        val hv = snapshot.hvac
-        MkVentilationDiagram(
-            outdoorC = hv?.outdoorC ?: ventilation.outdoorC,
-            exhaustC = hv?.exhaustC ?: ventilation.exhaustC,
-            extractC = hv?.extractC ?: ventilation.extractC,
-            supplyC = hv?.supplyPostHeatC ?: ventilation.supplyC,
-            preHeatC = hv?.supplyPreHeatC ?: ventilation.supplyPreHeatC,
-            ltoPct = lto,
-            modifier = Modifier.padding(vertical = MkSpacing.x2),
-            onZoneClick = { zone ->
-                val duct = when (zone) {
-                    VentZone.Outdoor -> Triple("Ulkoilma", hv?.outdoorC ?: ventilation.outdoorC, "Ulkolampotila")
-                    VentZone.Exhaust -> Triple("Jäteilma", hv?.exhaustC ?: ventilation.exhaustC, "Jateilma")
-                    VentZone.Extract -> Triple("Poistoilma", hv?.extractC ?: ventilation.extractC, "Poistoilma")
-                    VentZone.Supply -> Triple("Tuloilma", hv?.supplyPostHeatC ?: ventilation.supplyC, "Tuloilma_jalkeen_lammityksen")
-                }
-                val (label, celsius, field) = duct
-                // A corner with no live reading has nothing to chart — ignore the tap.
-                celsius?.let {
-                    onFocus(FocusMetric(MkIcons.Wind, label, Fmt.oneDecimal(it), "°C", "hvac", field))
-                }
-            },
-        )
+
+        // System schematic, with a "juuri nyt" freshness marker over its corner.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(if (ltoClick != null) Modifier.clickable(onClick = ltoClick) else Modifier)
-                .padding(bottom = MkSpacing.x2),
-            contentAlignment = Alignment.Center,
+                .clip(RoundedCornerShape(MkRadius.md))
+                .background(c.surfaceInset)
+                .padding(8.dp),
         ) {
-            if (lto != null) {
-                MkGauge(value = lto.toFloat(), max = 100f, label = "Lämmöntalteenotto", unit = "%", status = ltoStatus(lto))
-            } else GaugePlaceholder("Lämmöntalteenotto")
+            MkVentilationDiagram(selected = selected)
+            IvFreshness(updatedAt, modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 6.dp))
         }
+
+        // The four air streams — tap to explain that stage.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+        ) {
+            IvTempCard("ULKOILMA", tv(outdoor), "sisään säleiköstä", c.accent, selected == "ulko", { selected = "ulko" }, Modifier.weight(1f))
+            IvTempCard("TULOILMA", tv(delivered), "huoneisiin · viilennetty", c.accent, selected == "tulo", { selected = "tulo" }, Modifier.weight(1f))
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x2),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+        ) {
+            IvTempCard("POISTOILMA", tv(extract), "huoneista kiertoon", c.warm, selected == "poisto", { selected = "poisto" }, Modifier.weight(1f))
+            IvTempCard("JÄTEILMA", tv(exhaust), "ulos · lämpö talteen", c.accent, selected == "jate", { selected = "jate" }, Modifier.weight(1f))
+        }
+
+        // Each conditioning stage's contribution to the supply temperature.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x2),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+        ) {
+            IvDeltaChip("LTO", c.accent, signedDelta(ltoDelta), c.warm, lto?.let { "η ${Fmt.int(it)} %" } ?: "talteenotto", selected == "lto", { selected = "lto" }, Modifier.weight(1f))
+            IvDeltaChip("PATTERI", c.warm, signedDelta(heatDelta), c.warm, "lämmitys", selected == "coilH", { selected = "coilH" }, Modifier.weight(1f))
+            IvDeltaChip("JÄÄHDYTYS", MkCoolBlue, signedDelta(coolDelta), MkCoolBlue, "maakylmä", selected == "coilC", { selected = "coilC" }, Modifier.weight(1f))
+        }
+
+        // Plain-language explanation of the selected stage.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3, start = 4.dp, end = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Icon(MkIcons.Info, null, tint = c.accent, modifier = Modifier.size(13.dp).padding(top = 2.dp))
+            Text(explain, style = MkTheme.type.body.copy(fontSize = 12.5.sp, lineHeight = 18.sp), color = c.inkMid)
+        }
+
+        // Operating mode (read-only — no write path to the unit).
+        Row(modifier = Modifier.padding(top = MkSpacing.x3)) { DisplayPills(IV_MODES, modeIndex) }
+
+        // LTO efficiency + airflow gauges (kept from the previous design).
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+        ) {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                MkGauge(value = lto?.toFloat(), max = 100f, label = "LTO hyötysuhde", unit = "%", status = lto?.let { ltoStatus(it) } ?: "accent")
+            }
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                MkGauge(value = airflow?.toFloat(), max = 100f, label = "Ilmavirta", unit = "%", status = "accent")
+            }
+        }
+
+        // Bypass · freeze risk · filter.
+        val freeze = if (ventilation.freezingDanger) "Korkea" else freezeRiskLabel(outdoor, exhaust, vraw("dewpoint", "kastepiste"))
+        val filter = if (VentAlarm.FilterGuard in ventilation.alarms) "Vaihda" else "OK"
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+        ) {
+            MkStatTile(label = "Kesäohitus", value = if (bypassOpen) "Auki" else "Kiinni", icon = MkIcons.FlowArrow, modifier = Modifier.weight(1f))
+            MkStatTile(label = "Jäätymisriski", value = freeze, icon = MkIcons.Snowflake, modifier = Modifier.weight(1f))
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
+            horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+        ) {
+            MkStatTile(label = "Suodatin", value = filter, icon = MkIcons.Funnel, modifier = Modifier.weight(1f))
+            // Extract-side relative humidity from the Belimo 22DTH duct sensor.
+            val humidity = ventilation.relativeHumidity ?: hv?.humidityPct
+            MkStatTile(label = "Kosteus", value = humidity?.let { Fmt.int(it) } ?: NO_DATA, unit = if (humidity != null) "%" else null, icon = MkIcons.DropHalf, modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+/** One duct-temperature card in the ventilation section; a tap selects that stage. */
+@Composable
+private fun IvTempCard(label: String, value: String, sub: String, valueColor: Color, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = MkTheme.colors
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(MkRadius.md))
+            .background(c.surfaceInset)
+            .border(1.dp, if (selected) c.accent else c.borderSubtle, RoundedCornerShape(MkRadius.md))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(label, style = MkTheme.type.readout(10).copy(letterSpacing = 0.08.em), color = c.inkMid, maxLines = 1)
+        Text(value, style = MkTheme.type.readout(23, FontWeight.SemiBold), color = valueColor, maxLines = 1)
+        Text(sub, style = MkTheme.type.caption, color = c.inkLo, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** One conditioning-stage delta chip; a tap selects that stage. */
+@Composable
+private fun IvDeltaChip(label: String, marker: Color, value: String, valueColor: Color, sub: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = MkTheme.colors
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(MkRadius.md))
+            .background(c.surfaceInset)
+            .border(1.dp, if (selected) c.accent else c.borderSubtle, RoundedCornerShape(MkRadius.md))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(7.dp).clip(RoundedCornerShape(2.dp)).background(marker))
+            Text(label, style = MkTheme.type.readout(9, FontWeight.Normal).copy(letterSpacing = 0.06.em), color = c.inkMid, maxLines = 1)
+        }
+        Text(value, style = MkTheme.type.readout(16, FontWeight.SemiBold), color = valueColor, maxLines = 1)
+        Text(sub, style = MkTheme.type.caption, color = c.inkLo, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Compact "● juuri nyt" freshness marker for the diagram corner (design). */
+@Composable
+private fun IvFreshness(updatedAt: Long?, modifier: Modifier = Modifier) {
+    val c = MkTheme.colors
+    var now by remember { mutableStateOf(nowEpochSec()) }
+    LaunchedEffect(updatedAt) { while (true) { now = nowEpochSec(); delay(5000) } }
+    // Brief pulse each time the data refreshes — the "new data" flash, as on Koti.
+    val flash = remember { Animatable(1f) }
+    LaunchedEffect(updatedAt) {
+        if (updatedAt != null) {
+            flash.snapTo(2.4f)
+            flash.animateTo(1f, tween(700))
+        }
+    }
+    val label = updatedAt?.let {
+        val age = (now - it).coerceAtLeast(0)
+        when {
+            age < 15 -> "juuri nyt"
+            age < 60 -> "$age s sitten"
+            age < 3600 -> "${age / 60} min sitten"
+            else -> "${age / 3600} h sitten"
+        }
+    } ?: NO_DATA
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(6.dp).scale(flash.value).clip(CircleShape).background(c.accent))
+        Text(label, style = MkTheme.type.readout(10), color = c.inkMid, maxLines = 1)
+    }
+}
+
+@OptIn(ExperimentalTime::class)
+private fun nowEpochSec(): Long = Clock.System.now().epochSeconds
+
+/** "+4,1°" / "−7,6°" — a signed temperature delta with the Finnish decimal comma. */
+private fun signedDelta(v: Double?): String {
+    if (v == null) return NO_DATA
+    val mag = Fmt.oneDecimal(kotlin.math.abs(v)).replace('.', ',')
+    return (if (v >= 0) "+" else "−") + mag + "°"
+}
+
+/**
+ * LTO freeze-risk label from the Grafana `hvac_dashboard` formula: dew-point
+ * margin gated on cold exhaust, plus outdoor and exhaust temperature scores.
+ */
+private fun freezeRiskLabel(outdoor: Double?, exhaust: Double?, dewPoint: Double?): String {
+    if (outdoor == null || exhaust == null || dewPoint == null) return NO_DATA
+    fun c01(x: Double) = x.coerceIn(0.0, 1.0)
+    val margin = exhaust - dewPoint
+    val coldFactor = c01((5.0 - exhaust) / 5.0)
+    val dewScore = c01((5.0 - margin) / 5.0) * coldFactor * 60.0
+    val tempScore = c01((-5.0 - outdoor) / 20.0) * 25.0
+    val exhScore = c01((5.0 - exhaust) / 5.0) * 15.0
+    val total = dewScore + tempScore + exhScore
+    val prob = when {
+        exhaust < 0.0 -> 60.0
+        margin < 0.0 && exhaust < 5.0 -> total.coerceIn(80.0, 95.0)
+        else -> total.coerceAtMost(95.0)
+    }
+    return when {
+        prob >= 70.0 -> "Korkea"
+        prob >= 30.0 -> "Kohonnut"
+        else -> "Matala"
     }
 }
 
@@ -627,29 +847,45 @@ private fun StatGrid(tiles: List<ClimTile>, onFocus: (FocusMetric) -> Unit) {
     }
 }
 
-/** Read-only mode selector: highlights the live state, not tappable (no write path). */
+/** Ventilation / cooling operating modes. First = quietest, last = fireplace boost. */
+private val IV_MODES = listOf("Hiljainen", "Normaali", "Teho", "Takka")
+
+/**
+ * Casa W130-M factory supply-fan speeds per mode (%), used for Ilmavirta when the
+ * unit reports no live fan-speed telemetry (`SupplyFanSpeed` stays 0). From the
+ * unit manual: Poissa=speed 1 (40 %), Kotona=speed 3 (75 %), Tehostus=speed 5
+ * (100 %); Takka approximates the fireplace boost.
+ */
+private val IV_DEFAULT_AIRFLOW = listOf(40, 75, 100, 85)
+
+/**
+ * Read-only mode selector: individual rounded pills, the live one a solid accent
+ * fill (design). Not tappable — there is no write path to the unit.
+ */
 @Composable
 private fun DisplayPills(options: List<String>, activeIndex: Int) {
     val c = MkTheme.colors
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(MkRadius.md))
-            .background(c.surfaceInset)
-            .padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         options.forEachIndexed { i, opt ->
             val on = i == activeIndex
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(MkRadius.sm))
-                    .background(if (on) c.surfaceCard else androidx.compose.ui.graphics.Color.Transparent)
-                    .padding(vertical = 7.dp),
+                    .clip(RoundedCornerShape(MkRadius.round))
+                    .background(if (on) c.accent else c.surfaceCard)
+                    .border(1.dp, if (on) c.accent else c.borderSubtle, RoundedCornerShape(MkRadius.round))
+                    .padding(vertical = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(opt, style = MkTheme.type.label, color = if (on) c.inkHi else c.inkLo, maxLines = 1)
+                Text(
+                    opt,
+                    style = MkTheme.type.label.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (on) c.inkOnAccent else c.inkMid,
+                    maxLines = 1,
+                )
             }
         }
     }
@@ -677,7 +913,7 @@ private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling, onFocus
                     // paluu = the warmer return coil (Jaahpatteri_1). Venttiili = actuator drive.
                     ClimTile("Jäähd. meno", cooling.coolantSupplyC?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.Snowflake, field = "Jaahpatteri_2"),
                     ClimTile("Jäähd. paluu", cooling.coolantReturnC?.let { Fmt.oneDecimal(it) }, "°C", MkIcons.ThermometerCold, field = "Jaahpatteri_1"),
-                    ClimTile("Venttiili", raw("damperposition")?.let { Fmt.int(it) }, "%", MkIcons.Drop, field = "Toimilaite_ohjaus"),
+                    ClimTile("Venttiili", raw("damperposition")?.let { Fmt.int(it) }, "%", MkIcons.Faders, field = "Toimilaite_ohjaus"),
                     ClimTile("Kiertopumppu", if (active) "Päällä" else "Pois", null, MkIcons.FanFill),
                 ),
                 onFocus,
@@ -717,7 +953,10 @@ private fun JaahdytysSection(ventilation: Ventilation, cooling: Cooling, onFocus
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Kosteusohjaus", style = MkTheme.type.heading, color = c.inkHi)
+                Row(horizontalArrangement = Arrangement.spacedBy(MkSpacing.x2), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Kosteusohjaus", style = MkTheme.type.heading, color = c.inkHi)
+                    MkTag(text = "ON", status = MkTagStatus.Ok)
+                }
                 Text("Max 60 %", style = MkTheme.type.readout(11), color = c.inkLo)
             }
             StatGrid(

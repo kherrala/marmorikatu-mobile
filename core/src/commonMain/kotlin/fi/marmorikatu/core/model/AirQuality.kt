@@ -63,6 +63,10 @@ data class HeatPumpStatus(
     val cop: Double? = null,
     /** The electric backup (aux) heater is running — register d13, bits 0/1 (3/6 kW). */
     val auxHeaterActive: Boolean = false,
+    /** Electric backup (aux) heater step in kW: 0 off, 3 / 6 / 9 from register d13. */
+    val auxHeaterKw: Int = 0,
+    /** Heating-demand integral A1 (degree-minutes, C×min) — register d25; negative under demand. */
+    val integralCmin: Double? = null,
     /** Active ThermIQ fault codes, decoded from the d19/d20 alarm bitfields. */
     val alarms: Set<HeatPumpAlarm> = emptySet(),
     val updatedAtEpochSeconds: Long? = null,
@@ -106,4 +110,7 @@ data class HvacSummary(
     val exhaustC: Double? = null,
     val supplyPreHeatC: Double? = null,
     val supplyPostHeatC: Double? = null,
+    /** Supply-duct downstream temp (`Tuloilmakanava`) — the air actually delivered
+     *  to the rooms, after the cooling battery; the true "Tuloilma". */
+    val supplyDuctC: Double? = null,
 )

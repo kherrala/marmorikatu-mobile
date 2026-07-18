@@ -28,7 +28,7 @@ val kotiModule = module {
 }
 
 val valotModule = module {
-    viewModel { ValotViewModel(lights = get()) }
+    viewModel { ValotViewModel(lights = get(), flux = get()) }
 }
 
 val ilmastoModule = module {
