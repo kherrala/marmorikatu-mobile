@@ -155,7 +155,16 @@ class DefaultLightsRepository(
         try {
             if (mqtt.connectionState.value is MqttConnectionState.Connected) {
                 mqtt.publish(MqttTopics.lightSet(id), MqttTopics.lightSetPayload(on), qos = 1)
+                // Provenance breadcrumb so the lights-optimizer knows this was a
+                // mobile command, not a wall press. Best-effort — never let a
+                // breadcrumb failure cancel or fail the actual /set command.
+                try {
+                    mqtt.publish(MqttTopics.lightCommand(id), MqttTopics.lightCommandPayload(on), qos = 1)
+                } catch (e: Exception) {
+                    log.w(e) { "light $id provenance breadcrumb failed (ignored)" }
+                }
             } else {
+                // MCP path emits its own breadcrumb server-side (src="mcp").
                 mcp.setLight(id.toString(), on)
             }
         } catch (e: CancellationException) {

@@ -57,4 +57,15 @@ object MqttTopics {
     fun lightSet(index: Int): String = "marmorikatu/light/$index/set"
 
     fun lightSetPayload(on: Boolean): String = if (on) "true" else "false"
+
+    /**
+     * Provenance breadcrumb published alongside (not instead of) [lightSet], so
+     * the home-automation lights-optimizer can tell a mobile-app command apart
+     * from a physical wall press and never fights it. The PLC does NOT consume
+     * this topic — it only reads `/set` (which stays byte-identical). Recorded
+     * by `plc_mqtt_subscriber` as the `light_command` InfluxDB measurement.
+     */
+    fun lightCommand(index: Int): String = "marmorikatu/light/$index/command"
+
+    fun lightCommandPayload(on: Boolean): String = """{"on":$on,"src":"mobile"}"""
 }
