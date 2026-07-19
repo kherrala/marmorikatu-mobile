@@ -305,7 +305,15 @@ class ShellViewModel(
         _voice.value = VoiceState.Thinking
         _voiceHint.value = null
         _voiceSlow.value = 0
-        history += ChatMessage.user(userText)
+
+        // The request that leaves the device: the committed history plus this
+        // turn's user message. We DON'T mutate `history` yet — only a completed
+        // exchange (user + assistant together) is committed, in the finally. A
+        // lone user message must never land in history: if the stream then dies
+        // before its answer, the next turn would send two user messages in a row,
+        // which the LLM API merges — making it re-answer the earlier request.
+        val turnUser = ChatMessage.user(userText)
+        val outgoing = history + turnUser
 
         // Escalate the "still working" tier as the wait drags on; cancelled the
         // instant the first token arrives (in sentence()) and in the finally.
@@ -319,6 +327,10 @@ class ShellViewModel(
         val nativeTts = platformTts.isAvailable()
         var lastSentence: String? = null
         var spokeAny = false
+        // Everything the assistant actually said this turn — the fallback answer
+        // to commit when the stream ends before its terminal Done event.
+        val spoken = StringBuilder()
+        var doneResponse: String? = null
 
         // Each response sentence is pushed to the top of the stream as its own
         // item (the previous ones slide down and fade) and spoken in turn —
@@ -328,6 +340,8 @@ class ShellViewModel(
             if (t.isEmpty() || t == lastSentence) return
             lastSentence = t
             spokeAny = true
+            if (spoken.isNotEmpty()) spoken.append(' ')
+            spoken.append(t)
             slowJob.cancel()          // an answer landed — drop any "still working" tier
             _voiceSlow.value = 0
             _voice.value = VoiceState.Speaking
@@ -339,7 +353,7 @@ class ShellViewModel(
         }
 
         try {
-            assistantRepo.chat(history.toList()).collect { event ->
+            assistantRepo.chat(outgoing).collect { event ->
                 when (event) {
                     is ChatEvent.ToolUse -> _voiceHint.value = mcpToolLabel(event.tool)
                     is ChatEvent.Text -> sentence(event.text)
@@ -348,7 +362,7 @@ class ShellViewModel(
                     is ChatEvent.Audio -> event.text?.let { sentence(it) }
                     is ChatEvent.Screenshot -> Unit
                     is ChatEvent.Done -> {
-                        history += ChatMessage.assistant(event.response)
+                        doneResponse = event.response
                         if (!spokeAny && event.response.isNotBlank()) sentence(event.response)
                     }
                 }
@@ -362,6 +376,16 @@ class ShellViewModel(
         } finally {
             slowJob.cancel()
             _voiceSlow.value = 0
+            // Commit a complete exchange only. Prefer Done's full text; fall back
+            // to what we actually spoke if the stream died before Done. Committing
+            // nothing (a turn that said nothing) keeps history alternating and
+            // clean, so a failed turn can't poison the ones after it.
+            val answer = doneResponse?.takeIf { it.isNotBlank() }
+                ?: spoken.toString().takeIf { it.isNotBlank() }
+            if (answer != null) {
+                history += turnUser
+                history += ChatMessage.assistant(answer)
+            }
         }
     }
 
