@@ -65,6 +65,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -271,6 +277,7 @@ private val voiceQuickCommands = listOf(
 private fun BoxScope.VoiceOverlay(
     voice: VoiceState,
     voiceHint: String?,
+    voiceSlow: Int,
     gender: AssistantGender,
     stream: List<VoiceStreamItem>,
     kiosk: Boolean,
@@ -281,16 +288,37 @@ private fun BoxScope.VoiceOverlay(
     if (voice == VoiceState.Idle) return
     val colors = MkTheme.colors
 
-    // Swipe down (on the avatar area) to dismiss — the content below scrolls, so
-    // the gesture lives on the non-scrolling avatar rather than the whole sheet.
+    // Swipe down anywhere to dismiss. Two paths so it works over the whole sheet,
+    // not just the avatar: a raw vertical-drag detector catches the non-scrolling
+    // areas (avatar, header, bottom band, padding), and a nested-scroll connection
+    // catches an over-pull once the conversation list is already scrolled to top.
+    val latestDismiss by rememberUpdatedState(onDismiss)
     val swipeDownToDismiss = Modifier.pointerInput(Unit) {
         var drag = 0f
         detectVerticalDragGestures(
             onDragStart = { drag = 0f },
             onDragCancel = { drag = 0f },
             onVerticalDrag = { _, dy -> drag += dy },
-            onDragEnd = { if (drag > 120f) onDismiss() },
+            onDragEnd = { if (drag > 120f) latestDismiss() },
         )
+    }
+    val dismissOnOverPull = remember {
+        object : NestedScrollConnection {
+            var pulled = 0f
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (available.y < 0f) pulled = 0f // any upward scroll cancels the pull
+                return Offset.Zero
+            }
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                // available.y > 0 == the list is at the top and the drag has nowhere
+                // left to go: accumulate it as a downward pull-to-dismiss.
+                if (available.y > 0f) {
+                    pulled += available.y
+                    if (pulled > 200f) { pulled = 0f; latestDismiss() }
+                }
+                return Offset.Zero
+            }
+        }
     }
 
     Box(
@@ -298,80 +326,93 @@ private fun BoxScope.VoiceOverlay(
             .matchParentSize()
             .background(colors.appBg)
             .statusBarsPadding()
-            .navigationBarsPadding(),
+            .navigationBarsPadding()
+            .nestedScroll(dismissOnOverPull)
+            .then(swipeDownToDismiss),
     ) {
         val glow = Brush.radialGradient(listOf(colors.accent.copy(alpha = 0.14f), Color.Transparent))
-        if (kiosk) {
-            // Kiosk: two columns — avatar on the left, conversation on the right.
-            Row(Modifier.fillMaxSize()) {
-                Box(
-                    modifier = Modifier.fillMaxWidth(0.42f).fillMaxHeight().background(glow)
-                        .then(swipeDownToDismiss),
-                    contentAlignment = Alignment.BottomCenter,
-                ) {
-                    MkAssistantAvatar(
-                        state = voice,
-                        gender = gender,
-                        modifier = Modifier.fillMaxWidth(0.9f).widthIn(max = 520.dp).aspectRatio(320f / 310f),
-                    )
-                    VoiceStatePill(voice, Modifier.align(Alignment.TopStart).padding(22.dp))
-                }
-                Column(
-                    modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 28.dp, vertical = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
-                ) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        MkIconButton(icon = MkIcons.X, label = "Sulje", onClick = onDismiss, round = true)
-                    }
-                    VoiceOverlayContent(
-                        voice, voiceHint, stream, kiosk = true, onRunCommand,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                    BottomButton(voice, onMic)
-                }
-            }
-        } else {
-            // Phone: a vertical stack — avatar high, content, control at the bottom.
-            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    VoiceStatePill(voice)
-                    MkIconButton(icon = MkIcons.X, label = "Sulje", onClick = onDismiss, round = true)
-                }
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .widthIn(max = 460.dp)
-                        .fillMaxWidth()
-                        .padding(horizontal = MkSpacing.pagePad),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Top,
-                ) {
-                    Spacer(Modifier.height(MkSpacing.x2))
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            // Only split into two columns when there's genuinely wider-than-tall
+            // room for it; a portrait kiosk stacks vertically like the phone (with
+            // roomier sizing) instead of wasting half the width on the avatar.
+            val twoColumn = kiosk && maxWidth > maxHeight
+            if (twoColumn) {
+                Row(Modifier.fillMaxSize()) {
                     Box(
-                        Modifier.fillMaxWidth().background(glow).then(swipeDownToDismiss),
-                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxWidth(0.42f).fillMaxHeight().background(glow),
+                        contentAlignment = Alignment.BottomCenter,
                     ) {
                         MkAssistantAvatar(
                             state = voice,
                             gender = gender,
-                            modifier = Modifier.fillMaxWidth(0.72f).aspectRatio(320f / 310f),
+                            slow = voiceSlow,
+                            modifier = Modifier.fillMaxWidth(0.9f).widthIn(max = 520.dp).aspectRatio(320f / 310f),
+                        )
+                        VoiceStatePill(voice, Modifier.align(Alignment.TopStart).padding(22.dp))
+                    }
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 28.dp, vertical = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
+                    ) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            MkIconButton(icon = MkIcons.X, label = "Sulje", onClick = onDismiss, round = true)
+                        }
+                        VoiceOverlayContent(
+                            voice, voiceHint, voiceSlow, stream, big = true, centered = false, onRunCommand,
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                        )
+                        BottomButton(voice, onMic)
+                    }
+                }
+            } else {
+                // Vertical stack (phone, and portrait kiosk): avatar high, content,
+                // control at the bottom. The kiosk gets larger caps and text.
+                val avatarFrac = if (kiosk) 0.5f else 0.72f
+                val avatarMax = if (kiosk) 380.dp else Dp.Unspecified
+                val contentMax = if (kiosk) 720.dp else 460.dp
+                Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        VoiceStatePill(voice)
+                        MkIconButton(icon = MkIcons.X, label = "Sulje", onClick = onDismiss, round = true)
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .widthIn(max = contentMax)
+                            .fillMaxWidth()
+                            .padding(horizontal = MkSpacing.pagePad),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Top,
+                    ) {
+                        Spacer(Modifier.height(MkSpacing.x2))
+                        Box(
+                            Modifier.fillMaxWidth().background(glow),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            MkAssistantAvatar(
+                                state = voice,
+                                gender = gender,
+                                slow = voiceSlow,
+                                modifier = Modifier.fillMaxWidth(avatarFrac).widthIn(max = avatarMax)
+                                    .aspectRatio(320f / 310f),
+                            )
+                        }
+                        Spacer(Modifier.height(MkSpacing.x3))
+                        VoiceOverlayContent(
+                            voice, voiceHint, voiceSlow, stream, big = kiosk, centered = true, onRunCommand,
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
                         )
                     }
-                    Spacer(Modifier.height(MkSpacing.x3))
-                    VoiceOverlayContent(
-                        voice, voiceHint, stream, kiosk = false, onRunCommand,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                }
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = MkSpacing.x4, top = MkSpacing.x2),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    BottomButton(voice, onMic)
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = MkSpacing.x4, top = MkSpacing.x2),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BottomButton(voice, onMic)
+                    }
                 }
             }
         }
@@ -431,15 +472,17 @@ private fun BottomButton(voice: VoiceState, onMic: () -> Unit) {
 private fun VoiceOverlayContent(
     voice: VoiceState,
     voiceHint: String?,
+    voiceSlow: Int,
     stream: List<VoiceStreamItem>,
-    kiosk: Boolean,
+    big: Boolean,
+    centered: Boolean,
     onRunCommand: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MkTheme.colors
     val type = MkTheme.type
-    val hAlign = if (kiosk) Alignment.Start else Alignment.CenterHorizontally
-    val tAlign = if (kiosk) TextAlign.Start else TextAlign.Center
+    val hAlign = if (centered) Alignment.CenterHorizontally else Alignment.Start
+    val tAlign = if (centered) TextAlign.Center else TextAlign.Start
     when (voice) {
         VoiceState.Listening -> Column(
             modifier = modifier.verticalScroll(rememberScrollState()),
@@ -450,7 +493,7 @@ private fun VoiceOverlayContent(
             Text(
                 text = voiceHint?.takeIf { it.isNotBlank() }
                     ?: "Puhu nyt — sano esimerkiksi ”laita keittiöön täydet valot”",
-                style = if (kiosk) type.body.copy(fontSize = 22.sp, lineHeight = 30.sp) else type.body,
+                style = if (big) type.body.copy(fontSize = 22.sp, lineHeight = 30.sp) else type.body,
                 color = colors.inkHi,
                 textAlign = tAlign,
                 modifier = Modifier.fillMaxWidth(),
@@ -466,7 +509,19 @@ private fun VoiceOverlayContent(
             voiceHint?.takeIf { it.isNotBlank() }?.let {
                 Text(it, style = type.readout(11), color = colors.inkLo, textAlign = tAlign)
             }
-            if (stream.isNotEmpty()) VoiceStream(stream, kiosk, Modifier.weight(1f, fill = false))
+            // The wait is dragging on: reassure at tier 1, warn at tier 2 (design's
+            // avSlowHint / avSlowWarn). Tier 2 supersedes the gentler tier-1 line.
+            when (voiceSlow) {
+                1 -> Text(
+                    text = "Tämä kestää nyt tavallista pidempään…",
+                    style = type.body.copy(fontSize = 13.sp),
+                    color = colors.inkMid,
+                    textAlign = tAlign,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                2 -> SlowResponseWarning()
+            }
+            if (stream.isNotEmpty()) VoiceStream(stream, big, Modifier.weight(1f, fill = false))
         }
         // Speaking + Ready (VALMIS): the stream (its list scrolls), plus the quick
         // grid under it while resting.
@@ -475,7 +530,7 @@ private fun VoiceOverlayContent(
             horizontalAlignment = hAlign,
             verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
         ) {
-            VoiceStream(stream, kiosk, Modifier.weight(1f, fill = false))
+            VoiceStream(stream, big, Modifier.weight(1f, fill = false))
             if (voice == VoiceState.Ready) VoiceQuickGrid(onRunCommand = onRunCommand)
         }
     }
@@ -549,6 +604,38 @@ private fun ThinkingDots() {
                     .background(colors.accent.copy(alpha = a)),
             )
         }
+    }
+}
+
+/**
+ * The amber "server is slow, still trying" card (design's avSlowWarn) shown once
+ * the assistant has been thinking past [ShellViewModel.SLOW_WARN_MS].
+ */
+@Composable
+private fun SlowResponseWarning() {
+    val colors = MkTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(MkRadius.lg))
+            .background(colors.warmDim)
+            .border(1.dp, colors.warmBorder, RoundedCornerShape(MkRadius.lg))
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            imageVector = MkIcons.Warning,
+            contentDescription = null,
+            tint = colors.warm,
+            modifier = Modifier.size(16.dp).padding(top = 1.dp),
+        )
+        Text(
+            text = "Palvelin vastaa hitaasti. Yritän yhä — jos vastausta ei kuulu, " +
+                "kokeile hetken kuluttua uudelleen.",
+            style = MkTheme.type.body.copy(fontSize = 12.5f.sp, lineHeight = 18.sp),
+            color = colors.inkMid,
+        )
     }
 }
 
@@ -669,6 +756,7 @@ private fun PhoneSurface(
     val unread by viewModel.unreadCount.collectAsState()
     val voice by viewModel.voice.collectAsState()
     val voiceHint by viewModel.voiceHint.collectAsState()
+    val voiceSlow by viewModel.voiceSlow.collectAsState()
     val assistantGender by viewModel.assistantGender.collectAsState()
     val voiceStream by viewModel.stream.collectAsState()
     val dark by viewModel.dark.collectAsState()
@@ -829,6 +917,7 @@ private fun PhoneSurface(
         VoiceOverlay(
             voice = voice,
             voiceHint = voiceHint,
+            voiceSlow = voiceSlow,
             gender = assistantGender,
             stream = voiceStream,
             kiosk = false,
@@ -906,6 +995,7 @@ private fun TabletSurface(
     val unread by viewModel.unreadCount.collectAsState()
     val voice by viewModel.voice.collectAsState()
     val voiceHint by viewModel.voiceHint.collectAsState()
+    val voiceSlow by viewModel.voiceSlow.collectAsState()
     val assistantGender by viewModel.assistantGender.collectAsState()
     val voiceStream by viewModel.stream.collectAsState()
     val dark by viewModel.dark.collectAsState()
@@ -1008,6 +1098,7 @@ private fun TabletSurface(
         VoiceOverlay(
             voice = voice,
             voiceHint = voiceHint,
+            voiceSlow = voiceSlow,
             gender = assistantGender,
             stream = voiceStream,
             kiosk = true,

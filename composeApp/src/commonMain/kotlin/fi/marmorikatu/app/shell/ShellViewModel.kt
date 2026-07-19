@@ -76,6 +76,16 @@ class ShellViewModel(
     val voiceHint: StateFlow<String?> = _voiceHint.asStateFlow()
 
     /**
+     * How long the assistant has been thinking, in escalating tiers (design's
+     * `vcSlow`): 0 normal, 1 "this is taking longer than usual" (after
+     * [SLOW_HINT_MS]), 2 "the server is slow, still trying" (after [SLOW_WARN_MS]).
+     * Drives both the avatar's pondering→concerned expression and the overlay's
+     * slow-response notifications; always back to 0 the moment a token lands.
+     */
+    private val _voiceSlow = MutableStateFlow(0)
+    val voiceSlow: StateFlow<Int> = _voiceSlow.asStateFlow()
+
+    /**
      * The conversation stream: user requests and each spoken response sentence
      * as separate items, newest FIRST (index 0). The overlay renders the newest
      * big at the top and slides older ones down, fading. Persists across the
@@ -294,7 +304,17 @@ class ShellViewModel(
         pushStream(userText, isUser = true)   // the request joins the stream top
         _voice.value = VoiceState.Thinking
         _voiceHint.value = null
+        _voiceSlow.value = 0
         history += ChatMessage.user(userText)
+
+        // Escalate the "still working" tier as the wait drags on; cancelled the
+        // instant the first token arrives (in sentence()) and in the finally.
+        val slowJob = viewModelScope.launch {
+            delay(SLOW_HINT_MS)
+            _voiceSlow.value = 1
+            delay(SLOW_WARN_MS - SLOW_HINT_MS)
+            _voiceSlow.value = 2
+        }
 
         val nativeTts = platformTts.isAvailable()
         var lastSentence: String? = null
@@ -308,6 +328,8 @@ class ShellViewModel(
             if (t.isEmpty() || t == lastSentence) return
             lastSentence = t
             spokeAny = true
+            slowJob.cancel()          // an answer landed — drop any "still working" tier
+            _voiceSlow.value = 0
             _voice.value = VoiceState.Speaking
             pushStream(t, isUser = false)
             // Native speak() suspends until the utterance finishes (paces the
@@ -337,6 +359,9 @@ class ShellViewModel(
             if (!spokeAny) _voiceHint.value = "en saanut vastausta"
         } catch (e: Exception) {
             _voiceHint.value = e.message ?: "yhteysvirhe"
+        } finally {
+            slowJob.cancel()
+            _voiceSlow.value = 0
         }
     }
 
@@ -368,11 +393,18 @@ class ShellViewModel(
         platformTts.stop()
         _voice.value = VoiceState.Idle
         _voiceHint.value = null
+        _voiceSlow.value = 0
     }
 
     private companion object {
         /** Backstop for a listening turn the native engine never ends. */
         const val LISTEN_TIMEOUT_MS = 15_000L
+
+        /** Thinking past this shows the "taking longer than usual" hint (tier 1). */
+        const val SLOW_HINT_MS = 3_000L
+
+        /** Thinking past this escalates to the amber "server is slow" warning (tier 2). */
+        const val SLOW_WARN_MS = 6_600L
 
         /** Cap on the conversation stream (requests + response sentences). */
         const val MAX_STREAM = 40

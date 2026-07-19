@@ -104,8 +104,13 @@ private class AvatarPaths {
 private data class AvatarFrame(
     val headRot: Float = 0f,
     val headTy: Float = 0f,
-    val browRaise: Float = 0f,
-    val browTilt: Float = 0f,
+    // Brows are animated per-side so the face can raise both to listen, furrow
+    // symmetrically to think, and pull one up in a quizzical ponder (tier 1) or
+    // both down in concern (tier 2). Rotation in degrees, ty a vertical shift.
+    val browLRot: Float = 0f,
+    val browRRot: Float = 0f,
+    val browLTy: Float = 0f,
+    val browRTy: Float = 0f,
     val eyeGrow: Float = 1f,
     val glanceX: Float = 0f,
     val glanceY: Float = 0f,
@@ -120,8 +125,38 @@ private data class AvatarFrame(
 private fun osc(tMs: Float, periodMs: Float): Float =
     ((sin(tMs / periodMs * 2.0 * PI).toFloat()) + 1f) / 2f
 
-/** Advance the eased pose + continuous motion by [dt] seconds at time [tMs]. */
-private fun advanceAvatar(prev: AvatarFrame, state: VoiceState, dt: Float, tMs: Float): AvatarFrame {
+/**
+ * The design's `mk-av-scan` pupil wander (tier-1 pondering): a 3.4 s loop of
+ * eyes drifting around as if searching for the answer. Piecewise-linear over the
+ * design's keyframes so it traces the same path.
+ */
+private fun scanGlance(tMs: Float): Pair<Float, Float> {
+    val p = (tMs % 3400f) / 3400f
+    val keys = listOf(
+        0f to Offset(0f, -1f),
+        0.22f to Offset(5f, -4f),
+        0.48f to Offset(-5f, -2.5f),
+        0.74f to Offset(3f, -5f),
+        1f to Offset(0f, -1f),
+    )
+    for (i in 0 until keys.size - 1) {
+        val (t0, v0) = keys[i]
+        val (t1, v1) = keys[i + 1]
+        if (p in t0..t1) {
+            val f = if (t1 > t0) (p - t0) / (t1 - t0) else 0f
+            return lerp(v0.x, v1.x, f) to lerp(v0.y, v1.y, f)
+        }
+    }
+    return 0f to -1f
+}
+
+/**
+ * Advance the eased pose + continuous motion by [dt] seconds at time [tMs].
+ * [slow] escalates the thinking expression: 0 the normal aside glance, 1 a
+ * pondering scan (mk-av-ponder head rock + mk-av-scan pupils, one brow up), 2 a
+ * concerned furrow with the eyes cast down — the design's `vcSlow` tiers.
+ */
+private fun advanceAvatar(prev: AvatarFrame, state: VoiceState, slow: Int, dt: Float, tMs: Float): AvatarFrame {
     val listening = state == VoiceState.Listening
     val thinking = state == VoiceState.Thinking
     val speaking = state == VoiceState.Speaking
@@ -129,29 +164,52 @@ private fun advanceAvatar(prev: AvatarFrame, state: VoiceState, dt: Float, tMs: 
     val k = (dt * 9f).coerceIn(0f, 1f)
     fun ease(cur: Float, target: Float) = cur + (target - cur) * k
 
-    val browRaise = ease(prev.browRaise, if (listening) 1f else 0f)
-    val browTilt = ease(prev.browTilt, if (thinking) 1f else 0f)
+    // Per-side brow + glance targets, from the design's thinkFace tiers.
+    var bLRot = 0f; var bRRot = 0f; var bLTy = 0f; var bRTy = 0f
+    var glXt = 0f; var glYt = 0f
+    when {
+        listening -> { bLTy = -3.5f; bRTy = -3.5f } // brows raise together
+        thinking && slow >= 2 -> { // concerned furrow, eyes down
+            bLRot = -9f; bRRot = 9f; bLTy = -1.5f; bRTy = -1.5f; glXt = -5f; glYt = 3.5f
+        }
+        thinking && slow == 1 -> { // quizzical ponder, pupils scanning
+            bLRot = -4f; bRRot = 9f; bLTy = -4f; bRTy = 2f
+            val (sx, sy) = scanGlance(tMs); glXt = sx; glYt = sy
+        }
+        thinking -> { bLRot = 7f; bRRot = -7f; bLTy = 1.5f; bRTy = 1.5f; glXt = 5f; glYt = -5.5f }
+    }
+    val browLRot = ease(prev.browLRot, bLRot)
+    val browRRot = ease(prev.browRRot, bRRot)
+    val browLTy = ease(prev.browLTy, bLTy)
+    val browRTy = ease(prev.browRTy, bRTy)
     val eyeGrow = ease(prev.eyeGrow, if (listening) 1.07f else 1f)
-    val glanceX = ease(prev.glanceX, if (thinking) 5f else 0f)
-    val glanceY = ease(prev.glanceY, if (thinking) -5.5f else 0f)
-    val headTilt = ease(prev.headTy, if (thinking) -2.5f else 0f) // reuse slot for eased tilt base
+    // Scan drifts continuously, so ease toward it every frame (smooths the path);
+    // the other tiers settle to a fixed target.
+    val glanceX = ease(prev.glanceX, glXt)
+    val glanceY = ease(prev.glanceY, glYt)
     val smileA = ease(prev.smileA, if (speaking || thinking) 0f else 1f)
     val flatA = ease(prev.flatA, if (thinking) 1f else 0f)
     val openA = ease(prev.openA, if (speaking) 1f else 0f)
 
     val listenO = osc(tMs, 3600f)
     val talkO = osc(tMs, 2300f)
+    val ponderO = osc(tMs, 4200f) // mk-av-ponder: a slow head rock while pondering
     val headRot = when {
         listening -> lerp(2.6f, 4.4f, listenO)
         speaking -> lerp(-1.4f, 1.6f, talkO)
+        thinking && slow >= 2 -> -3f
+        thinking && slow == 1 -> lerp(-2f, 2.5f, ponderO)
         thinking -> -2.5f
         else -> 0f
     }
-    val headTy = when {
+    val headTyTarget = when {
         listening -> lerp(0f, 2f, listenO)
         speaking -> lerp(0f, 1.2f, talkO)
-        else -> headTilt.coerceIn(-2.5f, 0f) * 0f // keep 0 vertical when not listening/speaking
+        thinking && slow >= 2 -> 2.5f
+        thinking && slow == 1 -> lerp(0f, 1.5f, ponderO)
+        else -> 0f
     }
+    val headTy = ease(prev.headTy, headTyTarget)
 
     // Blink: eyelid a sliver (0.14) most of the cycle, a quick full close.
     val b = (tMs % 4700f) / 4700f
@@ -168,8 +226,10 @@ private fun advanceAvatar(prev: AvatarFrame, state: VoiceState, dt: Float, tMs: 
     return AvatarFrame(
         headRot = headRot,
         headTy = headTy,
-        browRaise = browRaise,
-        browTilt = browTilt,
+        browLRot = browLRot,
+        browRRot = browRRot,
+        browLTy = browLTy,
+        browRTy = browRTy,
         eyeGrow = eyeGrow,
         glanceX = glanceX,
         glanceY = glanceY,
@@ -189,14 +249,16 @@ fun MkAssistantAvatar(
     state: VoiceState,
     gender: AssistantGender,
     modifier: Modifier = Modifier,
+    slow: Int = 0,
 ) {
     val p = remember { AvatarPaths() }
     val accent = MkTheme.colors.accent
     val woman = gender == AssistantGender.Nainen
 
     // Latest state read inside the frame loop without restarting it, so pose
-    // easing stays continuous across state changes.
+    // easing stays continuous across state (and slow-tier) changes.
     val currentState by rememberUpdatedState(state)
+    val currentSlow by rememberUpdatedState(slow)
     val frame = remember { mutableStateOf(AvatarFrame()) }
     LaunchedEffect(Unit) {
         var lastNanos = 0L
@@ -207,7 +269,7 @@ fun MkAssistantAvatar(
                 val dt = if (lastNanos == 0L) 0f else (now - lastNanos) / 1_000_000_000f
                 lastNanos = now
                 tMs += dt * 1000f
-                acc = advanceAvatar(acc, currentState, dt, tMs)
+                acc = advanceAvatar(acc, currentState, currentSlow, dt, tMs)
                 frame.value = acc
             }
         }
@@ -239,12 +301,15 @@ fun MkAssistantAvatar(
                         drawPath(p.manHair, ManHair)
                     }
 
-                    // Brows: raise together to listen, tilt in to think.
-                    translate(0f, f.browRaise * -3.5f + f.browTilt * 1.5f) {
-                        rotate(f.browTilt * 7f, pivot = Offset(128f, 118f)) {
+                    // Brows: raise together to listen, furrow to think, and go
+                    // asymmetric/concerned as the wait drags on (per-side pose).
+                    translate(0f, f.browLTy) {
+                        rotate(f.browLRot, pivot = Offset(128f, 118f)) {
                             drawPath(p.browL, Brow, style = Stroke(4.5f, cap = StrokeCap.Round))
                         }
-                        rotate(f.browTilt * -7f, pivot = Offset(192f, 118f)) {
+                    }
+                    translate(0f, f.browRTy) {
+                        rotate(f.browRRot, pivot = Offset(192f, 118f)) {
                             drawPath(p.browR, Brow, style = Stroke(4.5f, cap = StrokeCap.Round))
                         }
                     }
