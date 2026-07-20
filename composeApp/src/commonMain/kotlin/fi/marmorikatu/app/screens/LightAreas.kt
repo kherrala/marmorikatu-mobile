@@ -29,8 +29,12 @@ private val Accent = Color(0xFF35C3A6)
  */
 val LIGHT_AREAS: List<LightArea> = listOf(
     LightArea("ala_keittio", Floor.ALAKERTA, "Keittiö", MkIcons.CookingPot, Color(0xFFFFB347), listOf(
-        AreaLight(8, "Katto"), AreaLight(40, "Kattovalo"), AreaLight(2, "Kaapisto ylä"),
+        AreaLight(8, "LED-katto"), AreaLight(40, "Kattovalo"), AreaLight(2, "Kaapisto ylä"),
         AreaLight(7, "Kaapisto ala"), AreaLight(41, "Ikkunavalo"))),
+    // Heads-up on id 55: the PLC's own button text mislabels it "Kodinhoitohuone
+    // kattovalo", but it is physically Olohuone's second ceiling light (currently
+    // not installed). This map is the corrected source of truth — the id, not the
+    // PLC name, is what the live state and the scenes key on.
     LightArea("ala_olohuone", Floor.ALAKERTA, "Olohuone", MkIcons.Armchair, Accent, listOf(
         AreaLight(54, "Kattovalo"), AreaLight(55, "Kattovalo 2"), AreaLight(5, "LED-nauha"),
         AreaLight(46, "Ikkuna"))),

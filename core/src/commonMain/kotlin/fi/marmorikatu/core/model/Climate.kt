@@ -39,7 +39,25 @@ data class Ventilation(
     val alarms: Set<VentAlarm> = emptySet(),
     /** Everything else on the topic, for the debug screen. */
     val raw: Map<String, Double> = emptyMap(),
-)
+) {
+    /**
+     * Supply-side heat-recovery efficiency (%) from the live exchanger gradient:
+     *   η = (supply_after_HRU − outdoor) / (extract − outdoor) × 100
+     * Mirrors [fi.marmorikatu.core.repository.ClimateRepository]'s InfluxDB
+     * computation (the PLC's own `hreefficiency` field is a not-connected sensor
+     * that pins to 0, so it can't be trusted). Valid only with a real gradient —
+     * in mild weather outdoor ≈ extract, so the result is left null ("Ei tietoa").
+     */
+    val recoveryEfficiencyPct: Double?
+        get() {
+            val o = outdoorC; val s = supplyPreHeatC; val e = extractC
+            return if (o != null && s != null && e != null && e != o) {
+                ((s - o) / (e - o) * 100.0).takeIf { it > 0.0 && it <= 100.0 }
+            } else {
+                null
+            }
+        }
+}
 
 /** The MVHR (ventilation unit) alarm bits published on `marmorikatu/ventilation`. */
 enum class VentAlarm {
@@ -69,6 +87,14 @@ data class Cooling(
     val coolingPump: Boolean = false,
     val coilTemp1: Double? = null,
     val coilTemp2: Double? = null,
+    /**
+     * Supply-air temperature in the delivery duct after the cooling battery
+     * (`Tuloilmakanava`), calibrated — the third PT100 on the same analog module
+     * as the two coil sensors, riding the same temperatures topic. This is the
+     * air actually delivered to the rooms, the live source for the Tuloilma tile
+     * when InfluxDB's snapshot is unavailable.
+     */
+    val supplyDuctC: Double? = null,
 ) {
     private val bothCoilTemps: Pair<Double, Double>?
         get() = coilTemp1?.let { a -> coilTemp2?.let { b -> a to b } }

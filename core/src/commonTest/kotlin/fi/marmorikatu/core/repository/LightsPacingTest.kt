@@ -28,21 +28,29 @@ class LightsPacingTest {
         listOf(49, 50, 52, 53).forEach { repo.setLight(it, true) }
         runCurrent()
 
-        // Only the first has gone out; the rest are queued behind the spacing.
-        assertEquals(1, mqtt.published.size)
+        // Only the first light has gone out; the rest are queued behind the spacing.
+        // Each delivered command is a /set plus its /command provenance breadcrumb.
+        assertEquals(2, mqtt.published.size)
 
         advanceTimeBy(200)
         runCurrent()
-        assertEquals(2, mqtt.published.size)
+        assertEquals(4, mqtt.published.size)
 
         advanceTimeBy(1_000)
         runCurrent()
-        assertEquals(4, mqtt.published.size)
+        assertEquals(8, mqtt.published.size)
         assertEquals(
-            listOf(49, 50, 52, 53).map { "marmorikatu/light/$it/set" },
+            listOf(49, 50, 52, 53).flatMap {
+                listOf("marmorikatu/light/$it/set", "marmorikatu/light/$it/command")
+            },
             mqtt.published.map { it.first },
         )
-        assertTrue(mqtt.published.all { it.second == "true" })
+        // The /set carries the retained bool; the /command breadcrumb carries the JSON.
+        assertTrue(mqtt.published.filter { it.first.endsWith("/set") }.all { it.second == "true" })
+        assertTrue(
+            mqtt.published.filter { it.first.endsWith("/command") }
+                .all { it.second == """{"on":true,"src":"mobile"}""" },
+        )
 
         coroutineContext.cancelChildren()
     }

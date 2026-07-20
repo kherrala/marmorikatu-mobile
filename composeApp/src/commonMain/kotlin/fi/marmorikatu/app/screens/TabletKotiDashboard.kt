@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -85,9 +86,17 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
     LaunchedEffect(Unit) { viewModel.refresh() }
 
     Box(modifier = Modifier.fillMaxSize()) {
-    // The kiosk is a fixed dashboard — it fills the landscape viewport without
-    // scrolling (design), so the three-column body claims the height left over
-    // after the KPI strip and every panel flexes to fit.
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    // A portrait kiosk (a tablet stood upright) can't fit the landscape design's
+    // seven-across stat strip or three-column body without shrinking everything to
+    // unreadable. Detect portrait and reflow: fewer, larger stat tiles and a
+    // two-column body.
+    val portrait = maxHeight > maxWidth
+    val statsPerRow = if (portrait) STATS_PER_ROW_PORTRAIT else STATS_PER_ROW
+    val statSize = if (portrait) MkStatSize.Md else MkStatSize.Sm
+    // The kiosk is a fixed dashboard — it fills the viewport without scrolling
+    // (design), so the body claims the height left below the KPI strip and every
+    // panel flexes to fit.
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -100,7 +109,7 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
         // takes weight(1f) so the whole set shares one row and shrinks to fit.
         if (state.kioskStats.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                state.kioskStats.chunked(STATS_PER_ROW).forEach { rowStats ->
+                state.kioskStats.chunked(statsPerRow).forEach { rowStats ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -114,9 +123,10 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                                 status = kpi.statStatus,
                                 tag = kpi.tag,
                                 tagStatus = kpi.tagStatus,
-                                // Seven across a scaled kiosk canvas is tight; the
-                                // compact size keeps value + unit from clipping.
-                                size = MkStatSize.Sm,
+                                // Seven across a scaled landscape canvas is tight, so
+                                // those use the compact size; portrait fits fewer and
+                                // can go a size up.
+                                size = statSize,
                                 spark = kpi.seriesValues,
                                 pulseKey = kpi.freshAsOf,
                                 dimmed = kpi.stale,
@@ -125,7 +135,7 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                             )
                         }
                         // Keep the last, shorter row's tiles the same width.
-                        repeat(STATS_PER_ROW - rowStats.size) { Spacer(Modifier.weight(1f)) }
+                        repeat(statsPerRow - rowStats.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
@@ -134,14 +144,12 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
         // Lighting presets were removed from the kiosk home to save vertical
         // space (design); they remain reachable on the Valot screen.
 
-        // The three-column body: chart · price + rooms · camera + events. It
-        // takes weight(1f) so it fills the height left below the KPI strip, and
-        // each panel flexes within its column — nothing scrolls.
-        Row(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            DashCard("Ulko- ja huonelämpötilat", modifier = Modifier.weight(1.5f).fillMaxHeight()) {
+        // The body panels: chart · price · rooms · camera · events. Defined once
+        // and placed by whichever arrangement is active — landscape lays them three
+        // across; portrait reflows to two columns (chart | price+rooms, then
+        // camera | events) so nothing shrinks to unreadable.
+        val tempPanel: @Composable (Modifier) -> Unit = { mod ->
+            DashCard("Ulko- ja huonelämpötilat", modifier = mod) {
                 if (tempSeries.isEmpty()) {
                     DashEmpty("Ei lämpötilahistoriaa")
                 } else {
@@ -157,14 +165,8 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                         // still gets room, with every line (bedrooms included) named.
                         MkSeries(name = shortSeriesLabel(s.name), values = s.values, color = palette[i % palette.size])
                     }
-                    // Fill the card: the legend takes its natural height and the plot
-                    // flexes into whatever is left. The chart must fill a *bounded*
-                    // box for its internal weighted plot to get a height — a plain
-                    // vertical weight() here left the plot 0 px tall (all space went
-                    // to the legend). A weight()-sized Box gives MkLineChart a bounded
-                    // height that fillMaxSize()/fillHeight then fills, so the plot
-                    // shows. (The old `height = maxHeight − fixed allowance` instead
-                    // guessed a two-row legend and clipped it once it wrapped.)
+                    // A weight()-sized Box gives MkLineChart a bounded height that
+                    // fillHeight then fills, so the plot shows below the legend.
                     Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                         MkLineChart(
                             series = series,
@@ -177,82 +179,132 @@ fun TabletKotiDashboard(viewModel: KotiViewModel = koinViewModel()) {
                     }
                 }
             }
-
-            Column(
-                modifier = Modifier.weight(1.1f).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+        }
+        val pricePanel: @Composable (Modifier) -> Unit = { mod ->
+            val sahko = state.kpis.firstOrNull { it.key == "sahko" }
+            DashCard(
+                "Sähkön hinta tänään",
+                modifier = mod,
+                // Tapping the card opens the spot price's history detail.
+                onClick = sahko?.takeIf { it.detailField != null }?.let { { detailKey = it.key } },
             ) {
-                val sahko = state.kpis.firstOrNull { it.key == "sahko" }
-                DashCard(
-                    "Sähkön hinta tänään",
-                    // Tapping the card opens the spot price's history detail.
-                    onClick = sahko?.takeIf { it.detailField != null }?.let { { detailKey = it.key } },
-                ) {
-                    if (priceBars.isEmpty()) {
-                        DashEmpty("Ei hintatietoa")
-                    } else {
-                        MkPriceBars(
-                            bars = priceBars.map {
-                                MkPriceBar(
-                                    value = it.cents,
-                                    state = when {
-                                        it.past -> BarState.Past
-                                        it.expensive -> BarState.Exp
-                                        it.cheap -> BarState.Cheap
-                                        else -> BarState.Future
-                                    },
-                                )
-                            },
-                            labels = priceLabels,
-                            height = 96.dp,
-                            nowValue = sahko?.value?.takeIf { it != "Ei tietoa" },
-                            nowUnit = "c/kWh",
-                            nowTag = sahko?.tag,
-                            nowStatus = if (sahko?.statStatus == MkStatStatus.Warn) "warn" else "ok",
-                        )
-                    }
-                }
-                DashCard("Huoneet", modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    if (state.rooms.isEmpty()) {
-                        DashEmpty("Ei tietoa")
-                    } else {
-                        // A tapped room chip opens that room's temperature history.
-                        RoomsGrid(state.rooms, onRoomClick = { room -> detailKey = "room_${room.name}" })
-                    }
-                }
-            }
-
-            Column(
-                modifier = Modifier.weight(0.95f).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                val shot = state.cameraSnapshot
-                MkCameraCard(
-                    painter = rememberBase64Painter(shot?.image),
-                    camera = "Etupiha",
-                    title = "Etupiha",
-                    subtitle = shot?.subtitle ?: "Ei liikettä",
-                    metaTime = shot?.time ?: "",
-                    shotHeight = 112.dp,
-                    live = false,
-                    // Tap the still to blow it up full-screen, like the phone door alert.
-                    onClick = shot?.image?.let { { viewModel.openCamera() } },
-                )
-                DashCard("Tapahtumat", modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    if (events.isEmpty()) {
-                        DashEmpty("Ei tapahtumia")
-                    } else {
-                        // Only as many events as the panel's height affords, so the
-                        // feed never spills past the card in the no-scroll layout.
-                        MkEventFeed(
-                            events = events.take(KIOSK_EVENT_COUNT)
-                                .map { EventEntry(it.priority, it.text, it.time) },
-                            live = true,
-                        )
-                    }
+                if (priceBars.isEmpty()) {
+                    DashEmpty("Ei hintatietoa")
+                } else {
+                    MkPriceBars(
+                        bars = priceBars.map {
+                            MkPriceBar(
+                                value = it.cents,
+                                state = when {
+                                    it.past -> BarState.Past
+                                    it.expensive -> BarState.Exp
+                                    it.cheap -> BarState.Cheap
+                                    else -> BarState.Future
+                                },
+                            )
+                        },
+                        labels = priceLabels,
+                        height = 96.dp,
+                        nowValue = sahko?.value?.takeIf { it != "Ei tietoa" },
+                        nowUnit = "c/kWh",
+                        nowTag = sahko?.tag,
+                        nowStatus = if (sahko?.statStatus == MkStatStatus.Warn) "warn" else "ok",
+                    )
                 }
             }
         }
+        val roomsPanel: @Composable (Modifier) -> Unit = { mod ->
+            DashCard("Huoneet", modifier = mod) {
+                if (state.rooms.isEmpty()) {
+                    DashEmpty("Ei tietoa")
+                } else {
+                    // A tapped room chip opens that room's temperature history.
+                    RoomsGrid(state.rooms, onRoomClick = { room -> detailKey = "room_${room.name}" })
+                }
+            }
+        }
+        val cameraPanel: @Composable (Modifier) -> Unit = { mod ->
+            val shot = state.cameraSnapshot
+            MkCameraCard(
+                painter = rememberBase64Painter(shot?.image),
+                camera = "Etupiha",
+                title = "Etupiha",
+                subtitle = shot?.subtitle ?: "Ei liikettä",
+                metaTime = shot?.time ?: "",
+                shotHeight = 112.dp,
+                live = false,
+                // Tap the still to blow it up full-screen, like the phone door alert.
+                onClick = shot?.image?.let { { viewModel.openCamera() } },
+                modifier = mod,
+            )
+        }
+        val eventsPanel: @Composable (Modifier) -> Unit = { mod ->
+            DashCard("Tapahtumat", modifier = mod) {
+                if (events.isEmpty()) {
+                    DashEmpty("Ei tapahtumia")
+                } else {
+                    // Only as many events as the panel's height affords, so the
+                    // feed never spills past the card in the no-scroll layout.
+                    MkEventFeed(
+                        events = events.take(KIOSK_EVENT_COUNT)
+                            .map { EventEntry(it.priority, it.text, it.time) },
+                        live = true,
+                    )
+                }
+            }
+        }
+
+        if (portrait) {
+            // Two columns: chart | price+rooms on top, camera | events below.
+            Column(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    tempPanel(Modifier.weight(1f).fillMaxHeight())
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        pricePanel(Modifier.fillMaxWidth())
+                        roomsPanel(Modifier.weight(1f).fillMaxHeight())
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    cameraPanel(Modifier.weight(1f))
+                    eventsPanel(Modifier.weight(1f).fillMaxHeight())
+                }
+            }
+        } else {
+            // The design's three-column body: chart · price+rooms · camera+events.
+            Row(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                tempPanel(Modifier.weight(1.5f).fillMaxHeight())
+                Column(
+                    modifier = Modifier.weight(1.1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    pricePanel(Modifier.fillMaxWidth())
+                    roomsPanel(Modifier.weight(1f).fillMaxHeight())
+                }
+                Column(
+                    modifier = Modifier.weight(0.95f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    cameraPanel(Modifier.fillMaxWidth())
+                    eventsPanel(Modifier.weight(1f).fillMaxHeight())
+                }
+            }
+        }
+    }
     }
 
         // KPI detail overlay — tapping a stat tile opens its history chart. The
@@ -437,6 +489,9 @@ private fun shortSeriesLabel(name: String): String = when (name) {
 
 /** Kiosk stat tiles per row: the design's single row of seven (repeat(7,1fr)). */
 private const val STATS_PER_ROW = 7
+
+/** Portrait kiosk fits far fewer stat tiles across; the rest wrap to a second row. */
+private const val STATS_PER_ROW_PORTRAIT = 4
 
 /** Events shown in the kiosk feed — bounded so it never spills past its panel. */
 private const val KIOSK_EVENT_COUNT = 4

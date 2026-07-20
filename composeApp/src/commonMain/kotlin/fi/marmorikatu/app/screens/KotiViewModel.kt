@@ -40,6 +40,7 @@ import fi.marmorikatu.core.model.Ventilation
 import fi.marmorikatu.core.repository.LightsRepository
 import fi.marmorikatu.core.repository.SaunaHeatState
 import fi.marmorikatu.core.repository.SaunaRepository
+import fi.marmorikatu.core.repository.saunaHoldingFromTemps
 import fi.marmorikatu.core.speech.SpeechOutput
 import fi.marmorikatu.core.transport.mcp.SaunaStatus
 import com.russhwolf.settings.Settings
@@ -109,9 +110,17 @@ private val SCENES_SERIALIZER =
  * leaving specific fixtures off rather than lowering brightness.
  */
 enum class KotiScene(val label: String, val icon: ImageVector) {
-    /** Morning: kitchen + living-room ceiling, staircase, foyer. LED strips stay off. */
+    /**
+     * Morning: kitchen (dining + Keittiö Kattovalo) + living-room ceiling,
+     * staircase, foyer. The LED strips, the window lights, and the Keittiö "katto"
+     * LED panel all stay off.
+     */
     Aamuvalot("Aamuvalot", MkIcons.SunHorizon),
-    /** Evening: living-room ceiling, kitchen, front yard, foyer. LED strips stay off. */
+    /**
+     * Evening: living-room ceiling, kitchen (dining + Keittiö Kattovalo), and the
+     * front entrance. No foyer/eteinen/hallway lights, no window lights, and not
+     * the Keittiö "katto" LED panel or the LED strips.
+     */
     Iltavalot("Iltavalot", MkIcons.MoonStars),
     /** Movie: only the basement billiard light; everything else in the common areas goes dark. */
     Elokuva("Elokuva", MkIcons.FilmSlate),
@@ -126,67 +135,72 @@ enum class KotiScene(val label: String, val icon: ImageVector) {
 }
 
 /**
- * The common (non-bedroom) light ids that should be ON for a scene — the
- * exclusive target the Valot preset bar applies (everything else common goes
- * off). Mirrors the house rules in [KotiViewModel]'s scene logic: LED strips
- * never come on, Elokuva is billiard-only, Kaikki pois is empty.
+ * Scenes are defined by explicit PLC light id — the ids [LIGHT_AREAS] is keyed on
+ * and the live retained state maps straight onto — rather than by matching on the
+ * display name. Name matching was fragile: the same fixture reads differently
+ * across the MCP catalog and the MQTT names topic, "katto" can't tell the bright
+ * Keittiö LED (id 8) from the softer Kattovalo (id 40), and a window light only
+ * differs from a ceiling one by the word "ikkuna". The maps below are the single
+ * source of truth for what each scene touches.
  */
-/**
- * A bedroom light — never touched by house-wide scenes/presets. The upstairs
- * rooms are named after their occupants in the MCP catalog (Aarni/Seela/
- * Aikuiset) while the MQTT fallback still uses the old "MH…" prefix, so both
- * naming schemes must be recognised or a preset would switch a child's room off.
- */
-internal fun isBedroomLight(name: String): Boolean {
-    val n = name.trim()
-    return n.startsWith("MH", ignoreCase = true) ||
-        listOf("Aarni", "Seela", "Aikuiset").any { n.contains(it, ignoreCase = true) }
+private object SceneLights {
+    // Bedroom fixtures — never touched by a house-wide scene or preset.
+    //   MH alakerta 17/18, Aarni 28/30, Seela 22/23, Aikuiset 33/32/31.
+    val BEDROOMS = setOf(17, 18, 22, 23, 28, 30, 31, 32, 33)
+
+    // The fixtures each scene turns ON. Everything else in the scene's scope
+    // (see [scopeFloor]) goes off. See LIGHT_AREAS for the id → fixture map.
+    val ON: Map<KotiScene, Set<Int>> = mapOf(
+        // Morning: bright Keittiö LED (8) + Ruokailu (19), Olohuone Kattovalo 1
+        // (54), the stairs (Portaikko 42, Aula rappuset 25), and the foyer
+        // (Eteinen 35, Tuulikaappi 37, Tuulikaappi vaatehuone 36).
+        KotiScene.Aamuvalot to setOf(8, 19, 54, 42, 25, 35, 37, 36),
+        // Evening: Olohuone Kattovalo 1 (54), the softer Keittiö Kattovalo (40) +
+        // Ruokailu (19), and the front entrance (47). No bright kitchen LED, no
+        // foyer/eteinen/hallway, no window lights.
+        KotiScene.Iltavalot to setOf(54, 40, 19, 47),
+        // Movie: just the billiard light (basement scope zeroes the rest).
+        KotiScene.Elokuva to setOf(51),
+        // Terrace light only (outdoor scope).
+        KotiScene.Terassi to setOf(48),
+        // Late-night arrival: the path in — entrance (47), foyer (35/37/36), stairs (42/25).
+        KotiScene.Kotiinpaluu to setOf(47, 35, 37, 36, 42, 25),
+        // Carport light only (outdoor scope).
+        KotiScene.Autokatos to setOf(59),
+        KotiScene.KaikkiPois to emptySet(),
+    )
+
+    /**
+     * The floor a scene is confined to, or null for the whole common area. Elokuva
+     * governs only the basement (a movie never disturbs the rest of the house);
+     * Terassi/Autokatos govern only the outdoor lights.
+     */
+    fun scopeFloor(scene: KotiScene): Floor? = when (scene) {
+        KotiScene.Elokuva -> Floor.KELLARI
+        KotiScene.Terassi, KotiScene.Autokatos -> Floor.ULKO
+        else -> null
+    }
 }
 
 internal fun sceneOnLightIds(scene: KotiScene, lights: List<Light>): Set<Int> {
-    fun Light.has(vararg n: String) = n.any { name.contains(it, ignoreCase = true) }
-    fun Light.isLed() = name.contains("ledi", ignoreCase = true)
-    fun Light.kitchenCeiling() = has("Ruokailu") || (has("Keittiö") && has("atto"))
-    fun Light.livingCeiling() = has("Olohuone") && has("katto")
-    fun Light.foyer() = has("Eteinen", "Tuulikaappi")
-    fun Light.stairs() = has("Portaikko", "Aula rappuset")
-    fun Light.terrace() = has("terassi")
-    val common = lights.filterNot { isBedroomLight(it.name) }
-    return when (scene) {
-        KotiScene.Aamuvalot -> common.filter { !it.isLed() && (it.kitchenCeiling() || it.livingCeiling() || it.stairs() || it.foyer()) }
-        KotiScene.Iltavalot -> common.filter { !it.isLed() && (it.livingCeiling() || it.kitchenCeiling() || it.has("Sisäänkäynti") || it.foyer()) }
-        // Elokuva is basement-only (see [sceneScopeLights]): the theater/biljard
-        // light comes on, every other basement light goes off, and nothing
-        // elsewhere in the house is touched.
-        KotiScene.Elokuva -> common.filter { it.floor == Floor.KELLARI && it.has("biljard") }
-        // Terrace is outdoor-only (see [sceneScopeLights]): the terrace light on,
-        // other outdoor lights off, indoors untouched.
-        KotiScene.Terassi -> common.filter { it.terrace() }
-        // Late-night arrival: light only the path in — front entrance, foyer, and
-        // the staircase — and leave everything else dark.
-        KotiScene.Kotiinpaluu -> common.filter { !it.isLed() && (it.has("Sisäänkäynti") || it.foyer() || it.stairs()) }
-        // Carport-only (see [sceneScopeLights]): the carport and its outdoor
-        // storage light on, other outdoor lights off, indoors untouched.
-        KotiScene.Autokatos -> common.filter { it.has("Autokatos", "katos") }
-        KotiScene.KaikkiPois -> emptyList()
-    }.map { it.id }.toSet()
+    val on = SceneLights.ON[scene] ?: emptySet()
+    // Intersect with the fixtures actually present so an absent light is never
+    // commanded, and keep bedrooms out as a belt-and-suspenders guard.
+    return lights.asSequence()
+        .map { it.id }
+        .filter { it in on && it !in SceneLights.BEDROOMS }
+        .toSet()
 }
 
 /**
  * The lights a [scene] is allowed to switch. Most scenes own the whole common
  * (non-bedroom) set — applying one turns its members on and every other common
- * light off. Elokuva is the exception: it governs only the basement, so starting
- * a movie never disturbs lights elsewhere in the house.
+ * light off. Floor-scoped scenes (Elokuva, Terassi, Autokatos) touch only their
+ * floor, so triggering them never disturbs lights elsewhere in the house.
  */
 internal fun sceneScopeLights(scene: KotiScene, lights: List<Light>): List<Light> {
-    val common = lights.filterNot { isBedroomLight(it.name) }
-    return when (scene) {
-        KotiScene.Elokuva -> common.filter { it.floor == Floor.KELLARI }
-        // Terrace and Carport govern only the outdoor lights — flipping either
-        // never touches anything indoors.
-        KotiScene.Terassi, KotiScene.Autokatos -> common.filter { it.floor == Floor.ULKO }
-        else -> common
-    }
+    val floor = SceneLights.scopeFloor(scene)
+    return lights.filter { it.id !in SceneLights.BEDROOMS && (floor == null || it.floor == floor) }
 }
 
 /** "At the door" banner content, surfaced only for a person announcement. */
@@ -548,12 +562,13 @@ class KotiViewModel(
      * card can show where the reading came from.
      */
     val outdoorTemp: StateFlow<OutdoorTemp?> =
-        combine(snapshots, climateRepo.heatPump, _weather) { snap, heatPump, weather ->
+        combine(snapshots, climateRepo.heatPump, climateRepo.ruuvi, climateRepo.ventilation, _weather) { snap, heatPump, ruuvi, vent, weather ->
             // Ordered by trust: the on-site Ruuvi (updates most often) first, then
             // the ventilation and heat-pump outdoor readings, then the forecast API.
+            // Each prefers its live MQTT push and falls back to the Influx snapshot.
             val readings = buildList {
-                snap.outdoorRuuviC?.let { add(OutdoorReading("Ruuvi", it)) }
-                snap.hvac?.outdoorC?.let { add(OutdoorReading("IV-kone", it)) }
+                (ruuvi[RuuviSensors.OUTDOOR]?.temperature ?: snap.outdoorRuuviC)?.let { add(OutdoorReading("Ruuvi", it)) }
+                (vent.outdoorC ?: snap.hvac?.outdoorC)?.let { add(OutdoorReading("IV-kone", it)) }
                 freshHeatPump(heatPump).outdoorC?.let { add(OutdoorReading("Maalämpö", it)) }
                 weather?.current?.temperature?.let { add(OutdoorReading("Ennuste", it)) }
             }
@@ -625,6 +640,21 @@ class KotiViewModel(
     // can escalate warn → alarm ("… pitkään") once it has run a long time.
     private var saunaHeatingSinceEpoch: Long? = null
 
+    // A rolling 5-min-bucketed trend of the live Ruuvi sauna temperature, so the
+    // on/off verdict comes off the live sensor — it detects a switch-off cooldown
+    // even when InfluxDB is down (no history) and overrides a stale is_heating.
+    private val saunaTempTrail = ArrayDeque<Pair<Long, Double>>()
+
+    /** Records the live Sauna reading into [saunaTempTrail] at ≤ one sample per bucket. */
+    private fun recordSaunaTrend(now: Long, tempC: Double?) {
+        if (tempC == null) return
+        val last = saunaTempTrail.lastOrNull()
+        if (last == null || now - last.first >= SAUNA_TRAIL_BUCKET_SECONDS) {
+            saunaTempTrail.addLast(now to tempC)
+            while (saunaTempTrail.size > SAUNA_TRAIL_MAX) saunaTempTrail.removeFirst()
+        }
+    }
+
     /** "2 t 10 min" style elapsed label for the escalated sauna alarm. */
     private fun formatDuration(seconds: Long): String {
         val h = seconds / 3600
@@ -685,21 +715,44 @@ class KotiViewModel(
                     // the history the first time we see it on, then count forward.
                     val saunaNow = sauna.await()
                     val climbing = saunaNow?.isHeating == true
+                    // Record the live Ruuvi sauna reading (preferred over the MCP
+                    // status temp) into the rolling trend before judging on/off.
+                    val liveSaunaC = climateRepo.ruuvi.value[RuuviSensors.SAUNA]?.temperature
+                    recordSaunaTrend(nowEpochSeconds(), liveSaunaC ?: saunaNow?.currentTempC)
                     val maybeOn = climbing || saunaHeatingSinceEpoch != null ||
-                        (saunaNow?.currentTempC ?: 0.0) >= SAUNA_MAYBE_HOT_C
+                        (liveSaunaC ?: saunaNow?.currentTempC ?: 0.0) >= SAUNA_MAYBE_HOT_C
                     val heatState =
                         if (maybeOn) climateRepo.saunaHeatState() else SaunaHeatState(null, false)
-                    val saunaOn = climbing || heatState.holding
+                    // The live trend is authoritative once it spans enough buckets:
+                    // it reads a hot plateau as "on" and a switch-off cooldown as
+                    // "off" straight from the sensor. A stale is_heating only counts
+                    // during the early climb (temp still below the hot floor); the
+                    // InfluxDB heatState is the fallback until the trend fills in.
+                    val trend = saunaTempTrail.map { it.second }
+                    val liveHolding =
+                        if (trend.size >= SAUNA_TRAIL_MIN_FOR_TREND) saunaHoldingFromTemps(trend) else null
+                    val saunaOn = when (liveHolding) {
+                        null -> climbing || heatState.holding
+                        true -> true
+                        false -> climbing && (liveSaunaC ?: 0.0) < SAUNA_HOT_FLOOR_C
+                    }
                     saunaHeatingSinceEpoch =
                         if (saunaOn) saunaHeatingSinceEpoch ?: heatState.startEpoch else null
                     val saunaSecs = saunaHeatingSinceEpoch?.let { nowEpochSeconds() - it }
+                    val pricesNow = prices.await()
+                    val priceTierNow = priceTier.await()
                     Snapshots(
                         loading = false,
                         sauna = saunaNow,
                         saunaOn = saunaOn,
                         saunaHeatingSeconds = saunaSecs,
-                        prices = prices.await(),
-                        priceTier = priceTier.await(),
+                        // Spot prices come from the backend, not MQTT. Today's curve
+                        // is fixed for the whole day, so keep the last good fetch when
+                        // one momentarily fails (e.g. InfluxDB down) rather than
+                        // blanking "Sähkö nyt" — currentCentsPerKwh still resolves the
+                        // right hour from the retained series.
+                        prices = pricesNow ?: snapshots.value.prices,
+                        priceTier = priceTierNow ?: snapshots.value.priceTier,
                         hvac = hvac.await(),
                         air = air.await(),
                         outdoorRuuviC = ruuviOut.await(),
@@ -727,6 +780,9 @@ class KotiViewModel(
                         fetchedAt = nowEpochSeconds(),
                     )
                 }
+                // Total-failure banner only when there's nothing to show at all —
+                // retained prices (snap.prices) count as data, so a transient fetch
+                // failure after a good price fetch degrades quietly.
                 val allFailed = listOf(snap.sauna, snap.prices, snap.hvac, snap.air)
                     .all { it == null }
                 snapshots.value = snap.copy(error = if (allFailed) "Tietojen haku epäonnistui" else null)
@@ -767,9 +823,9 @@ class KotiViewModel(
         door = buildDoor(recent),
         cameraSnapshot = buildCameraSnapshot(recent, snap.cameraSnapshot),
         rooms = buildRooms(temps, demand, heatPump, snap.roomHistory),
-        kpis = buildKpis(snap, heatPump, ruuvi),
-        kioskStats = buildKioskStats(snap, heatPump),
-        outdoorKpi = outdoorKpi(snap, heatPump),
+        kpis = buildKpis(snap, heatPump, ruuvi, vent),
+        kioskStats = buildKioskStats(snap, heatPump, ruuvi, vent),
+        outdoorKpi = outdoorKpi(snap, heatPump, ruuvi, vent),
     )
 
     // ── Attention strip: only REAL abnormal conditions ────────────────────────
@@ -1092,6 +1148,7 @@ class KotiViewModel(
         snap: Snapshots,
         heatPump: HeatPumpStatus,
         ruuvi: Map<String, RuuviReading>,
+        vent: Ventilation,
     ): List<KotiKpi> {
         val now = nowEpochSeconds()
         val air = ruuvi[RuuviSensors.AIR_QUALITY]
@@ -1110,13 +1167,19 @@ class KotiViewModel(
         // Ilmastointi, Käyttövesi, Kosteus (two per row, top-to-bottom).
         return listOf(
             electricityKpi(snap.prices, snap.priceTier),
-            saunaKpi(snap.sauna, snap.history["sauna"].orEmpty(), snap.saunaOn),
-            co2Kpi(snap.air, snap.history["co2"].orEmpty()),
+            saunaKpi(snap.sauna, snap.history["sauna"].orEmpty(), snap.saunaOn, saunaTag),
+            co2Kpi(snap.air, air, snap.history["co2"].orEmpty()),
             indoorKpi(heatPump, snap.history["sisailma"].orEmpty()),
-            heatPumpKpi(heatPump, snap.hvac?.heatPumpPowerKw, snap.history["maalampo"].orEmpty()),
-            ventilationKpi(snap.hvac),
+            // Live metered heat-pump power (MQTT energy topic); the Flux summary
+            // is the fallback for when InfluxDB is up but the meter hasn't landed.
+            heatPumpKpi(
+                heatPump,
+                energyRepo.liveEnergy.value["heatpump"]?.powerKw ?: snap.hvac?.heatPumpPowerKw,
+                snap.history["maalampo"].orEmpty(),
+            ),
+            ventilationKpi(snap.hvac, vent),
             hotWaterKpi(heatPump, snap.history["vesi"].orEmpty()),
-            humidityKpi(snap.hvac, snap.history["kosteus"].orEmpty()),
+            humidityKpi(snap.hvac, vent, snap.history["kosteus"].orEmpty()),
         ).map { kpi ->
             val fresh = freshFor(kpi.key)
             kpi.copy(
@@ -1160,12 +1223,17 @@ class KotiViewModel(
      * the heat pump), and the history source follows the sensor the shown
      * reading came from, so the chart continues the headline number.
      */
-    private fun outdoorKpi(snap: Snapshots, hp: HeatPumpStatus): KotiKpi {
+    private fun outdoorKpi(snap: Snapshots, hp: HeatPumpStatus, ruuvi: Map<String, RuuviReading>, vent: Ventilation): KotiKpi {
         data class Src(val c: Double?, val m: String, val f: String, val tk: String? = null, val tv: String? = null)
+        // Live MQTT sources first (on-site Ruuvi, then the ventilation unit, then
+        // the heat pump), and only then the InfluxDB snapshot — the detail chart
+        // still points at a real Flux series for the shown reading.
         val src = listOf(
+            Src(ruuvi[RuuviSensors.OUTDOOR]?.temperature, "ruuvi", "temperature", "sensor_name", RuuviSensors.OUTDOOR),
+            Src(vent.outdoorC, "hvac", "Ulkolampotila"),
+            Src(hp.outdoorC?.takeIf { hp.available }, "thermia", "outdoor_temp"),
             Src(snap.outdoorRuuviC, "ruuvi", "temperature", "sensor_name", RuuviSensors.OUTDOOR),
             Src(snap.hvac?.outdoorC, "hvac", "Ulkolampotila"),
-            Src(hp.outdoorC?.takeIf { hp.available }, "thermia", "outdoor_temp"),
         ).firstOrNull { it.c != null }
         return plainKpi(
             key = "ulko",
@@ -1185,7 +1253,7 @@ class KotiViewModel(
      * The supply-air (Tuloilma) tile: the temperature the MVHR delivers into the
      * rooms, with a "VIILENNYS" badge while the cooling pump is running (design).
      */
-    private fun ventilationKpi(hvac: HvacSummary?): KotiKpi {
+    private fun ventilationKpi(hvac: HvacSummary?, vent: Ventilation): KotiKpi {
         val cooling = climateRepo.cooling.value
         val active = cooling.pumpCooling || cooling.coolingPump
         return plainKpi(
@@ -1193,8 +1261,11 @@ class KotiViewModel(
             icon = MkIcons.FanFill,
             label = "Tuloilma",
             // The air actually delivered to the rooms (Tuloilmakanava, post cooling
-            // battery), not the post-heating-coil sensor.
-            value = (hvac?.supplyDuctC ?: hvac?.supplyPostHeatC)?.let { Fmt.oneDecimal(it) },
+            // battery), not the post-heating-coil sensor. Prefer the live MQTT duct
+            // temp (calibrated, off the temperatures topic); the Flux snapshot and
+            // the post-heat sensor are fallbacks for when MQTT hasn't landed it yet.
+            value = (cooling.supplyDuctC ?: hvac?.supplyDuctC ?: hvac?.supplyPostHeatC ?: vent.supplyC)
+                ?.let { Fmt.oneDecimal(it) },
             unit = "°C",
             tag = if (active) "VIILENNYS" else null,
             tagStatus = MkTagStatus.Ok,
@@ -1223,23 +1294,27 @@ class KotiViewModel(
         detailField = "indoor_temp",
     )
 
-    private fun humidityKpi(hvac: HvacSummary?, history: List<Float>): KotiKpi = plainKpi(
+    private fun humidityKpi(hvac: HvacSummary?, vent: Ventilation, history: List<Float>): KotiKpi = plainKpi(
         key = "kosteus",
         icon = MkIcons.DropHalf,
         label = "Kosteus",
-        value = hvac?.humidityPct?.let { Fmt.int(it) },
+        // Live extract-air humidity off the MQTT ventilation topic; the Flux
+        // snapshot is the fallback for when InfluxDB is up but MQTT hasn't landed.
+        value = (vent.relativeHumidity ?: hvac?.humidityPct)?.let { Fmt.int(it) },
         unit = "%",
         spark = history,
         detailMeasurement = "hvac",
         detailField = "Suhteellinen_kosteus",
     )
 
-    private fun saunaKpi(sauna: SaunaStatus?, spark: List<Float>, on: Boolean): KotiKpi {
+    private fun saunaKpi(sauna: SaunaStatus?, spark: List<Float>, on: Boolean, live: RuuviReading?): KotiKpi {
         return plainKpi(
             key = "sauna",
             icon = MkIcons.FlameFill,
             label = "Sauna",
-            value = sauna?.currentTempC?.let { Fmt.oneDecimal(it) },
+            // The backend sauna status reads InfluxDB; when it's down, fall back to
+            // the live Ruuvi sauna tag the gateway pushes straight over MQTT.
+            value = (sauna?.currentTempC ?: live?.temperature)?.let { Fmt.oneDecimal(it) },
             unit = "°C",
             spark = spark,
             status = if (on) MkStatStatus.Warn else MkStatStatus.None,
@@ -1258,9 +1333,15 @@ class KotiViewModel(
      * humidity, LTO, CO₂); Sisällä and IVK have none. Absent data shows
      * "Ei tietoa" rather than a fabricated number.
      */
-    private fun buildKioskStats(snap: Snapshots, hp: HeatPumpStatus): List<KotiKpi> {
+    private fun buildKioskStats(
+        snap: Snapshots,
+        hp: HeatPumpStatus,
+        ruuvi: Map<String, RuuviReading>,
+        vent: Ventilation,
+    ): List<KotiKpi> {
         val h = snap.hvac
         val air = snap.air
+        val airRuuvi = ruuvi[RuuviSensors.AIR_QUALITY]
         fun stat(
             key: String,
             icon: ImageVector,
@@ -1290,15 +1371,24 @@ class KotiViewModel(
             detailField = detailField,
         )
         val co2 = air?.co2
-        val ivkAlarm = h?.anyAlarm == true
+        // Live CO₂ value from the kitchen Ruuvi push; MCP snapshot supplies the verdict.
+        val co2Value = airRuuvi?.co2?.toDouble() ?: co2?.value
+        // Prefer live MQTT: the on-site Ruuvi / ventilation unit over the Flux snapshot.
+        val outdoorC = ruuvi[RuuviSensors.OUTDOOR]?.temperature ?: vent.outdoorC ?: h?.outdoorC
+        val humidityPct = vent.relativeHumidity ?: h?.humidityPct
+        val ltoPct = vent.recoveryEfficiencyPct ?: h?.recoveryEfficiencyPct
+        // IVK alarm from the live ventilation topic; the Flux alarm flags are the fallback.
+        val ivkAlarm = vent.alarms.isNotEmpty() || h?.anyAlarm == true
+        // Show IVK status whenever any HVAC source has reported, live or snapshot.
+        val ivkKnown = vent != Ventilation() || h != null
         return listOf(
-            stat("k_ulko", MkIcons.ThermometerCold, "Ulkona", h?.outdoorC?.let { Fmt.oneDecimal(it) }, "°C", snap.history["ulko"].orEmpty(), detailMeasurement = "hvac", detailField = "Ulkolampotila"),
+            stat("k_ulko", MkIcons.ThermometerCold, "Ulkona", outdoorC?.let { Fmt.oneDecimal(it) }, "°C", snap.history["ulko"].orEmpty(), detailMeasurement = "hvac", detailField = "Ulkolampotila"),
             stat("k_sisalla", MkIcons.HouseFill, "Sisällä", hp.indoorC?.takeIf { hp.available }?.let { Fmt.oneDecimal(it) }, "°C", detailMeasurement = "thermia", detailField = "indoor_temp"),
             stat("k_vesi", MkIcons.DropFill, "Käyttövesi", hp.hotWaterC?.takeIf { hp.available }?.let { Fmt.oneDecimal(it) }, "°C", snap.history["vesi"].orEmpty(), detailMeasurement = "thermia", detailField = "hotwater_temp"),
-            stat("k_kosteus", MkIcons.DropHalf, "Kosteus", h?.humidityPct?.let { Fmt.int(it) }, "%", snap.history["kosteus"].orEmpty(), detailMeasurement = "hvac", detailField = "Suhteellinen_kosteus"),
-            stat("k_lto", MkIcons.FanFill, "LTO", h?.recoveryEfficiencyPct?.let { Fmt.int(it) }, "%", snap.history["lto"].orEmpty(), detailMeasurement = "hvac_lto", detailField = "lto"),
+            stat("k_kosteus", MkIcons.DropHalf, "Kosteus", humidityPct?.let { Fmt.int(it) }, "%", snap.history["kosteus"].orEmpty(), detailMeasurement = "hvac", detailField = "Suhteellinen_kosteus"),
+            stat("k_lto", MkIcons.FanFill, "LTO", ltoPct?.let { Fmt.int(it) }, "%", snap.history["lto"].orEmpty(), detailMeasurement = "hvac_lto", detailField = "lto"),
             stat(
-                "k_co2", MkIcons.Wind, "CO₂", co2?.let { Fmt.int(it.value) }, co2?.unit ?: "ppm",
+                "k_co2", MkIcons.Wind, "CO₂", co2Value?.let { Fmt.int(it) }, co2?.unit ?: "ppm",
                 snap.history["co2"].orEmpty(),
                 status = when (air?.statusOf(co2)) {
                     "warn" -> MkStatStatus.Warn
@@ -1309,7 +1399,7 @@ class KotiViewModel(
             ),
             stat(
                 "k_ivk", MkIcons.FanFill, "IVK",
-                value = if (h == null) null else if (ivkAlarm) "Tarkista" else "OK",
+                value = if (!ivkKnown) null else if (ivkAlarm) "Tarkista" else "OK",
                 unit = null,
                 status = if (ivkAlarm) MkStatStatus.Warn else MkStatStatus.None,
                 tag = if (ivkAlarm) "TARKISTA" else null,
@@ -1349,20 +1439,23 @@ class KotiViewModel(
         )
     }
 
-    private fun co2Kpi(air: AirQuality?, history: List<Float>): KotiKpi {
+    private fun co2Kpi(air: AirQuality?, live: RuuviReading?, history: List<Float>): KotiKpi {
         val co2 = air?.co2
+        // Prefer the live Ruuvi CO₂ push; the MCP snapshot is the fallback and
+        // still supplies the good/moderate/poor verdict and the sensor location.
+        val value = live?.co2?.toDouble() ?: co2?.value
         // The sensor location arrives as e.g. "Kitchen (Keittiö)"; prefer the
         // Finnish name in parentheses so the tile reads "CO₂ · Keittiö".
         val loc = air?.location?.takeIf { it.isNotBlank() }?.let { raw ->
             Regex("""\(([^)]+)\)""").find(raw)?.groupValues?.get(1)?.trim() ?: raw
-        }
+        } ?: RuuviSensors.AIR_QUALITY.takeIf { live?.co2 != null }
         val st = air?.statusOf(co2)
         return KotiKpi(
             key = "co2",
             icon = MkIcons.Wind,
             label = "CO₂" + (loc?.let { " · $it" } ?: ""),
-            value = co2?.let { Fmt.int(it.value) } ?: "Ei tietoa",
-            unit = co2?.unit,
+            value = value?.let { Fmt.int(it) } ?: "Ei tietoa",
+            unit = if (value != null) (co2?.unit ?: "ppm") else null,
             statStatus = when (st) {
                 "warn" -> MkStatStatus.Warn
                 "alarm" -> MkStatStatus.Alarm
@@ -1528,6 +1621,18 @@ class KotiViewModel(
          * sauna doesn't query every cycle.
          */
         const val SAUNA_MAYBE_HOT_C = 45.0
+
+        /** A Sauna reading at/above this is hot enough that a decline means cooling, not idle. */
+        const val SAUNA_HOT_FLOOR_C = 50.0
+
+        /** Spacing of the live Sauna trend buckets (5 min, matching the InfluxDB step). */
+        const val SAUNA_TRAIL_BUCKET_SECONDS = 5L * 60L
+
+        /** Buckets kept in the live Sauna trend (≈50 min — covers the plateau + early cooldown). */
+        const val SAUNA_TRAIL_MAX = 12
+
+        /** Buckets needed before the live trend can judge a cooldown (peak + a 15-min lookback). */
+        const val SAUNA_TRAIL_MIN_FOR_TREND = 4
 
         // ── Ruuvi alert + freshness thresholds ────────────────────────────────
         /** A live-sensor tile whose reading is older than this dims as stale. */

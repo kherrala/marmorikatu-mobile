@@ -31,11 +31,15 @@ class LightsRepositoryTest {
         assertEquals("Olohuone", olohuone.name)
         assertTrue(olohuone.isOn)
 
-        // Single toggle goes over MQTT when connected and shows optimistically.
+        // Single toggle goes over MQTT when connected and shows optimistically —
+        // the /set command plus its /command provenance breadcrumb.
         repo.setLight(51, true)
         runCurrent()
         assertEquals(
-            listOf(Triple("marmorikatu/light/51/set", "true", false)),
+            listOf(
+                Triple("marmorikatu/light/51/set", "true", false),
+                Triple("marmorikatu/light/51/command", """{"on":true,"src":"mobile"}""", false),
+            ),
             mqtt.published,
         )
         assertEquals(true, repo.lights.value.first { it.id == 51 }.displayedOn)

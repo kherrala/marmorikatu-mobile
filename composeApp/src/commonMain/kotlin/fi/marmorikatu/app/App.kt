@@ -83,7 +83,20 @@ fun App() {
                 // render as more pixels — a whole-UI zoom — and shrinks the dp space
                 // the layout sees, so pass the scaled dimensions through.
                 val kiosk = rawW >= TABLET_MIN_DP || rawW > rawH
-                val scale = if (kiosk) (rawW / KIOSK_TARGET_DP).coerceIn(1f, 1.6f) else 1f
+                val portrait = rawH > rawW
+                val scale = when {
+                    !kiosk -> 1f
+                    // Landscape kiosk: zoom to the design's target width.
+                    !portrait -> (rawW / KIOSK_TARGET_DP).coerceIn(1f, 1.6f)
+                    // Portrait kiosk: a width-based zoom left it at 1:1 (tiny text),
+                    // because the narrow side never reaches the target. Zoom off the
+                    // long side instead — but cap it so the scaled width still clears
+                    // the tablet threshold, keeping the kiosk dashboard rather than
+                    // collapsing onto the phone surface.
+                    else -> (rawH / KIOSK_TARGET_DP).coerceIn(1f, 1.6f)
+                        .coerceAtMost(rawW / (TABLET_MIN_DP + 8f))
+                        .coerceAtLeast(1f)
+                }
 
                 if (scale > 1.01f) {
                     val d = LocalDensity.current

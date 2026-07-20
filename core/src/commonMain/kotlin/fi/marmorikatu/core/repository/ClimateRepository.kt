@@ -185,6 +185,9 @@ class DefaultClimateRepository(
                             it.copy(
                                 coilTemp1 = coil("jaahdpatteri_1").calibratedRtd2() ?: it.coilTemp1,
                                 coilTemp2 = coil("jaahdpatteri_2").calibratedRtd2() ?: it.coilTemp2,
+                                // The third PT100 on the same analog module: the live,
+                                // calibrated supply-duct temp for the Tuloilma tile.
+                                supplyDuctC = coil("tuloilmakanava").calibratedRtd2() ?: it.supplyDuctC,
                             )
                         }
                         cache(KEY_TEMPS, text)
@@ -464,12 +467,27 @@ internal fun saunaHolding(
     peakWindow: Int = SAUNA_PEAK_WINDOW,
     fallMargin: Double = SAUNA_FALL_MARGIN_C,
     declineLookback: Int = SAUNA_DECLINE_LOOKBACK,
+): Boolean = saunaHoldingFromTemps(points.map { it.value }, hotFloor, peakWindow, fallMargin, declineLookback)
+
+/**
+ * The [saunaHolding] verdict from a plain temperature series ([values],
+ * oldest→newest) — the same logic the InfluxDB path uses, exposed (public, so the
+ * composeApp module can reach it) for the live MQTT Ruuvi trend the app keeps so
+ * the sauna reads "on/off" straight off the live sensor when InfluxDB is
+ * unavailable (or slow to reflect a switch-off).
+ */
+fun saunaHoldingFromTemps(
+    values: List<Double>,
+    hotFloor: Double = SAUNA_HOT_FLOOR_C,
+    peakWindow: Int = SAUNA_PEAK_WINDOW,
+    fallMargin: Double = SAUNA_FALL_MARGIN_C,
+    declineLookback: Int = SAUNA_DECLINE_LOOKBACK,
 ): Boolean {
-    val current = points.lastOrNull()?.value ?: return false
+    val current = values.lastOrNull() ?: return false
     if (current < hotFloor) return false
-    val recentPeak = points.takeLast(peakWindow).maxOf { it.value }
+    val recentPeak = values.takeLast(peakWindow).max()
     val belowPeak = current <= recentPeak - fallMargin
-    val earlier = points.getOrNull(points.size - 1 - declineLookback)?.value
+    val earlier = values.getOrNull(values.size - 1 - declineLookback)
     val stillFalling = earlier != null && current < earlier
     return !(belowPeak && stillFalling)
 }

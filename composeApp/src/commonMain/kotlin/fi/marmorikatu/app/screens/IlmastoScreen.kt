@@ -260,8 +260,8 @@ fun IlmastoScreen(
                     // Section order mirrors the redesign: ventilation first (with the
                     // system diagram), then air quality, temperatures, heat pump,
                     // cooling, and the sensor list last.
-                    item(key = "iv") { VentilationCard(snapshot, ventilation, updatedAt) }
-                item(key = "ilma") { AirQualityCard(snapshot, openFocus) }
+                    item(key = "iv") { VentilationCard(snapshot, ventilation, cooling, updatedAt) }
+                item(key = "ilma") { AirQualityCard(snapshot, ruuvi[AIR_SENSOR], openFocus) }
                 item(key = "lampo") {
                     Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap)) {
                         HistoryCard(snapshot, viewModel)
@@ -366,7 +366,7 @@ private fun HistoryCard(snapshot: IlmastoSnapshot, viewModel: IlmastoViewModel) 
 // ── Ilmanlaatu: humidity / CO₂ / PM2.5 gauges + tiles ───────────────────────
 
 @Composable
-private fun AirQualityCard(snapshot: IlmastoSnapshot, onFocus: (FocusMetric) -> Unit) {
+private fun AirQualityCard(snapshot: IlmastoSnapshot, airRuuvi: RuuviReading?, onFocus: (FocusMetric) -> Unit) {
     val hvac = snapshot.hvac
     val air = snapshot.air
 
@@ -380,36 +380,41 @@ private fun AirQualityCard(snapshot: IlmastoSnapshot, onFocus: (FocusMetric) -> 
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            val humidity = air?.humidity?.value ?: hvac?.humidityPct
+            // Prefer the live Ruuvi push for the reading; the MCP snapshot (and the
+            // hvac fallback for humidity) fill in when a live value hasn't landed,
+            // and the MCP verdict still drives the CO₂/PM status colour.
+            val humidity = airRuuvi?.humidity ?: air?.humidity?.value ?: hvac?.humidityPct
             // Only the ruuvi humidity has a history series to focus; the hvac
             // fallback isn't the same measurement, so it stays non-tappable.
-            GaugeSlot(onClick = air?.humidity?.let { h ->
-                { onFocus(FocusMetric(MkIcons.DropHalf, "Kosteus", Fmt.int(h.value), "%", "ruuvi", "humidity", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+            GaugeSlot(onClick = humidity.takeIf { airRuuvi?.humidity != null || air?.humidity != null }?.let { h ->
+                { onFocus(FocusMetric(MkIcons.DropHalf, "Kosteus", Fmt.int(h), "%", "ruuvi", "humidity", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
             }) {
                 MkGauge(value = humidity?.toFloat(), max = 100f, label = "Kosteus", unit = "%", status = "accent", size = 96.dp)
             }
             val co2 = air?.co2
-            GaugeSlot(onClick = co2?.let { c ->
-                { onFocus(FocusMetric(MkIcons.Wind, "CO₂", Fmt.int(c.value), "ppm", "ruuvi", "co2", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+            val co2Value = airRuuvi?.co2?.toDouble() ?: co2?.value
+            GaugeSlot(onClick = co2Value?.let { c ->
+                { onFocus(FocusMetric(MkIcons.Wind, "CO₂", Fmt.int(c), "ppm", "ruuvi", "co2", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
             }) {
-                MkGauge(value = co2?.value?.toFloat(), max = 1500f, label = "CO₂ ppm", unit = "", status = co2?.let { air?.statusOf(it) } ?: "accent", size = 96.dp)
+                MkGauge(value = co2Value?.toFloat(), max = 1500f, label = "CO₂ ppm", unit = "", status = co2?.let { air?.statusOf(it) } ?: "accent", size = 96.dp)
             }
             val pm = air?.pm25
-            GaugeSlot(onClick = pm?.let { p ->
-                { onFocus(FocusMetric(MkIcons.Wind, "PM2.5", Fmt.oneDecimal(p.value), "µg/m³", "ruuvi", "pm2_5", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+            val pmValue = airRuuvi?.pm25 ?: pm?.value
+            GaugeSlot(onClick = pmValue?.let { p ->
+                { onFocus(FocusMetric(MkIcons.Wind, "PM2.5", Fmt.oneDecimal(p), "µg/m³", "ruuvi", "pm2_5", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
             }) {
-                MkGauge(value = pm?.value?.toFloat(), max = 35f, label = "PM2.5", unit = "", status = pm?.let { air?.statusOf(it) } ?: "ok", size = 96.dp)
+                MkGauge(value = pmValue?.toFloat(), max = 35f, label = "PM2.5", unit = "", status = pm?.let { air?.statusOf(it) } ?: "ok", size = 96.dp)
             }
         }
-        val voc = air?.voc
+        val vocValue = airRuuvi?.voc ?: air?.voc?.value?.toInt()
         // Dew point, derived from the sensor's own temperature + humidity (design
         // replaces the plain temperature tile with Kastepiste).
         val dewC = run {
-            val temp = air?.temperature?.value
-            val rh = air?.humidity?.value
+            val temp = airRuuvi?.temperature ?: air?.temperature?.value
+            val rh = airRuuvi?.humidity ?: air?.humidity?.value
             if (temp != null && rh != null) dewPointC(temp, rh) else null
         }
-        if (voc != null || dewC != null) {
+        if (vocValue != null || dewC != null) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
                 horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
@@ -424,10 +429,10 @@ private fun AirQualityCard(snapshot: IlmastoSnapshot, onFocus: (FocusMetric) -> 
                 )
                 MkStatTile(
                     label = "VOC-indeksi",
-                    value = voc?.let { Fmt.int(it.value) } ?: NO_DATA,
+                    value = vocValue?.let { Fmt.int(it.toDouble()) } ?: NO_DATA,
                     icon = MkIcons.Wind,
-                    onClick = voc?.let {
-                        { onFocus(FocusMetric(MkIcons.Wind, "VOC-indeksi", Fmt.int(it.value), "", "ruuvi", "voc", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
+                    onClick = vocValue?.let {
+                        { onFocus(FocusMetric(MkIcons.Wind, "VOC-indeksi", Fmt.int(it.toDouble()), "", "ruuvi", "voc", tagKey = "sensor_name", tagValue = AIR_SENSOR)) }
                     },
                     modifier = Modifier.weight(1f),
                 )
@@ -546,6 +551,7 @@ private fun HeatPumpCard(hp: HeatPumpStatus, dutyPct: Double?, onFocus: (FocusMe
 private fun VentilationCard(
     snapshot: IlmastoSnapshot,
     ventilation: Ventilation,
+    cooling: Cooling,
     updatedAt: Long?,
 ) {
     val c = MkTheme.colors
@@ -556,7 +562,11 @@ private fun VentilationCard(
     val bypassOpen = (vraw("hxbypassopen", "ohitus_auki") ?: 0.0) != 0.0
     val airflow = vraw("supplyfanspeed", "exhaustfanspeed", "tulopuhallin_nopeus")?.takeIf { it > 0 }
         ?: IV_DEFAULT_AIRFLOW.getOrNull(modeIndex)?.toDouble()
-    val lto = snapshot.hvac?.recoveryEfficiencyPct ?: vraw("hreefficiency", "lto_hyotysuhde")?.takeIf { it > 0 }
+    // Prefer the live exchanger-gradient efficiency (same formula as the Influx
+    // snapshot); the PLC's own `hreefficiency` field pins to 0, so it's the last
+    // resort only.
+    val lto = ventilation.recoveryEfficiencyPct ?: snapshot.hvac?.recoveryEfficiencyPct
+        ?: vraw("hreefficiency", "lto_hyotysuhde")?.takeIf { it > 0 }
     val hv = snapshot.hvac
 
     // The supply air's journey: outside intake → LTO recovery → heating coil →
@@ -566,7 +576,9 @@ private fun VentilationCard(
     val outdoor = ventilation.outdoorC ?: hv?.outdoorC          // ULKOILMA (intake)
     val afterLto = ventilation.supplyPreHeatC ?: hv?.supplyPreHeatC
     val afterHeat = ventilation.supplyC ?: hv?.supplyPostHeatC
-    val delivered = hv?.supplyDuctC ?: afterHeat                // TULOILMA (delivered)
+    // TULOILMA (delivered): the live calibrated duct temp off the temperatures
+    // topic, then the InfluxDB snapshot, then the post-heat sensor as a fallback.
+    val delivered = cooling.supplyDuctC ?: hv?.supplyDuctC ?: afterHeat
     val extract = ventilation.extractC ?: hv?.extractC          // POISTOILMA
     val exhaust = ventilation.exhaustC ?: hv?.exhaustC          // JÄTEILMA
     fun delta(a: Double?, b: Double?) = if (a != null && b != null) a - b else null
