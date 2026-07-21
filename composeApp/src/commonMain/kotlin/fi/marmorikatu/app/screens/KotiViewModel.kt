@@ -614,6 +614,25 @@ class KotiViewModel(
                 if (temps.isNotEmpty()) _updatedAt.value = nowEpochSeconds()
             }
         }
+        // A person alert streams in image-stripped; the picture lives only on the
+        // bridge's retained camera snapshot. Pull it right away (not on the next
+        // 12 s refresh) so the "Etupihalla henkilö" banner shows the face while
+        // it's still on screen.
+        viewModelScope.launch {
+            announcementsRepo.recent.collect { list ->
+                val newest = list.firstOrNull() ?: return@collect
+                val isPerson = newest.kind.startsWith("person", ignoreCase = true) ||
+                    newest.kind.contains("henkilö", ignoreCase = true) ||
+                    newest.text.contains("henkilö", ignoreCase = true)
+                if (isPerson && newest.image.isNullOrBlank() &&
+                    (snapshots.value.cameraSnapshot?.ts ?: 0.0) < newest.ts
+                ) {
+                    runCatching { announcementsRepo.cameraSnapshot() }.getOrNull()?.let { shot ->
+                        snapshots.update { it.copy(cameraSnapshot = shot) }
+                    }
+                }
+            }
+        }
         // Keep the KPI tiles live: silently re-fetch on a cadence so they pulse
         // with fresh data (new fetchedAt) without the pull-to-refresh spinner.
         viewModelScope.launch {
@@ -820,7 +839,7 @@ class KotiViewModel(
         loading = snap.loading,
         error = snap.error,
         attention = buildAttention(snap, ruuvi, vent, heatPump),
-        door = buildDoor(recent),
+        door = buildDoor(recent, snap.cameraSnapshot),
         cameraSnapshot = buildCameraSnapshot(recent, snap.cameraSnapshot),
         rooms = buildRooms(temps, demand, heatPump, snap.roomHistory),
         kpis = buildKpis(snap, heatPump, ruuvi, vent),
@@ -1067,17 +1086,23 @@ class KotiViewModel(
 
     // ── Door alert: only the newest "person" / "henkilö" announcement ─────────
 
-    private fun buildDoor(recent: List<Announcement>): DoorInfo? {
+    private fun buildDoor(recent: List<Announcement>, retained: Announcement?): DoorInfo? {
         val newest = recent.firstOrNull() ?: return null
         val isPerson = newest.kind.startsWith("person", ignoreCase = true) ||
             newest.kind.contains("henkilö", ignoreCase = true) ||
             newest.text.contains("henkilö", ignoreCase = true)
         if (!isPerson) return null
+        // The stream/history strip images to save bandwidth, so the person alert
+        // arrives with no picture. Pull it from the retained camera snapshot
+        // (GET /announcements/camera keeps the frame) as long as it's this same
+        // detection or newer — never an older, stale frame.
+        val image = newest.image
+            ?: retained?.takeIf { !it.image.isNullOrBlank() && it.ts >= newest.ts }?.image
         return DoorInfo(
             title = "Etupihalla henkilö",
             time = Fmt.clock(newest.ts),
             subtitle = newest.text,
-            image = newest.image,
+            image = image,
         )
     }
 
