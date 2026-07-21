@@ -273,6 +273,7 @@ private val voiceQuickCommands = listOf(
  * listening, a thinking indicator, or the spoken transcript. Renders nothing
  * while idle. Must be placed in a fill-size [Box].
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun BoxScope.VoiceOverlay(
     voice: VoiceState,
@@ -287,6 +288,11 @@ private fun BoxScope.VoiceOverlay(
 ) {
     if (voice == VoiceState.Idle) return
     val colors = MkTheme.colors
+
+    // Back closes the overlay (returning to the screen underneath) instead of
+    // falling through to the tab handler — which, on the Koti tab, is disabled and
+    // would let the system back exit the whole app.
+    BackHandler { onDismiss() }
 
     // Swipe down anywhere to dismiss. Two paths so it works over the whole sheet,
     // not just the avatar: a raw vertical-drag detector catches the non-scrolling
