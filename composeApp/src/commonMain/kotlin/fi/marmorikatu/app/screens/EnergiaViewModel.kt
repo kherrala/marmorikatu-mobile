@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
@@ -107,6 +108,9 @@ class EnergiaViewModel(
          * their detail charts the in-memory [cost] trend instead of InfluxDB.
          */
         const val KULUTUS_TREND = "kulutus_trend"
+
+        /** Per-source fetch ceiling so a hung backend/InfluxDB call can't freeze a card on "loading". */
+        private const val FETCH_TIMEOUT_MS = 8_000L
     }
 
     /** InfluxDB snapshot that seeds the meter card before the live MQTT topics arrive. */
@@ -127,6 +131,11 @@ class EnergiaViewModel(
     /** Heating optimization: the price-tier forecast + heat-pump bias. Null until loaded. */
     private val _heatingOpti = MutableStateFlow<HeatingOpti?>(null)
     val heatingOpti: StateFlow<HeatingOpti?> = _heatingOpti.asStateFlow()
+
+    // True once a refresh has completed, so the card can tell "still loading" from
+    // "loaded, but no prices to optimize" (null opti) and stop spinning forever.
+    private val _heatingOptiLoaded = MutableStateFlow(false)
+    val heatingOptiLoaded: StateFlow<Boolean> = _heatingOptiLoaded.asStateFlow()
 
     /** Light usage: on/total, kWh, per-floor on-time, automation counts. Null until loaded. */
     private val _lightUsage = MutableStateFlow<LightUsage?>(null)
@@ -155,6 +164,15 @@ class EnergiaViewModel(
 
     /** Pull today's spot curve. The screen also re-invokes this every 5 min. */
     @OptIn(ExperimentalTime::class)
+    /**
+     * Runs a repository fetch with a ceiling so a hung backend call (e.g. an
+     * InfluxDB query that never returns) can't stall the whole refresh's
+     * [coroutineScope] and leave the cards spinning "loading" forever — it just
+     * degrades that one source to null.
+     */
+    private suspend fun <T> timed(block: suspend () -> T): T? =
+        withTimeoutOrNull(FETCH_TIMEOUT_MS) { runCatching { block() }.getOrNull() }
+
     fun refresh() {
         viewModelScope.launch {
             _refreshing.value = true
@@ -164,16 +182,16 @@ class EnergiaViewModel(
                     // the price card, the heating-optimization card, and the light-usage
                     // card. Each source degrades on its own — a missing one just leaves
                     // its part of a card empty.
-                    val pricesD = async { runCatching { energyRepo.electricityPrices() }.getOrNull() }
-                    val tierD = async { runCatching { energyRepo.priceTier() }.getOrNull() }
-                    val optimizerD = async { runCatching { energyRepo.heatingOptimizer() }.getOrNull() }
-                    val onTimeD = async { runCatching { energyRepo.lightOnTimeByFloor() }.getOrNull() }
-                    val autoOffD = async { runCatching { energyRepo.lightAutoOffCounts() }.getOrNull() }
+                    val pricesD = async { timed { energyRepo.electricityPrices() } }
+                    val tierD = async { timed { energyRepo.priceTier() } }
+                    val optimizerD = async { timed { energyRepo.heatingOptimizer() } }
+                    val onTimeD = async { timed { energyRepo.lightOnTimeByFloor() } }
+                    val autoOffD = async { timed { energyRepo.lightAutoOffCounts() } }
                     // The light card's "kWh tänään" is always today's lighting, kept
                     // independent of the Kulutus range selector.
-                    val lightingKwhD = async { runCatching { energyRepo.lightingKwh("-24h") }.getOrNull() }
+                    val lightingKwhD = async { timed { energyRepo.lightingKwh("-24h") } }
                     // Seed the meter card from InfluxDB so it isn't blank until MQTT connects.
-                    val snapshotD = async { runCatching { energyRepo.latestMeterSnapshot() }.getOrNull() }
+                    val snapshotD = async { timed { energyRepo.latestMeterSnapshot() } }
 
                     snapshotD.await()?.takeIf { it.isNotEmpty() }?.let { _meterSnapshot.value = it }
 
@@ -184,11 +202,19 @@ class EnergiaViewModel(
                         latestPrices = prices
                         _prices.value = PriceState.Ready(prices.toModel(tierD.await()))
                         _updatedAt.value = Clock.System.now().epochSeconds
-                        _heatingOpti.value = buildHeatingOpti(prices, optimizerD.await() ?: emptyMap())
                     } else if (_prices.value !is PriceState.Ready) {
                         // Keep prior data on a transient failure; only flag when we have none.
                         _prices.value = PriceState.Failed
                     }
+                    // Rebuild the heating-optimization card from the freshest prices
+                    // we have (this fetch, else the last good one). When there are no
+                    // prices at all it stays null, but the card now reads that as
+                    // "Ei tietoa" (see [heatingOptiLoaded]) rather than spinning
+                    // "loading" forever.
+                    (prices ?: latestPrices)?.let {
+                        _heatingOpti.value = buildHeatingOpti(it, optimizerD.await() ?: emptyMap())
+                    }
+                    _heatingOptiLoaded.value = true
 
                     _lightUsage.value = buildLightUsage(
                         lights = lightsRepo.lights.value,
@@ -217,8 +243,8 @@ class EnergiaViewModel(
         _costLoading.value = true
         try {
             coroutineScope {
-                val breakdownD = async { runCatching { energyRepo.energyBreakdown(range.flux) }.getOrNull() }
-                val trendD = async { runCatching { energyRepo.energyCostTrend(range.flux, range.every) }.getOrNull() }
+                val breakdownD = async { timed { energyRepo.energyBreakdown(range.flux) } }
+                val trendD = async { timed { energyRepo.energyCostTrend(range.flux, range.every) } }
                 val built = buildCost(range, breakdownD.await(), latestPrices, trendD.await() ?: emptyList())
                 // Guard against a stale write if the user tapped another range mid-fetch.
                 if (_range.value == range) _cost.value = built

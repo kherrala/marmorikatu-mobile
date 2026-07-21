@@ -107,6 +107,7 @@ fun EnergiaScreen(
     val cost by viewModel.cost.collectAsState()
     val costLoading by viewModel.costLoading.collectAsState()
     val heatingOpti by viewModel.heatingOpti.collectAsState()
+    val heatingOptiLoaded by viewModel.heatingOptiLoaded.collectAsState()
     val lightUsage by viewModel.lightUsage.collectAsState()
     val refreshing by viewModel.refreshing.collectAsState()
     val focus by viewModel.focus.collectAsState()
@@ -199,7 +200,7 @@ fun EnergiaScreen(
                     item(key = "hinta") { PriceCard(priceState, viewModel::openFocus) }
                     item(key = "mittari") { MetersCard(liveEnergy, viewModel::openFocus) }
                     item(key = "kulutus") { KulutusSection(cost, range, costLoading, viewModel::setRange, viewModel::openFocus) }
-                    item(key = "optimointi") { HeatingOptiCard(heatingOpti, viewModel::openFocus) }
+                    item(key = "optimointi") { HeatingOptiCard(heatingOpti, heatingOptiLoaded, viewModel::openFocus) }
                     item(key = "valot") { LightUsageCard(lightUsage) }
                     // Trailing space so tapping the last tab scrolls its section to
                     // the very top even when it's short.
@@ -751,14 +752,16 @@ private fun PeakCheapLabel(icon: ImageVector, tint: Color, text: String) {
 // ── Optimointi ("Lämmityksen optimointi") ────────────────────────────────────
 
 @Composable
-private fun HeatingOptiCard(opti: HeatingOpti?, onFocus: (FocusMetric) -> Unit) {
+private fun HeatingOptiCard(opti: HeatingOpti?, loaded: Boolean, onFocus: (FocusMetric) -> Unit) {
     val c = MkTheme.colors
     MkCard {
         MkCardHead("Lämmityksen optimointi", action = opti?.let { o ->
             { MkTag(o.nowTierLabel, status = o.nowTone.toTagStatus()) }
         })
         if (opti == null) {
-            QuietLine("Ladataan…")
+            // "Ei tietoa" once a refresh has finished without prices to optimize;
+            // only "Ladataan…" before the first refresh completes.
+            QuietLine(if (loaded) "Ei tietoa" else "Ladataan…")
             return@MkCard
         }
         // Per-hour tier forecast: bar heights encode the tier, first bar is "now".
