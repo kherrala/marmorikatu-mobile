@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -146,6 +148,8 @@ fun MkNavRail(
     brand: String = "M",
     onBrandClick: (() -> Unit)? = null,
     brandActive: Boolean = false,
+    /** An optional action pinned at the very top of the rail, above the logo. */
+    topAction: (@Composable () -> Unit)? = null,
     footer: @Composable () -> Unit = {},
 ) {
     val colors = MkTheme.colors
@@ -167,6 +171,12 @@ fun MkNavRail(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // Optional top action (e.g. the Talo 3D link) pinned above the logo.
+        topAction?.let {
+            it()
+            Spacer(Modifier.height(4.dp))
+        }
+
         // Logo tile. When [onBrandClick] is supplied it doubles as the Home
         // button — the "M" *is* Marmorikatu — so no separate house icon is
         // needed in the rail. A brighter ring marks it active.

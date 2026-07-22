@@ -265,7 +265,7 @@ fun IlmastoScreen(
                 item(key = "lampo") {
                     Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap)) {
                         HistoryCard(snapshot, viewModel)
-                        RoomsCard(rooms, heating, openFocus)
+                        RoomsCard(rooms, heating)
                     }
                 }
                 item(key = "maalampo") { HeatPumpCard(heatPump, heatPumpDuty, openFocus) }
@@ -1077,13 +1077,17 @@ private fun AnturitSection(ruuvi: Map<String, RuuviReading>, onFocus: (FocusMetr
         }
         Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.x2)) {
             rows.forEach { a ->
+                // Temperature observations don't drill into the landscape trend
+                // (the orientation flip is confusing); only non-temperature
+                // readings (e.g. pressure) keep their history chart.
+                val focus = a.focus?.takeIf { it.unit != "°C" }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(MkRadius.sm))
                         .background(if (a.warn) c.warmDim else c.surfaceCard)
                         .border(1.dp, if (a.warn) c.warm else c.borderSubtle, RoundedCornerShape(MkRadius.sm))
-                        .then(if (a.focus != null) Modifier.clickable { onFocus(a.focus) } else Modifier)
+                        .then(if (focus != null) Modifier.clickable { onFocus(focus) } else Modifier)
                         .padding(horizontal = MkSpacing.x3, vertical = MkSpacing.x2),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
@@ -1096,7 +1100,7 @@ private fun AnturitSection(ruuvi: Map<String, RuuviReading>, onFocus: (FocusMetr
                     )
                     Text(a.value, style = MkTheme.type.readout(15), color = c.inkHi)
                     // Chevron hints the row drills into a history chart.
-                    if (a.focus != null) {
+                    if (focus != null) {
                         Icon(MkIcons.CaretRight, null, tint = c.inkLo, modifier = Modifier.size(14.dp))
                     }
                 }
@@ -1111,7 +1115,6 @@ private fun AnturitSection(ruuvi: Map<String, RuuviReading>, onFocus: (FocusMetr
 private fun RoomsCard(
     rooms: List<RoomTemperature>,
     heating: List<HeatingDemand>,
-    onFocus: (FocusMetric) -> Unit,
 ) {
     val colors = MkTheme.colors
     MkCard {
@@ -1130,15 +1133,11 @@ private fun RoomsCard(
                 name = room.name,
                 celsius = room.celsius,
                 demandPct = demand,
-                // Each room temperature opens its history chart (the `rooms`
-                // measurement field this sensor writes).
-                onClick = known?.influxField?.let { field ->
-                    {
-                        onFocus(
-                            FocusMetric(icon, room.name, Fmt.oneDecimal(room.celsius), "°C", "rooms", field),
-                        )
-                    }
-                },
+                // Temperature observations no longer drill into the history chart:
+                // that view force-rotates to landscape, and the orientation flip on
+                // a simple temperature tap read as confusing. The trend stays
+                // reachable from the non-temperature metrics (CO₂, humidity, …).
+                onClick = null,
             )
         }
     }

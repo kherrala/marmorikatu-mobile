@@ -90,6 +90,22 @@ class BridgeApiTest {
     }
 
     @Test
+    fun announcementSseStreamParsesLiveEventsAndSkipsHeartbeats() = runTest {
+        val sse = buildString {
+            append("data: {}\n\n")
+            append("id: 61\n")
+            append("data: {\"text\":\"Etupihalla on henkilö.\",\"kind\":\"unifi_person_front\",")
+            append("\"priority\":1,\"key\":\"unifi_person_front\",\"ts\":1783313249.0,\"id\":61}\n\n")
+        }
+
+        val events = bridgeWith(sse).announcementStream(lastEventId = 60).toList()
+
+        assertEquals(1, events.size)
+        assertEquals(61, events.single().id)
+        assertEquals("unifi_person_front", events.single().kind)
+    }
+
+    @Test
     fun ttsDecodesNdjsonClips() = runTest {
         val clip = Base64.encode(byteArrayOf(1, 2, 3))
         val body = "{\"audio\": \"$clip\", \"text\": \"Hei\"}\n"

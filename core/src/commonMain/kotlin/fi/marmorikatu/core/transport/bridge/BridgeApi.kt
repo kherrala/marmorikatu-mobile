@@ -26,7 +26,7 @@ import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -65,7 +65,7 @@ class BridgeApi(
      * Streams a conversation turn. Emits [ChatEvent]s as the bridge produces
      * them; the flow completes after the terminal [ChatEvent.Done].
      */
-    fun chatStream(messages: List<ChatMessage>): Flow<ChatEvent> = flow {
+    fun chatStream(messages: List<ChatMessage>): Flow<ChatEvent> = channelFlow {
         log.d { "chatStream → POST $base/chat/stream (${messages.size} msgs)" }
         var events = 0
         try {
@@ -79,7 +79,7 @@ class BridgeApi(
             }.execute { response ->
                 log.d { "chatStream ← status ${response.status}" }
                 response.bodyAsChannel().readSseEvents { sse ->
-                    parseChatEvent(sse.data)?.let { events++; emit(it) }
+                    parseChatEvent(sse.data)?.let { events++; send(it) }
                 }
             }
             log.d { "chatStream done: $events events" }
@@ -161,7 +161,7 @@ class BridgeApi(
     }
 
     /** Server-side Piper TTS: one WAV clip per sentence, streamed as NDJSON. */
-    fun tts(text: String): Flow<ByteArray> = flow {
+    fun tts(text: String): Flow<ByteArray> = channelFlow {
         httpClient.preparePost("$base/tts") {
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject { put("text", text) })
@@ -172,7 +172,7 @@ class BridgeApi(
         }.execute { response ->
             response.bodyAsChannel().readNdjson { element ->
                 element.jsonObject["audio"]?.jsonPrimitive?.contentOrNull?.let {
-                    emit(Base64.decode(it))
+                    send(Base64.decode(it))
                 }
             }
         }
@@ -196,7 +196,7 @@ class BridgeApi(
      * Live announcement feed (SSE). Suspends for the life of the stream;
      * the caller retries with the last seen id for gapless resume.
      */
-    fun announcementStream(lastEventId: Long? = null): Flow<Announcement> = flow {
+    fun announcementStream(lastEventId: Long? = null): Flow<Announcement> = channelFlow {
         httpClient.prepareGet("$base/announcements/stream") {
             timeout {
                 requestTimeoutMillis = Long.MAX_VALUE
@@ -208,7 +208,7 @@ class BridgeApi(
             response.bodyAsChannel().readSseEvents { sse ->
                 runCatching {
                     AppJson.decodeFromString(Announcement.serializer(), sse.data)
-                }.onSuccess { emit(it) }
+                }.onSuccess { send(it) }
                     .onFailure {
                         // The stream interleaves keepalive/heartbeat frames
                         // (empty or `{}`) with real announcements — every ~20 s.

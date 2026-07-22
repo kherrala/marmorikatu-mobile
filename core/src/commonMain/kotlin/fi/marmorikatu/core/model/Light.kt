@@ -41,10 +41,14 @@ enum class Floor(val label: String) {
     }
 }
 
-/** Catalog entry from MCP `list_lights` (no live state attached). */
+/**
+ * Catalog entry from MCP `list_lights`. [isOn] is a best-effort Influx snapshot
+ * used only until retained MQTT state arrives; it is deliberately not persisted.
+ */
 @Serializable
 data class LightInfo(
     val id: Int,
     val name: String,
     val floor: Floor,
+    val isOn: Boolean? = null,
 )

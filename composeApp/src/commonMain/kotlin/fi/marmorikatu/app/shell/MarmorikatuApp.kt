@@ -1,5 +1,6 @@
 package fi.marmorikatu.app.shell
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -63,6 +64,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -79,11 +81,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import fi.marmorikatu.app.components.AttentionItem
+import fi.marmorikatu.app.components.MkAlertChip
+import fi.marmorikatu.app.components.MkWeatherChip
 import fi.marmorikatu.app.components.MkIconButton
 import fi.marmorikatu.app.components.MkIconButtonSize
+import fi.marmorikatu.app.components.MkIconButtonVariant
 import fi.marmorikatu.app.components.MkNavRail
 import fi.marmorikatu.app.components.MkTabBar
 import fi.marmorikatu.app.components.MkTabItem
@@ -96,8 +103,10 @@ import fi.marmorikatu.app.components.VoiceState
 import fi.marmorikatu.app.components.rememberGreeting
 import fi.marmorikatu.app.components.rememberWallClock
 import fi.marmorikatu.app.debug.DebugScreen
+import fi.marmorikatu.app.house3d.House3dOverlay
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.screens.BussitScreen
+import fi.marmorikatu.app.screens.KotiViewModel
 import fi.marmorikatu.app.screens.KalenteriScreen
 import fi.marmorikatu.app.screens.EnergiaScreen
 import fi.marmorikatu.app.screens.IlmastoScreen
@@ -566,6 +575,30 @@ private fun LightbulbFab(onClick: () -> Unit) {
     }
 }
 
+/** The FAB that opens the 3D house overlay, sitting beside the lightbulb + mic. */
+@Composable
+private fun House3dFab(onClick: () -> Unit) {
+    val colors = MkTheme.colors
+    val interaction = rememberMkInteractionSource()
+    Box(
+        modifier = Modifier
+            .mkPressScale(interaction, pressed = 0.94f)
+            .size(56.dp)
+            .clip(CircleShape)
+            .background(colors.surfaceCard)
+            .border(1.dp, colors.borderSubtle, CircleShape)
+            .clickable(interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            MkIcons.HouseLine,
+            contentDescription = "Talo 3D",
+            tint = colors.accent,
+            modifier = Modifier.size(24.dp),
+        )
+    }
+}
+
 /** Five bars bouncing while the assistant listens (the design's mk-eq). */
 @Composable
 private fun VoiceEqualizer() {
@@ -779,6 +812,23 @@ private fun PhoneSurface(
         LightsQuickSheet(onDismiss = { showLights = false })
     }
 
+    // The dedicated 3D house overlay, opened from the house FAB in the dock or by
+    // a voice command ("Näytä talo 3D:nä" / "Näytä yläkerta") via UiSignals.
+    var showHouse3d by remember { mutableStateOf(false) }
+    var housePresentation by remember { mutableStateOf(true) }
+    var houseFloorTarget by remember { mutableStateOf<fi.marmorikatu.app.house3d.FloorMode?>(null) }
+    var houseFloorNonce by remember { mutableIntStateOf(0) }
+    val uiSignals = koinInject<UiSignals>()
+    val houseReq by uiSignals.houseView.collectAsState()
+    LaunchedEffect(houseReq) {
+        houseReq?.let { req ->
+            showHouse3d = true
+            housePresentation = req.spin
+            fi.marmorikatu.app.house3d.floorModeFromToken(req.floor)?.let { houseFloorTarget = it; houseFloorNonce++ }
+            uiSignals.houseView.value = null
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
@@ -899,6 +949,12 @@ private fun PhoneSurface(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    House3dFab(onClick = {
+                        housePresentation = true
+                        houseFloorTarget = null
+                        houseFloorNonce = 0
+                        showHouse3d = true
+                    })
                     LightbulbFab(onClick = { showLights = true })
                     MkVoiceButton(onClick = viewModel::onMic, size = MkVoiceSize.Lg)
                 }
@@ -931,6 +987,16 @@ private fun PhoneSurface(
             onDismiss = viewModel::stopListening,
             onRunCommand = viewModel::runQuickCommand,
         )
+
+        if (showHouse3d) {
+            BackHandler { showHouse3d = false }
+            House3dOverlay(
+                onDismiss = { showHouse3d = false },
+                presentation = housePresentation,
+                floorTarget = houseFloorTarget,
+                floorNonce = houseFloorNonce,
+            )
+        }
     }
 }
 
@@ -988,7 +1054,59 @@ private fun KidSurface(viewModel: ShellViewModel) {
 // Tablet / kiosk
 // ---------------------------------------------------------------------------
 
-@OptIn(ExperimentalFoundationApi::class)
+/**
+ * The kiosk header's rotating alert banner: shows one active alarm (or the
+ * electricity price warning) at a time, crossfading to the next every few
+ * seconds. Collapses to an empty (weighted) spacer when nothing needs attention.
+ */
+@Composable
+private fun HeaderAlertBanner(alerts: List<AttentionItem>, modifier: Modifier = Modifier) {
+    Box(modifier, contentAlignment = Alignment.CenterStart) {
+        if (alerts.isEmpty()) return@Box
+        var index by remember(alerts.size) { mutableIntStateOf(0) }
+        val safeIndex = index % alerts.size
+        LaunchedEffect(alerts.size) {
+            if (alerts.size <= 1) return@LaunchedEffect
+            while (true) {
+                delay(4200)
+                index++
+            }
+        }
+        Crossfade(targetState = safeIndex, label = "headerAlert") { i ->
+            HeaderAlertPill(alerts[i.coerceIn(0, alerts.lastIndex)])
+        }
+    }
+}
+
+/** One compact alarm/price pill for the rotating header banner. */
+@Composable
+private fun HeaderAlertPill(item: AttentionItem) {
+    val c = MkTheme.colors
+    val ink = if (item.status == "alarm") c.statusAlarm else c.warm
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(MkRadius.round))
+            .background(c.statusDim(item.status))
+            .border(1.dp, ink.copy(alpha = 0.35f), RoundedCornerShape(MkRadius.round))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(item.icon, contentDescription = null, tint = ink, modifier = Modifier.size(16.dp))
+        Text(
+            item.text,
+            style = MkTheme.type.label,
+            color = c.inkHi,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (item.value.isNotBlank()) {
+            Text(item.value, style = MkTheme.type.readout(11), color = ink, maxLines = 1)
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 private fun TabletSurface(
     viewModel: ShellViewModel,
@@ -1006,32 +1124,116 @@ private fun TabletSurface(
     val voiceStream by viewModel.stream.collectAsState()
     val dark by viewModel.dark.collectAsState()
 
+    // Kiosk header data: a persistent weather chip plus a banner that rotates
+    // through the active alarms (heat pump / ventilation / sauna / weather) and
+    // the electricity price warning, one at a time.
+    val kotiVm: KotiViewModel = koinViewModel()
+    val koti by kotiVm.uiState.collectAsState()
+    val weather by kotiVm.weather.collectAsState()
+    val outdoor by kotiVm.outdoorTemp.collectAsState()
+    val priceAlert by kotiVm.tabletPriceAlert.collectAsState()
+    val headerAlerts = remember(koti.attention, priceAlert) {
+        koti.attention.filter { it.status == "alarm" || it.status == "warn" } + listOfNotNull(priceAlert)
+    }
+
+    // The 3D house is the tablet's default view; the nav-rail cube reopens it.
+    // After 90 s of no touch it becomes a slowly-rotating screensaver; any touch
+    // (tracked by [interaction]) dismisses the screensaver and restarts the timer.
+    var houseOpen by remember { mutableStateOf(true) }
+    var houseIdle by remember { mutableStateOf(false) }
+    var housePresentation by remember { mutableStateOf(true) }
+    var interaction by remember { mutableIntStateOf(0) }
+    var houseFloorTarget by remember { mutableStateOf<fi.marmorikatu.app.house3d.FloorMode?>(null) }
+    var houseFloorNonce by remember { mutableIntStateOf(0) }
+    LaunchedEffect(interaction) {
+        houseIdle = false
+        delay(90_000)
+        housePresentation = true
+        houseFloorTarget = fi.marmorikatu.app.house3d.FloorMode.All
+        houseFloorNonce++
+        houseIdle = true
+        houseOpen = true
+    }
+    // Voice-command steering ("Näytä yläkerta") opens/flies the house view.
+    val uiSignals = koinInject<UiSignals>()
+    val houseReq by uiSignals.houseView.collectAsState()
+    LaunchedEffect(houseReq) {
+        houseReq?.let { req ->
+            houseOpen = true; houseIdle = false; interaction++
+            housePresentation = req.spin
+            fi.marmorikatu.app.house3d.floorModeFromToken(req.floor)?.let { houseFloorTarget = it; houseFloorNonce++ }
+            uiSignals.houseView.value = null
+        }
+    }
+
     // safeDrawingPadding keeps the rail and content clear of the status bar and,
     // crucially in landscape, the side/bottom navigation bar — the app background
     // still fills edge-to-edge behind the bars.
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+            // Observe (don't consume) touch starts to keep the idle timer at bay.
+            // Updating root Compose state for every move event made a drag across
+            // the 3D house recompose/restart the timer at 60–120 Hz on iPad.
+            awaitPointerEventScope {
+                var wasPressed = false
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val pressed = event.changes.any { it.pressed }
+                    if (pressed && !wasPressed) interaction++
+                    wasPressed = pressed
+                }
+            }
+        },
+    ) {
     Row(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.appBg)
             .safeDrawingPadding(),
     ) {
-        MkNavRail(
-            // Koti is reached via the "M" brand tile below, and Loki/Tapahtumat
-            // via the header bell (design) — both dropped from the icon list.
-            items = tabItems(unread, rail = true)
-                .filter { it.key != Tab.Koti.key && it.key != Tab.Tapahtumat.key },
-            active = tab.key,
-            onChange = { key -> Tab.entries.firstOrNull { it.key == key }?.let(viewModel::setTab) },
+        // The idle screensaver hides the rail (and header below) for a clean,
+        // full-bleed rotating house (design `mk-house-3d` idle).
+        if (!houseIdle) MkNavRail(
+            // Design kiosk rail: the "M" tile is the front dashboard (Koti); "Talo"
+            // (the 3D house) is the first nav item, then Valot · Ilmasto · Energia ·
+            // Bussit · Kalenteri.
+            items = listOf(
+                MkTabItem(key = "talo3d", label = "Talo", icon = MkIcons.Stack, iconActive = MkIcons.Stack),
+            ) + tabItems(unread, rail = true).filter {
+                it.key in setOf(
+                    Tab.Valot.key, Tab.Ilmasto.key, Tab.Energia.key, Tab.Bussit.key, Tab.Kalenteri.key,
+                )
+            },
+            active = if (houseOpen && !houseIdle) "talo3d" else tab.key,
+            onChange = { key ->
+                if (key == "talo3d") {
+                    housePresentation = true
+                    houseFloorTarget = fi.marmorikatu.app.house3d.FloorMode.All
+                    houseFloorNonce++
+                    houseOpen = true
+                    houseIdle = false
+                } else {
+                    Tab.entries.firstOrNull { it.key == key }?.let(viewModel::setTab)
+                    houseOpen = false
+                    houseIdle = false
+                }
+                interaction++
+            },
             brand = "M",
-            onBrandClick = { viewModel.setTab(Tab.Koti) },
-            brandActive = tab == Tab.Koti,
+            onBrandClick = {
+                viewModel.setTab(Tab.Koti)
+                houseOpen = false
+                houseIdle = false
+                interaction++
+            },
+            brandActive = tab == Tab.Koti && !houseOpen,
             footer = {
                 MkVoiceButton(onClick = viewModel::onMic, size = MkVoiceSize.Lg)
             },
         )
 
         Column(modifier = Modifier.weight(1f)) {
+            if (!houseIdle) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1040,13 +1242,28 @@ private fun TabletSurface(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(
-                    modifier = Modifier.weight(1f).combinedClickable(
+                    modifier = Modifier.combinedClickable(
                         onClick = {},
                         onLongClick = openDebug,
                     ),
                 ) {
                     Text("Marmorikatu", style = type.kicker, color = colors.accent)
-                    Text(tab.title ?: rememberGreeting(), style = type.title, color = colors.inkHi)
+                    Text(
+                        if (houseOpen) "Talo" else tab.title ?: rememberGreeting(),
+                        style = type.title,
+                        color = colors.inkHi,
+                    )
+                }
+                Spacer(Modifier.width(MkSpacing.x4))
+                // Rotating alarm banner takes the flexible middle; it collapses to
+                // an empty spacer when nothing needs attention so the weather chip
+                // and action icons keep their place.
+                HeaderAlertBanner(headerAlerts, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(MkSpacing.x4))
+                // The weather chip stays visible in the header at all times.
+                weather?.let { w ->
+                    MkWeatherChip(forecast = w, tempOverride = outdoor?.primary?.celsius)
+                    Spacer(Modifier.width(MkSpacing.x3))
                 }
                 MkIconButton(
                     icon = if (dark) MkIcons.Sun else MkIcons.Moon,
@@ -1060,7 +1277,12 @@ private fun TabletSurface(
                     label = "Tapahtumat",
                     size = MkIconButtonSize.Md,
                     badge = if (unread > 0) unread.toString() else null,
-                    onClick = { viewModel.setTab(Tab.Tapahtumat) },
+                    onClick = {
+                        viewModel.setTab(Tab.Tapahtumat)
+                        houseOpen = false
+                        houseIdle = false
+                        interaction++
+                    },
                 )
                 Spacer(Modifier.width(MkSpacing.x2))
                 MkIconButton(
@@ -1072,12 +1294,24 @@ private fun TabletSurface(
                 Spacer(Modifier.width(MkSpacing.x3))
                 Text(rememberWallClock(), style = type.readout(22), color = colors.inkHi)
             }
+            }
 
             // The idle mic lives in the nav-rail footer on this surface, so the
             // content area does NOT float its own mic dock (that duplicated it,
             // showing a mic on both the left rail and the bottom-right).
             Box(modifier = Modifier.weight(1f)) {
-                if (tab == Tab.Koti) {
+                if (houseOpen) {
+                    BackHandler { houseOpen = false; houseIdle = false; interaction++ }
+                    House3dOverlay(
+                        onDismiss = { houseOpen = false },
+                        presentation = housePresentation || houseIdle,
+                        idle = houseIdle,
+                        embedded = true,
+                        onExitIdle = { houseIdle = false; interaction++ },
+                        floorTarget = houseFloorTarget,
+                        floorNonce = houseFloorNonce,
+                    )
+                } else if (tab == Tab.Koti) {
                     // The design's bespoke kiosk dashboard, not the phone screen.
                     TabletKotiDashboard()
                 } else {
@@ -1112,5 +1346,6 @@ private fun TabletSurface(
             onDismiss = viewModel::stopListening,
             onRunCommand = viewModel::runQuickCommand,
         )
+
     }
 }

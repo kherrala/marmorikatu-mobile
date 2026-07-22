@@ -234,6 +234,8 @@ actual class PlatformTts actual constructor() : SpeechOutput {
 
             override fun onStart(id: String?) = Unit
 
+            override fun onStop(utteranceId: String?, interrupted: Boolean) = complete(utteranceId)
+
             private fun complete(id: String?) {
                 val callback = id?.let { synchronized(pending) { pending.remove(it) } }
                 callback?.invoke(Unit)
@@ -250,8 +252,12 @@ actual class PlatformTts actual constructor() : SpeechOutput {
                 pending[utteranceId] = { if (cont.isActive) cont.resume(Unit) }
             }
             cont.invokeOnCancellation {
-                synchronized(pending) { pending.remove(utteranceId) }
+                val interrupted = synchronized(pending) {
+                    pending.remove(utteranceId)
+                    pending.values.toList().also { pending.clear() }
+                }
                 engine.stop()
+                interrupted.forEach { it(Unit) }
             }
             engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
@@ -261,5 +267,11 @@ actual class PlatformTts actual constructor() : SpeechOutput {
 
     override fun stop() {
         tts?.stop()
+        // Some engines omit onStop for queued utterances. Always release their
+        // continuations so a stopped 3D announcement cannot block future SSE.
+        val interrupted = synchronized(pending) {
+            pending.values.toList().also { pending.clear() }
+        }
+        interrupted.forEach { it(Unit) }
     }
 }

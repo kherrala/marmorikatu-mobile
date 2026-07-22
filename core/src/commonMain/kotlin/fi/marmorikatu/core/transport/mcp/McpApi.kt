@@ -67,6 +67,15 @@ class DefaultMcpApi(private val connection: McpConnection) : McpApi {
                 id = id,
                 name = name,
                 floor = Floor.fromServer(obj["floor"]?.jsonPrimitive?.intOrNull),
+                isOn = obj["is_on"]?.jsonPrimitive?.let { value ->
+                    value.booleanOrNull
+                        ?: value.intOrNull?.let { it != 0 }
+                        ?: when (value.contentOrNull?.lowercase()) {
+                            "on", "true", "yes" -> true
+                            "off", "false", "no" -> false
+                            else -> null
+                        }
+                },
             )
         }
     }

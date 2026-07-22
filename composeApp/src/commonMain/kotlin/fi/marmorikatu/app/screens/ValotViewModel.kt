@@ -66,13 +66,11 @@ class ValotViewModel(
     private val flux: FluxClient,
 ) : ViewModel() {
 
-    private val loaded = MutableStateFlow(false)
-
     /** When each currently-on light turned on (epoch seconds) — drives the timers. */
     private val _onSince = MutableStateFlow<Map<Int, Long>>(emptyMap())
 
     val uiState: StateFlow<ValotUiState> =
-        combine(lights.lights, loaded, _onSince) { list, isLoaded, onSince ->
+        combine(lights.lights, _onSince) { list, onSince ->
             val byId = list.associateBy { it.id }
             val floors = VALOT_FLOOR_ORDER.mapNotNull { floor ->
                 val (name, icon) = valotFloorMeta(floor)
@@ -96,9 +94,12 @@ class ValotViewModel(
             // A preset chip highlights when the live light set exactly matches it;
             // Elokuva's scope is basement-only (user rule) so it matches regardless
             // of the rest of the house.
-            val activePreset = KotiScene.entries.firstOrNull { sceneMatches(it, list) }
+            val activePreset = if (list.isEmpty()) null else KotiScene.entries.firstOrNull { sceneMatches(it, list) }
             ValotUiState(
-                loading = !isLoaded && list.isEmpty(),
+                // The catalog has no state. Stay in an explicit loading state
+                // until the retained MQTT `marmorikatu/lights` snapshot lands;
+                // never render missing live ids as if they were confirmed off.
+                loading = list.isEmpty(),
                 floors = floors,
                 activePreset = activePreset,
             )
@@ -116,6 +117,7 @@ class ValotViewModel(
     val updatedAt: StateFlow<Long?> = _updatedAt.asStateFlow()
 
     private var clearFailureJob: Job? = null
+    private var refreshJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -140,6 +142,10 @@ class ValotViewModel(
             var prevOn = emptySet<Int>()
             var seeded = false
             lights.lights.collect { list ->
+                // StateFlow emits its initial empty value before the retained
+                // MQTT snapshot. It is "unknown", not a valid all-off sample,
+                // and must not consume the one-time Influx history seed.
+                if (list.isEmpty()) return@collect
                 val nowOn = list.filter { it.displayedOn }.map { it.id }.toSet()
                 val now = nowEpochSeconds()
                 _onSince.update { m ->
@@ -166,12 +172,12 @@ class ValotViewModel(
 
     /** Load the name/floor catalog. Called from the screen on first composition. */
     fun refresh() {
-        viewModelScope.launch {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
             _refreshing.value = true
             try {
                 runCatching { lights.refreshCatalog() }
             } finally {
-                loaded.value = true
                 _refreshing.value = false
             }
         }

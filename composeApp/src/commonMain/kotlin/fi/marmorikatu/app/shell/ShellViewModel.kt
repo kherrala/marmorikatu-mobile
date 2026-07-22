@@ -52,6 +52,7 @@ class ShellViewModel(
     private val backgroundMode: BackgroundMode,
     private val platformStt: SpeechToText,
     private val platformTts: SpeechOutput,
+    private val uiSignals: UiSignals,
 ) : ViewModel() {
 
     // Kid mode and the theme survive a restart: a child's phone should stay a
@@ -245,6 +246,10 @@ class ShellViewModel(
                     listenOnce()
                 }
                 if (text.isNullOrBlank()) return@launch
+                // Client-side shortcut: house-navigation commands open/steer the
+                // 3D overlay immediately, then still go to the assistant so it can
+                // narrate (e.g. flag the upstairs CO₂ when asked for "yläkerta").
+                detectHouseIntent(text)?.let { uiSignals.requestHouseView(it.first, it.second) }
                 if (isFarewell(text)) {
                     speak(GOODBYES.random())
                     _voice.value = VoiceState.Idle   // farewell closes
@@ -441,5 +446,23 @@ class ShellViewModel(
         )
 
         val GOODBYES = listOf("Heippa!", "Nähdään!", "Moikka!", "Hei hei!")
+    }
+}
+
+/**
+ * Recognise an explicit request to open/steer the 3D house view. Requiring a
+ * view/open verb prevents commands such as "sammuta yläkerta" from accidentally
+ * opening the map just because they contain a floor name.
+ */
+internal fun detectHouseIntent(text: String): Pair<String?, Boolean>? {
+    val t = text.lowercase()
+    val requestsView = "näytä" in t || "avaa" in t || "kolmiulot" in t || "3d" in t
+    if (!requestsView) return null
+    return when {
+        "yläkerta" in t || "ylakerta" in t -> "ylakerta" to false
+        "alakerta" in t -> "alakerta" to false
+        "kellari" in t -> "kellari" to false
+        "talo" in t -> "all" to true
+        else -> null
     }
 }

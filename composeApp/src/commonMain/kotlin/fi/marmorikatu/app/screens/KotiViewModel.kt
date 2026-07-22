@@ -53,6 +53,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -320,7 +321,7 @@ class KotiViewModel(
      */
     val activePreset: StateFlow<KotiScene?> =
         lightsRepo.lights.map { list ->
-            KotiScene.entries.firstOrNull { scene ->
+            if (list.isEmpty()) null else KotiScene.entries.firstOrNull { scene ->
                 val scopeIds = sceneScopeLights(scene, list).map { it.id }.toSet()
                 val onInScope = list.filter { it.displayedOn && it.id in scopeIds }.map { it.id }.toSet()
                 sceneOnLightIds(scene, list) == onInScope
@@ -339,7 +340,7 @@ class KotiViewModel(
             sceneScopeLights(scene, list)
                 .forEach { l ->
                     val target = l.id in onIds
-                    if (l.displayedOn != target) runCatching { lightsRepo.setLight(l.id, target) }
+                    if (l.displayedOn != target) dashboardBestEffort { lightsRepo.setLight(l.id, target) }
                 }
         }
     }
@@ -448,7 +449,7 @@ class KotiViewModel(
 
     private fun loadWeather() {
         viewModelScope.launch {
-            val w = runCatching { infoRepo.weather() }.getOrNull()
+            val w = dashboardBestEffort { infoRepo.weather() }
             w?.let {
                 _weather.value = it
                 // Weather warnings ride the home attention strip like every other
@@ -462,7 +463,7 @@ class KotiViewModel(
     /** Soonest waste pickup, from the same calendar feed the Kalenteri screen parses. */
     private fun loadGarbage() {
         viewModelScope.launch {
-            val el = runCatching { infoRepo.calendar(CalendarParsing.CALENDAR_DAYS) }.getOrNull()
+            val el = dashboardBestEffort { infoRepo.calendar(CalendarParsing.CALENDAR_DAYS) }
             if (el == null) { startupProgress.mark(StartupProgress.KEY_CALENDAR, false); return@launch }
             val parsed = CalendarParsing.parseCalendar(el)
             _nextGarbage.value = parsed.garbage.firstOrNull()
@@ -475,7 +476,7 @@ class KotiViewModel(
 
     private fun loadNews() {
         viewModelScope.launch {
-            val el = runCatching { infoRepo.news(8) }.getOrNull() as? JsonArray
+            val el = dashboardBestEffort { infoRepo.news(8) } as? JsonArray
             if (el == null) { startupProgress.mark(StartupProgress.KEY_NEWS, false); return@launch }
             startupProgress.mark(StartupProgress.KEY_NEWS, true)
             _news.value = el.mapNotNull { item ->
@@ -585,6 +586,17 @@ class KotiViewModel(
         .map { snap -> priceAxisLabels(snap.prices) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /**
+     * Electricity warning for the kiosk header's rotating alert banner: surfaces
+     * when today still has expensive hours now or ahead, labelled by time-of-day
+     * ("nyt" / "aamulla" / "päivällä" / "illalla" / "yöllä"). Null when the rest
+     * of the day is normal/cheap, so the banner simply skips electricity. Derived
+     * from real spot prices only (no fabrication).
+     */
+    val tabletPriceAlert: StateFlow<AttentionItem?> = snapshots
+        .map { snap -> priceAlertItem(snap.prices, snap.priceTier) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     /** Recent announcements as event-feed rows for the tablet dashboard. */
     val tabletEvents: StateFlow<List<DashEvent>> = announcementsRepo.recent
         .map { list -> list.take(8).map { DashEvent(it.text, Fmt.clock(it.ts), it.priority) } }
@@ -601,6 +613,14 @@ class KotiViewModel(
         val ageSeconds = nowEpochSeconds() - stampedAt
         return if (ageSeconds > HEAT_PUMP_STALE_SECONDS) HeatPumpStatus(available = false) else hp
     }
+
+    /** One dashboard refresh at a time; the periodic and entry/manual triggers overlap otherwise. */
+    private var refreshJob: Job? = null
+    private var activeRefreshForced = false
+    private var pendingForcedRefresh = false
+
+    /** Historical charts move slowly and must not be re-downloaded with every snapshot poll. */
+    private var lastHistoryRefreshEpochSeconds = 0L
 
     init {
         refresh()
@@ -627,7 +647,7 @@ class KotiViewModel(
                 if (isPerson && newest.image.isNullOrBlank() &&
                     (snapshots.value.cameraSnapshot?.ts ?: 0.0) < newest.ts
                 ) {
-                    runCatching { announcementsRepo.cameraSnapshot() }.getOrNull()?.let { shot ->
+                    dashboardBestEffort { announcementsRepo.cameraSnapshot() }?.let { shot ->
                         snapshots.update { it.copy(cameraSnapshot = shot) }
                     }
                 }
@@ -690,9 +710,22 @@ class KotiViewModel(
      * pulse on the new [Snapshots.fetchedAt]).
      */
     private fun refresh(showSpinner: Boolean) {
-        viewModelScope.launch {
+        val active = refreshJob?.isActive == true
+        if (active) {
+            if (shouldQueueForcedRefresh(active, activeRefreshForced, showSpinner)) {
+                pendingForcedRefresh = true
+            }
+            return
+        }
+        activeRefreshForced = showSpinner
+        val job = viewModelScope.launch {
             if (showSpinner) _refreshing.value = true
-            // Weather is MCP-backed; refresh it on manual pulls, not the 12 s loop.
+            val refreshHistory = shouldRefreshDashboardHistory(
+                force = showSpinner,
+                lastRefreshEpochSeconds = lastHistoryRefreshEpochSeconds,
+                nowEpochSeconds = nowEpochSeconds(),
+            )
+            // Weather is MCP-backed; refresh it on manual pulls, not the periodic loop.
             if (showSpinner) {
                 loadWeather()
                 loadGarbage()
@@ -702,29 +735,33 @@ class KotiViewModel(
                 // Ask ThermIQ to publish now — its topic isn't retained, so a
                 // refresh (incl. pull-to-refresh) is how we pull fresh registers.
                 // Fire-and-forget so it never gates the on-demand snapshot below.
-                viewModelScope.launch { runCatching { climateRepo.requestHeatPumpRead() } }
+                viewModelScope.launch { dashboardBestEffort { climateRepo.requestHeatPumpRead() } }
                 val snap = coroutineScope {
-                    val sauna = async { runCatching { saunaRepo.status() }.getOrNull() }
-                    val prices = async { runCatching { energyRepo.electricityPrices() }.getOrNull() }
-                    val priceTier = async { runCatching { energyRepo.priceTier() }.getOrNull() }
-                    val hvac = async { runCatching { climateRepo.hvacSummary() }.getOrNull() }
-                    val air = async { runCatching { climateRepo.airQuality() }.getOrNull() }
-                    val ruuviOut = async { runCatching { climateRepo.outdoorRuuviTemp() }.getOrNull() }
+                    val sauna = async { dashboardBestEffort { saunaRepo.status() } }
+                    val prices = async { dashboardBestEffort { energyRepo.electricityPrices() } }
+                    val priceTier = async { dashboardBestEffort { energyRepo.priceTier() } }
+                    val hvac = async { dashboardBestEffort { climateRepo.hvacSummary() } }
+                    val air = async { dashboardBestEffort { climateRepo.airQuality() } }
+                    val ruuviOut = async { dashboardBestEffort { climateRepo.outdoorRuuviTemp() } }
                     // The bridge's retained last front-yard snapshot for the kiosk
                     // camera card — kept apart from the announcement stream so an
                     // idle/cold-started kiosk still shows the last frame.
-                    val camShot = async { runCatching { announcementsRepo.cameraSnapshot() }.getOrNull() }
-                    // 24 h KPI sparkline series (metricHistory degrades to empty on failure).
-                    val co2H = async { climateRepo.metricHistory("ruuvi", "co2") }
-                    val indoorH = async { climateRepo.metricHistory("thermia", "indoor_temp") }
+                    val camShot = async { dashboardBestEffort { announcementsRepo.cameraSnapshot() } }
+                    // The 24 h chart series are much heavier than the live
+                    // snapshots. Fetch them on entry/manual refresh and then at
+                    // a slow cadence instead of on every dashboard poll.
+                    val co2H = if (refreshHistory) async { climateRepo.metricHistory("ruuvi", "co2") } else null
+                    val indoorH = if (refreshHistory) async { climateRepo.metricHistory("thermia", "indoor_temp") } else null
                     // Maalämpö trends the heating-demand integral (degree-minutes),
                     // stored by the ThermIQ subscriber as thermia/integral.
-                    val integralH = async { climateRepo.metricHistory("thermia", "integral") }
-                    val waterH = async { climateRepo.metricHistory("thermia", "hotwater_temp") }
-                    val ulkoH = async { climateRepo.metricHistory("hvac", "Ulkolampotila") }
-                    val kosteusH = async { climateRepo.metricHistory("hvac", "Suhteellinen_kosteus") }
-                    val saunaH = async { climateRepo.metricHistory("ruuvi", "temperature", tagKey = "sensor_name", tagValue = "Sauna") }
-                    val ltoH = async { climateRepo.recoveryEfficiencyHistory() }
+                    val integralH = if (refreshHistory) async { climateRepo.metricHistory("thermia", "integral") } else null
+                    val waterH = if (refreshHistory) async { climateRepo.metricHistory("thermia", "hotwater_temp") } else null
+                    val ulkoH = if (refreshHistory) async { climateRepo.metricHistory("hvac", "Ulkolampotila") } else null
+                    val kosteusH = if (refreshHistory) async { climateRepo.metricHistory("hvac", "Suhteellinen_kosteus") } else null
+                    val saunaH = if (refreshHistory) async {
+                        climateRepo.metricHistory("ruuvi", "temperature", tagKey = "sensor_name", tagValue = "Sauna")
+                    } else null
+                    val ltoH = if (refreshHistory) async { climateRepo.recoveryEfficiencyHistory() } else null
                     // The sauna is "on" while it's climbing (the backend's
                     // is_heating) OR holding hot at setpoint — a plateau the
                     // temperature trend reveals but a single reading can't. Only pay
@@ -775,16 +812,20 @@ class KotiViewModel(
                         hvac = hvac.await(),
                         air = air.await(),
                         outdoorRuuviC = ruuviOut.await(),
-                        history = mapOf(
-                            "co2" to co2H.await(),
-                            "sisailma" to indoorH.await(),
-                            "maalampo" to integralH.await(),
-                            "vesi" to waterH.await(),
-                            "ulko" to ulkoH.await(),
-                            "kosteus" to kosteusH.await(),
-                            "sauna" to saunaH.await(),
-                            "lto" to ltoH.await(),
-                        ),
+                        history = if (refreshHistory) {
+                            mapOf(
+                                "co2" to co2H?.await().orEmpty(),
+                                "sisailma" to indoorH?.await().orEmpty(),
+                                "maalampo" to integralH?.await().orEmpty(),
+                                "vesi" to waterH?.await().orEmpty(),
+                                "ulko" to ulkoH?.await().orEmpty(),
+                                "kosteus" to kosteusH?.await().orEmpty(),
+                                "sauna" to saunaH?.await().orEmpty(),
+                                "lto" to ltoH?.await().orEmpty(),
+                            )
+                        } else {
+                            snapshots.value.history
+                        },
                         // Carry the previous room history so the climate-card trend
                         // line doesn't collapse (and shift the layout) each refresh
                         // while the fresh series is still loading below.
@@ -808,22 +849,35 @@ class KotiViewModel(
                 if (!allFailed) _updatedAt.value = nowEpochSeconds()
                 startupProgress.mark(StartupProgress.KEY_METRICS, !allFailed)
 
-                // Tablet dashboard 24 h temperature lines (best-effort; the phone
-                // layout ignores this, so a failure is silent).
-                runCatching {
-                    val hist = climateRepo.temperatureHistory("-24h", "30m")
-                    _tempHistory.value = DASH_TEMP_ORDER.mapNotNull { name ->
-                        hist[name]?.takeIf { it.isNotEmpty() }
-                            ?.let { pts -> DashSeries(name, pts.map { it.value.toFloat() }) }
-                    }
-                    // Full per-room series (keyed by display name) for the climate-card trend line.
-                    snapshots.update { s ->
-                        s.copy(roomHistory = hist.mapValues { (_, pts) -> pts.map { it.value.toFloat() } })
+                if (refreshHistory) {
+                    // Stamp the attempt too: a temporarily failing InfluxDB must
+                    // not be hammered again by the next periodic refresh.
+                    lastHistoryRefreshEpochSeconds = nowEpochSeconds()
+                    // Tablet dashboard 24 h temperature lines (best-effort; the
+                    // phone layout ignores this, so a failure is silent).
+                    dashboardBestEffort {
+                        val hist = climateRepo.temperatureHistory("-24h", "30m")
+                        _tempHistory.value = DASH_TEMP_ORDER.mapNotNull { name ->
+                            hist[name]?.takeIf { it.isNotEmpty() }
+                                ?.let { pts -> DashSeries(name, pts.map { it.value.toFloat() }) }
+                        }
+                        // Full per-room series (keyed by display name) for the climate-card trend line.
+                        snapshots.update { s ->
+                            s.copy(roomHistory = hist.mapValues { (_, pts) -> pts.map { it.value.toFloat() } })
+                        }
                     }
                 }
             } finally {
                 if (showSpinner) _refreshing.value = false
             }
+        }
+        refreshJob = job
+        job.invokeOnCompletion { cause ->
+            if (refreshJob === job) refreshJob = null
+            activeRefreshForced = false
+            val runForcedRefresh = cause == null && pendingForcedRefresh
+            pendingForcedRefresh = false
+            if (runForcedRefresh) refresh(showSpinner = true)
         }
     }
 
@@ -1608,6 +1662,40 @@ class KotiViewModel(
             }
     }
 
+    /**
+     * The kiosk header's electricity alert: today's expensive hours that are now
+     * or still ahead, phrased "Sähkö <milloin> kallista" with the peak cents.
+     * Returns null when nothing expensive remains today.
+     */
+    @OptIn(ExperimentalTime::class)
+    private fun priceAlertItem(p: ElectricityPrices?, tier: PriceTier?): AttentionItem? {
+        val hours = hourlyPrice(p)
+        if (hours.isEmpty()) return null
+        val current = hours.firstOrNull { !it.past }
+        val upcomingExpensive = hours.filter { !it.past && it.tier == PriceTier.Expensive }
+        val nowExpensive = current?.tier == PriceTier.Expensive || tier == PriceTier.Expensive
+        if (!nowExpensive && upcomingExpensive.isEmpty()) return null
+        val whenLabel = if (nowExpensive) "nyt" else priceTimeOfDay(priceLocalHour(upcomingExpensive.first().timeIso))
+        val peak = upcomingExpensive.maxOfOrNull { it.cents } ?: current?.cents
+        return AttentionItem(
+            status = "warn",
+            icon = MkIcons.LightningFill,
+            text = "Sähkö $whenLabel kallista",
+            value = peak?.let { "${Fmt.comma(it, 1)} c" } ?: "",
+        )
+    }
+
+    @OptIn(ExperimentalTime::class)
+    private fun priceLocalHour(iso: String): Int =
+        runCatching { Instant.parse(iso).toLocalDateTime(TimeZone.of("Europe/Helsinki")).hour }.getOrDefault(12)
+
+    private fun priceTimeOfDay(hour: Int): String = when (hour) {
+        in 5..10 -> "aamulla"
+        in 11..16 -> "päivällä"
+        in 17..22 -> "illalla"
+        else -> "yöllä"
+    }
+
     private fun priceBars(p: ElectricityPrices?): List<DashBar> = hourlyPrice(p).map { h ->
         DashBar(
             cents = h.cents.toFloat(),
@@ -1693,7 +1781,9 @@ class KotiViewModel(
         const val KEY_SCENES = "koti.scenes"
 
         /** How often the KPI snapshots silently re-fetch, so the tiles stay live. */
-        const val AUTO_REFRESH_MS = 12_000L
+        // MQTT-backed state remains real-time. These HTTP/Influx snapshots do
+        // not need a network fan-out every 12 seconds on an always-on tablet.
+        const val AUTO_REFRESH_MS = 60_000L
 
         /** How often the weather forecast reloads so its next-hours window advances. */
         const val WEATHER_REFRESH_MS = 10 * 60 * 1000L
@@ -1715,4 +1805,29 @@ class KotiViewModel(
             TimeRangeOption.Y1 -> "-365d" to "1d"   // 365 pts
         }
     }
+}
+
+/** Decides when the dashboard's multi-series Influx history fan-out is worth repeating. */
+internal fun shouldRefreshDashboardHistory(
+    force: Boolean,
+    lastRefreshEpochSeconds: Long,
+    nowEpochSeconds: Long,
+    intervalSeconds: Long = 5 * 60L,
+): Boolean = force || lastRefreshEpochSeconds <= 0L ||
+    nowEpochSeconds - lastRefreshEpochSeconds >= intervalSeconds
+
+/** A pull-to-refresh arriving during a silent poll must run once that poll finishes. */
+internal fun shouldQueueForcedRefresh(
+    refreshActive: Boolean,
+    activeRefreshForced: Boolean,
+    requestedRefreshForced: Boolean,
+): Boolean = refreshActive && requestedRefreshForced && !activeRefreshForced
+
+/** Dashboard source failures are optional, but parent-job cancellation is not. */
+private suspend fun <T> dashboardBestEffort(block: suspend () -> T): T? = try {
+    block()
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (_: Throwable) {
+    null
 }

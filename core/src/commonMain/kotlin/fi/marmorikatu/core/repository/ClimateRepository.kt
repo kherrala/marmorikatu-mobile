@@ -19,6 +19,7 @@ import fi.marmorikatu.core.transport.mqtt.MqttTopics
 import fi.marmorikatu.core.transport.mqtt.PlcPayloads
 import fi.marmorikatu.core.transport.mqtt.RuuviPayloads
 import com.russhwolf.settings.Settings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +29,15 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlin.time.Instant
+
+/** Best-effort I/O must still preserve structured-concurrency cancellation. */
+internal suspend fun <T> bestEffortSuspend(block: suspend () -> T): T? = try {
+    block()
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (_: Throwable) {
+    null
+}
 
 /**
  * Rooms, ventilation, and heat pump — READ ONLY in v1 by design.
@@ -226,7 +236,7 @@ class DefaultClimateRepository(
         scope.launch {
             mqtt.connectionState.collect { state ->
                 when (state) {
-                    is MqttConnectionState.Connected -> runCatching { requestHeatPumpRead() }
+                    is MqttConnectionState.Connected -> bestEffortSuspend { requestHeatPumpRead() }
                     // Drop cached Ruuvi readings on disconnect. Otherwise, after the
                     // app is backgrounded (connections stop), the stale timestamps
                     // linger and the "sensor offline" alert fires on foreground until
@@ -243,7 +253,7 @@ class DefaultClimateRepository(
 
     override suspend fun requestHeatPumpRead() {
         if (mqtt.connectionState.value is MqttConnectionState.Connected) {
-            runCatching { mqtt.publish(MqttTopics.THERMIQ_READ, "", qos = 0) }
+            bestEffortSuspend { mqtt.publish(MqttTopics.THERMIQ_READ, "", qos = 0) }
         }
     }
 
@@ -274,7 +284,7 @@ class DefaultClimateRepository(
     override suspend fun airQuality(): AirQuality = mcp.getAirQuality()
 
     override suspend fun hvacSummary(): HvacSummary {
-        val values = runCatching {
+        val values = bestEffortSuspend {
             flux.latest(
                 "hvac",
                 listOf(
@@ -289,7 +299,7 @@ class DefaultClimateRepository(
                     "Alarm_fan_failure_extract", "Alarm_service_reminder",
                 ),
             )
-        }.getOrElse { emptyMap() }
+        }.orEmpty()
 
         val alarmFields = listOf(
             "Alarm_freezing_danger", "Alarm_filter_guard",
@@ -331,12 +341,12 @@ class DefaultClimateRepository(
         range: String,
         every: String,
     ): Map<String, List<FluxPoint>> {
-        val outdoor = runCatching {
+        val outdoor = bestEffortSuspend {
             flux.history("hvac", listOf("Ulkolampotila"), range, every)
-        }.getOrElse { emptyMap() }
-        val rooms = runCatching {
+        }.orEmpty()
+        val rooms = bestEffortSuspend {
             flux.history("rooms", Rooms.ALL.map { it.influxField }, range, every)
-        }.getOrElse { emptyMap() }
+        }.orEmpty()
 
         return buildMap {
             outdoor["Ulkolampotila"]?.let { put("Ulko", it) }
@@ -354,17 +364,19 @@ class DefaultClimateRepository(
         every: String,
         tagKey: String?,
         tagValue: String?,
-    ): List<Float> = runCatching {
-        flux.history(measurement, listOf(field), range, every, tagKey, tagValue)[field]?.map { it.value.toFloat() }
-    }.getOrNull().orEmpty()
+    ): List<Float> = bestEffortSuspend {
+        flux.history(measurement, listOf(field), range, every, tagKey, tagValue)[field]
+            .orEmpty()
+            .map { it.value.toFloat() }
+    }.orEmpty()
 
     override suspend fun recoveryEfficiencyHistory(range: String, every: String): List<Float> =
-        runCatching { flux.recoveryEfficiencyHistory(range, every).map { it.value.toFloat() } }.getOrNull().orEmpty()
+        bestEffortSuspend { flux.recoveryEfficiencyHistory(range, every).map { it.value.toFloat() } }.orEmpty()
 
     override suspend fun outdoorRuuviTemp(): Double? =
-        runCatching { flux.latest("ruuvi", "temperature", "sensor_name", "Ulkolämpötila") }.getOrNull()
+        bestEffortSuspend { flux.latest("ruuvi", "temperature", "sensor_name", "Ulkolämpötila") }
 
-    override suspend fun saunaHeatState(): SaunaHeatState = runCatching {
+    override suspend fun saunaHeatState(): SaunaHeatState = bestEffortSuspend {
         // A 16 h window comfortably brackets any real sauna session (electric,
         // heats fast), so the cold start before the current climb is captured;
         // 5 min resolution pins the onset closely without a huge point count.
@@ -380,7 +392,7 @@ class DefaultClimateRepository(
             startEpoch = saunaHeatingOnsetIso(points)?.let { Instant.parse(it).epochSeconds },
             holding = saunaHolding(points),
         )
-    }.getOrDefault(SaunaHeatState(startEpoch = null, holding = false))
+    } ?: SaunaHeatState(startEpoch = null, holding = false)
 
     private companion object {
         const val FIELD_HEAT_PUMP_POWER = "Lampopumppu_teho"

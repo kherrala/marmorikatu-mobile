@@ -22,6 +22,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -56,7 +57,7 @@ fun LightsQuickSheet(
     val state by viewModel.uiState.collectAsState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val areas = state.floors.flatMap { it.areas }
+    val areas = remember(state.floors) { state.floors.flatMap { it.areas } }
     val onNow = areas.sumOf { it.onCount }
     val total = areas.sumOf { it.total }
 
@@ -80,7 +81,7 @@ fun LightsQuickSheet(
             }
 
             // Scene presets (KaikkiPois is the dedicated all-off button below).
-            val presets = KotiScene.entries.filter { it != KotiScene.KaikkiPois }
+            val presets = remember { KotiScene.entries.filter { it != KotiScene.KaikkiPois } }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 presets.chunked(2).forEach { rowScenes ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

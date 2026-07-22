@@ -21,6 +21,7 @@ kermit = "2.0.6"
 mcp = "0.14.0"
 mqttastic = "0.4.0"
 turbine = "1.2.0"
+filament = "1.54.5"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -58,6 +59,10 @@ mqttastic-core = { module = "org.meshtastic:mqtt-client-core" }
 mqttastic-transport-tcp = { module = "org.meshtastic:mqtt-client-transport-tcp" }
 
 turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
+
+filament-android = { module = "com.google.android.filament:filament-android", version.ref = "filament" }
+filament-gltfio = { module = "com.google.android.filament:gltfio-android", version.ref = "filament" }
+filament-utils = { module = "com.google.android.filament:filament-utils-android", version.ref = "filament" }
 
 [plugins]
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }

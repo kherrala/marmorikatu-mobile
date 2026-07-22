@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import fi.marmorikatu.core.model.Announcement
 import fi.marmorikatu.core.repository.AnnouncementsRepository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +43,7 @@ class TapahtumatViewModel(
 
     private val _updatedAt = MutableStateFlow<Long?>(null)
     val updatedAt: StateFlow<Long?> = _updatedAt.asStateFlow()
+    private var refreshJob: Job? = null
 
     val uiState: StateFlow<TapahtumatUiState> =
         combine(
@@ -63,13 +65,10 @@ class TapahtumatViewModel(
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TapahtumatUiState())
 
-    init {
-        refresh()
-    }
-
     @OptIn(ExperimentalTime::class)
     fun refresh() {
-        viewModelScope.launch {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
             _refreshing.value = true
             error.value = false
             try {

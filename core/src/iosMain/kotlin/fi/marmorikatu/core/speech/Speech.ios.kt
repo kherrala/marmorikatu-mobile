@@ -9,6 +9,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import platform.AVFAudio.AVAudioEngine
 import platform.AVFAudio.AVAudioPCMBuffer
 import platform.AVFAudio.AVAudioSession
@@ -153,6 +155,10 @@ actual class PlatformTts actual constructor() : SpeechOutput {
     override val name = "ios-avspeech"
 
     private val synthesizer = AVSpeechSynthesizer()
+    // The shell assistant and the 3D announcement stream share this output.
+    // AVSpeechSynthesizer has one delegate callback, so overlapping speak calls
+    // would replace the first continuation and leave it suspended forever.
+    private val speakMutex = Mutex()
 
     // The active voice, reselected on any language or persona change. iOS *does*
     // expose voice gender, so the persona match is reliable when the language has
@@ -245,28 +251,36 @@ actual class PlatformTts actual constructor() : SpeechOutput {
     }
 
     override suspend fun speak(text: String) {
-        val fiVoice = voice ?: run {
-            log.w { "speak() skipped: no voice for the selected language" }
-            return
-        }
-        activatePlaybackSession()
-        log.d { "speak(): '${text.take(40)}' voice=${fiVoice.language}" }
-        suspendCancellableCoroutine { cont ->
-            val utterance = AVSpeechUtterance.speechUtteranceWithString(text)
-            utterance.voice = fiVoice
-            delegate.onFinish = {
-                delegate.onFinish = null
-                if (cont.isActive) cont.resume(Unit)
+        speakMutex.withLock {
+            val fiVoice = voice ?: run {
+                log.w { "speak() skipped: no voice for the selected language" }
+                return@withLock
             }
-            cont.invokeOnCancellation {
-                delegate.onFinish = null
-                synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary.AVSpeechBoundaryImmediate)
+            activatePlaybackSession()
+            log.d { "speak(): '${text.take(40)}' voice=${fiVoice.language}" }
+            suspendCancellableCoroutine { cont ->
+                val utterance = AVSpeechUtterance.speechUtteranceWithString(text)
+                utterance.voice = fiVoice
+                delegate.onFinish = {
+                    delegate.onFinish = null
+                    if (cont.isActive) cont.resume(Unit)
+                }
+                cont.invokeOnCancellation {
+                    delegate.onFinish = null
+                    synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary.AVSpeechBoundaryImmediate)
+                }
+                synthesizer.speakUtterance(utterance)
             }
-            synthesizer.speakUtterance(utterance)
         }
     }
 
     override fun stop() {
+        // didCancel cannot be implemented alongside didFinish through this
+        // Kotlin/ObjC protocol signature, so complete the active continuation
+        // ourselves before stopping. Otherwise the SSE collector can wedge.
+        val finish = delegate.onFinish
+        delegate.onFinish = null
         synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary.AVSpeechBoundaryImmediate)
+        finish?.invoke()
     }
 }

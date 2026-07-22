@@ -27,6 +27,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 interface LightsRepository {
     /** Catalog joined with live state and optimistic pending commands. */
@@ -59,9 +61,18 @@ class DefaultLightsRepository(
      * without this the maps would be mutated from two threads.
      */
     private val stateLock = Mutex()
+    private val catalogRefreshLock = Mutex()
+    private var lastCatalogRefresh: kotlin.time.TimeMark? = null
 
     private var catalog: Map<Int, LightInfo> = loadCachedCatalog()
+    /**
+     * Authoritative state from the retained MQTT snapshot. Until this contains
+     * an id we do not invent an `off` value for it from the name catalog.
+     */
     private var liveState: Map<Int, Boolean> = emptyMap()
+    private var hasMqttSnapshot = false
+    /** Temporary MCP/Influx seed, ignored forever after the first MQTT snapshot. */
+    private var fallbackState: Map<Int, Boolean> = emptyMap()
     /** Names from the retained `marmorikatu/names/lights` topic. */
     private var mqttNames: Map<Int, String> = emptyMap()
     private val reconciler = Reconciler<Int, Boolean>()
@@ -85,9 +96,15 @@ class DefaultLightsRepository(
             mqtt.messages.collect { msg ->
                 when (msg.topic) {
                     MqttTopics.LIGHTS -> stateLock.withLock {
-                        liveState = PlcPayloads.parseLights(msg.text())
-                        liveState.forEach { (id, on) -> reconciler.observed(id, on) }
-                        publishLocked()
+                        val parsed = PlcPayloads.parseLights(msg.text())
+                        // The real retained payload contains the full PLC array.
+                        // Do not erase a valid snapshot on a malformed/empty frame.
+                        if (parsed.isNotEmpty()) {
+                            liveState = parsed
+                            hasMqttSnapshot = true
+                            liveState.forEach { (id, on) -> reconciler.observed(id, on) }
+                            publishLocked()
+                        }
                     }
                     MqttTopics.LIGHT_NAMES -> stateLock.withLock {
                         mqttNames = PlcPayloads.parseLightNames(msg.text())
@@ -119,17 +136,25 @@ class DefaultLightsRepository(
         }
     }
 
-    override suspend fun refreshCatalog() {
+    override suspend fun refreshCatalog() = catalogRefreshLock.withLock {
+        // The connection manager, Valot screen, and 3D overlay can all enter at
+        // startup. Collapse that burst into one MCP request while still allowing
+        // deliberate refreshes after a short window.
+        if (lastCatalogRefresh?.elapsedNow()?.let { it < CATALOG_REFRESH_DEBOUNCE } == true) return@withLock
         val infos = mcp.listLights()
-        if (infos.isEmpty()) return
+        if (infos.isEmpty()) return@withLock
         settings.putString(
             KEY_CATALOG,
-            json.encodeToString(ListSerializer(LightInfo.serializer()), infos),
+            // Never persist the MCP state snapshot: it may be arbitrarily stale
+            // on the next launch. Only identity/floor metadata is cacheable.
+            json.encodeToString(ListSerializer(LightInfo.serializer()), infos.map { it.copy(isOn = null) }),
         )
         stateLock.withLock {
             catalog = infos.associateBy { it.id }
+            if (!hasMqttSnapshot) fallbackState = infos.mapNotNull { info -> info.isOn?.let { info.id to it } }.toMap()
             publishLocked()
         }
+        lastCatalogRefresh = TimeSource.Monotonic.markNow()
     }
 
     override suspend fun setLight(id: Int, on: Boolean) {
@@ -232,7 +257,13 @@ class DefaultLightsRepository(
      * Caller must hold [stateLock].
      */
     private fun publishLocked() {
-        val ids = (catalog.keys + liveState.keys).sorted()
+        // `list_lights` and the cached catalog contain identity only, never
+        // state. Publishing every catalog entry before MQTT arrived used to
+        // make the whole house flash falsely "off" at startup and could seed
+        // the 3D infographic with incorrect values. MQTT is authoritative; the
+        // catalog merely labels the ids present in its latest full snapshot.
+        val state = if (hasMqttSnapshot) liveState else fallbackState
+        val ids = state.keys.sorted()
         _lights.value = ids.mapNotNull { id ->
             val info = catalog[id]
             val name = info?.name ?: mqttNames[id] ?: return@mapNotNull null
@@ -240,7 +271,7 @@ class DefaultLightsRepository(
                 id = id,
                 name = name,
                 floor = info?.floor ?: Floor.ULKO,
-                isOn = liveState[id] ?: false,
+                isOn = state[id] ?: false,
                 pendingOn = reconciler.pendingValue(id),
             )
         }
@@ -255,6 +286,7 @@ class DefaultLightsRepository(
     }
 
     private companion object {
+        val CATALOG_REFRESH_DEBOUNCE = 5.seconds
         const val KEY_CATALOG = "lights.catalog"
 
         /** The PLC drops commands that arrive faster than its scan cycle. */

@@ -150,9 +150,12 @@ fun MkLineChart(
     fillHeight: Boolean = false,
 ) {
     val colors = MkTheme.colors
-    val allValues = series.flatMap { it.values }
-    val lo = min ?: (allValues.minOrNull() ?: 0f)
-    val hiRaw = max ?: (allValues.maxOrNull() ?: 1f)
+    // Scrubbing recomposes this chart at pointer cadence. Keep the series bounds
+    // cached and scan in place instead of allocating one flattened value list on
+    // every finger move.
+    val seriesBounds = remember(series) { seriesValueBounds(series) }
+    val lo = min ?: seriesBounds.first
+    val hiRaw = max ?: seriesBounds.second
     val span = (hiRaw - lo).let { if (it == 0f) 1f else it }
     val yAxisWidth = 34.dp
     // Fraction (0..1) of the chart width the finger is at, or null when not scrubbing.
@@ -325,6 +328,18 @@ fun MkLineChart(
             AxisLabels(labels, startPadding = if (showYAxis) yAxisWidth else 0.dp)
         }
     }
+}
+
+internal fun seriesValueBounds(series: List<MkSeries>): Pair<Float, Float> {
+    var lo = Float.POSITIVE_INFINITY
+    var hi = Float.NEGATIVE_INFINITY
+    for (item in series) {
+        for (value in item.values) {
+            if (value < lo) lo = value
+            if (value > hi) hi = value
+        }
+    }
+    return if (lo.isFinite() && hi.isFinite()) lo to hi else 0f to 1f
 }
 
 /**

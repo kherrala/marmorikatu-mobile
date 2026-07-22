@@ -13,6 +13,7 @@ import fi.marmorikatu.core.repository.ClimateRepository
 import fi.marmorikatu.core.repository.EnergyBreakdown
 import fi.marmorikatu.core.repository.EnergyRepository
 import fi.marmorikatu.core.repository.LightsRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -23,6 +24,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
@@ -64,6 +67,7 @@ class EnergiaViewModel(
     }
 
     fun closeFocus() {
+        focusRequestId++
         focusJob?.cancel()
         _focus.value = null
         _focusSeries.value = emptyList()
@@ -79,6 +83,7 @@ class EnergiaViewModel(
     // The in-flight history query. Cancelled before each new load (and on close)
     // so a slow response can never overwrite a newer metric/range's series.
     private var focusJob: Job? = null
+    private var focusRequestId = 0L
 
     // Section-list scroll position, kept in the VM so it survives the forced-
     // landscape recreation a phone focus chart triggers — see IlmastoViewModel.
@@ -86,19 +91,28 @@ class EnergiaViewModel(
     var listScrollOffset: Int = 0
 
     private fun loadFocus(metric: FocusMetric) {
+        val requestId = ++focusRequestId
+        val requestedRange = _focusRange.value
+        focusJob?.cancel()
+        _focusSeries.value = emptyList()
+        _focusLoading.value = false
         // The Kulutus/Kustannus detail renders the already-loaded cost trend —
         // there is no single InfluxDB series behind it to query.
         if (metric.measurement == KULUTUS_TREND) return
-        focusJob?.cancel()
-        _focusSeries.value = emptyList()
         _focusLoading.value = true
         focusJob = viewModelScope.launch {
-            val (flux, every) = _focusRange.value.fluxWindow()
-            val series = climateRepo.metricHistory(
-                metric.measurement, metric.field, flux, every, metric.tagKey, metric.tagValue,
-            )
-            _focusSeries.value = if (metric.scale == 1f) series else series.map { it * metric.scale }
-            _focusLoading.value = false
+            try {
+                val (flux, every) = requestedRange.fluxWindow()
+                val series = climateRepo.metricHistory(
+                    metric.measurement, metric.field, flux, every, metric.tagKey, metric.tagValue,
+                )
+                if (requestId != focusRequestId || _focus.value != metric || _focusRange.value != requestedRange) {
+                    return@launch
+                }
+                _focusSeries.value = if (metric.scale == 1f) series else series.map { it * metric.scale }
+            } finally {
+                if (requestId == focusRequestId) _focusLoading.value = false
+            }
         }
     }
 
@@ -161,6 +175,9 @@ class EnergiaViewModel(
 
     /** Today's spot curve, cached so a range change can label peak/cheap without re-fetching prices. */
     private var latestPrices: ElectricityPrices? = null
+    private var refreshJob: Job? = null
+    private var costJob: Job? = null
+    private val costLoadMutex = Mutex()
 
     /** Pull today's spot curve. The screen also re-invokes this every 5 min. */
     @OptIn(ExperimentalTime::class)
@@ -171,10 +188,19 @@ class EnergiaViewModel(
      * degrades that one source to null.
      */
     private suspend fun <T> timed(block: suspend () -> T): T? =
-        withTimeoutOrNull(FETCH_TIMEOUT_MS) { runCatching { block() }.getOrNull() }
+        withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+            try {
+                block()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                null
+            }
+        }
 
     fun refresh() {
-        viewModelScope.launch {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
             _refreshing.value = true
             try {
                 coroutineScope {
@@ -236,10 +262,12 @@ class EnergiaViewModel(
     fun setRange(range: EnergyRange) {
         if (range == _range.value && _cost.value != null) return
         _range.value = range
-        viewModelScope.launch { loadCost(range) }
+        costJob?.cancel()
+        costJob = viewModelScope.launch { loadCost(range) }
     }
 
-    private suspend fun loadCost(range: EnergyRange) {
+    private suspend fun loadCost(range: EnergyRange) = costLoadMutex.withLock {
+        if (_range.value != range) return@withLock
         _costLoading.value = true
         try {
             coroutineScope {

@@ -52,9 +52,15 @@ kotlin {
             implementation(libs.jb.lifecycle.viewmodel.compose)
             implementation(libs.jb.lifecycle.runtime.compose)
         }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)
             implementation(libs.androidx.core.splashscreen)
+            implementation(libs.filament.android)
+            implementation(libs.filament.gltfio)
+            implementation(libs.filament.utils)
         }
     }
 }

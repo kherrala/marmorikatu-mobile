@@ -194,8 +194,18 @@ fun MkAttentionStrip(
         return
     }
 
-    val rank = mapOf("alarm" to 0, "warn" to 1, "info" to 2)
-    val sorted = items.sortedBy { rank[it.status] ?: 9 }
+    // Attention cards can recompose with the live dashboard clock. Sorting is
+    // only needed when the source list changes, not on every unrelated tick.
+    val sorted = remember(items) {
+        items.sortedBy { item ->
+            when (item.status) {
+                "alarm" -> 0
+                "warn" -> 1
+                "info" -> 2
+                else -> 9
+            }
+        }
+    }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
         Row(

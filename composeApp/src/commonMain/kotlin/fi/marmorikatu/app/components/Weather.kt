@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -232,6 +233,70 @@ fun MkWeatherWidget(
                         Text("7 vrk", style = MkTheme.type.readout(12), color = c.accent, maxLines = 1)
                         Icon(MkIcons.CaretRight, null, tint = c.accent, modifier = Modifier.size(13.dp))
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Compact single-row weather chip for the kiosk 3D header: condition glyph,
+ * current temperature, the Finnish condition word, and today's high/low. A
+ * trimmed inline form of [MkWeatherWidget] that stays visible in the header
+ * alongside the rotating alert banner. Absent readings degrade to "–".
+ */
+@Composable
+fun MkWeatherChip(
+    forecast: WeatherForecast,
+    modifier: Modifier = Modifier,
+    tempOverride: Double? = null,
+    night: Boolean = isNightNow(),
+) {
+    val c = MkTheme.colors
+    val now = forecast.current
+    val icon = weatherIcon(now.weatherCode, now.condition, night)
+    val temp = tempOverride ?: now.temperature
+    val today = forecast.dailyForecast.firstOrNull()
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(MkRadius.round))
+            .background(c.surfaceCard)
+            .border(1.dp, c.borderSubtle, RoundedCornerShape(MkRadius.round))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = c.accent, modifier = Modifier.size(20.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = temp?.let { Fmt.oneDecimal(it) } ?: "–",
+                style = MkTheme.type.readout(18),
+                color = c.inkHi,
+                maxLines = 1,
+            )
+            Text("°", style = MkTheme.type.readout(11), color = c.inkLo, maxLines = 1)
+        }
+        val condition = now.condition.trim().replaceFirstChar { it.uppercase() }
+        if (condition.isNotEmpty()) {
+            Text(
+                text = condition,
+                style = MkTheme.type.readout(12, FontWeight.Normal),
+                color = c.inkMid,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 120.dp),
+            )
+        }
+        if (today?.tempMax != null || today?.tempMin != null) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                today.tempMax?.let {
+                    Text("↑${Fmt.int(it)}°", style = MkTheme.type.readout(12), color = c.warm, maxLines = 1)
+                }
+                today.tempMin?.let {
+                    Text("↓${Fmt.int(it)}°", style = MkTheme.type.readout(12), color = c.accent, maxLines = 1)
                 }
             }
         }

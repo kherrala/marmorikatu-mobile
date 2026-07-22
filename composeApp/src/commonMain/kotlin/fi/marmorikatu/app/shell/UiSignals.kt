@@ -43,4 +43,19 @@ class UiSignals {
     fun requestNav(route: String) {
         pendingNav.value = route
     }
+
+    /**
+     * A request to open the 3D house overlay from outside the tree — today the
+     * voice commands "Näytä talo 3D:nä" / "Näytä yläkerta". [floor] is one of
+     * all/kellari/alakerta/ylakerta (null = leave as-is); [spin] opens the
+     * rotating presentation. Each request is a fresh instance so a repeat of the
+     * same command still fires. The shell consumes it and resets to null.
+     */
+    val houseView = MutableStateFlow<HouseViewRequest?>(null)
+
+    fun requestHouseView(floor: String?, spin: Boolean) {
+        houseView.value = HouseViewRequest(floor, spin)
+    }
 }
+
+data class HouseViewRequest(val floor: String?, val spin: Boolean)

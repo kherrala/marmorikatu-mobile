@@ -3,6 +3,7 @@ package fi.marmorikatu.core.repository
 import com.russhwolf.settings.MapSettings
 import fi.marmorikatu.core.fakes.FakeMcpApi
 import fi.marmorikatu.core.fakes.FakeMqttClient
+import fi.marmorikatu.core.transport.mqtt.MqttTopics
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -61,6 +62,7 @@ class LightsPacingTest {
         val repo = DefaultLightsRepository(mqtt, FakeMcpApi(), backgroundScope, MapSettings())
         runCurrent()
         repo.refreshCatalog()
+        mqtt.emit(MqttTopics.LIGHTS, """{"43":false}""")
         runCurrent()
 
         repo.setLight(43, true)

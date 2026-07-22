@@ -13,6 +13,7 @@ import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Ventilation
 import fi.marmorikatu.core.repository.ClimateRepository
 import fi.marmorikatu.core.transport.influx.FluxPoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -106,28 +107,44 @@ class IlmastoViewModel(
     // The in-flight history query. Cancelled before each new load (and on clear)
     // so a slow response can never overwrite a newer metric/range's series.
     private var focusJob: Job? = null
+    private var focusRequestId = 0L
+    private var refreshJob: Job? = null
+    private var pollJob: Job? = null
+    private var historyJob: Job? = null
+    private var lastDutyLoadEpochSeconds = 0L
 
     /** Load a readout's InfluxDB history for the focus chart at [focusRange]. */
     private fun loadFocus(metric: FocusMetric) {
+        val requestId = ++focusRequestId
+        val requestedRange = _focusRange.value
         focusJob?.cancel()
         _focusSeries.value = emptyList()
         _focusLoading.value = true
         focusJob = viewModelScope.launch {
-            // Fine-grained windows (same as the H24 chart) so the focus line is
-            // smooth, not blocky. "hvac_lto" is a computed efficiency series.
-            val (flux, every) = _focusRange.value.fluxWindow()
-            val series = if (metric.measurement == "hvac_lto") {
-                climate.recoveryEfficiencyHistory(flux, every)
-            } else {
-                climate.metricHistory(metric.measurement, metric.field, flux, every, metric.tagKey, metric.tagValue)
+            try {
+                // Fine-grained windows (same as the H24 chart) so the focus line is
+                // smooth, not blocky. "hvac_lto" is a computed efficiency series.
+                val (flux, every) = requestedRange.fluxWindow()
+                val series = climateBestEffort {
+                    if (metric.measurement == "hvac_lto") {
+                        climate.recoveryEfficiencyHistory(flux, every)
+                    } else {
+                        climate.metricHistory(metric.measurement, metric.field, flux, every, metric.tagKey, metric.tagValue)
+                    }
+                }.orEmpty()
+                if (requestId != focusRequestId || _focus.value != metric || _focusRange.value != requestedRange) {
+                    return@launch
+                }
+                // Unit scaling (e.g. the Ruuvi pressure is stored in Pa, shown in hPa).
+                _focusSeries.value = if (metric.scale == 1f) series else series.map { it * metric.scale }
+            } finally {
+                if (requestId == focusRequestId) _focusLoading.value = false
             }
-            // Unit scaling (e.g. the Ruuvi pressure is stored in Pa, shown in hPa).
-            _focusSeries.value = if (metric.scale == 1f) series else series.map { it * metric.scale }
-            _focusLoading.value = false
         }
     }
 
     fun clearFocus() {
+        focusRequestId++
         focusJob?.cancel()
         _focusSeries.value = emptyList()
         _focusLoading.value = false
@@ -148,15 +165,17 @@ class IlmastoViewModel(
 
     /** Reload the summaries and history (called from a LaunchedEffect). */
     fun refresh() {
-        viewModelScope.launch {
+        if (refreshJob?.isActive == true) return
+        pollJob?.cancel()
+        refreshJob = viewModelScope.launch {
             _refreshing.value = true
             try {
                 // ThermIQ isn't retained; a refresh pulls fresh heat-pump registers.
-                launch { runCatching { climate.requestHeatPumpRead() } }
+                launch { climateBestEffort { climate.requestHeatPumpRead() } }
                 coroutineScope {
                     launch { loadSummaries() }
                     launch { loadHistory(_snapshot.value.range) }
-                    launch { loadHeatPumpDuty() }
+                    launch { loadHeatPumpDuty(force = true) }
                 }
                 if (!_snapshot.value.failed) _updatedAt.value = nowEpochSeconds()
             } finally {
@@ -169,7 +188,8 @@ class IlmastoViewModel(
     fun selectRange(range: TimeRangeOption) {
         if (range == _snapshot.value.range) return
         _snapshot.update { it.copy(range = range) }
-        viewModelScope.launch { loadHistory(range) }
+        historyJob?.cancel()
+        historyJob = viewModelScope.launch { loadHistory(range) }
     }
 
     /**
@@ -179,18 +199,19 @@ class IlmastoViewModel(
      * opened. Called on a short cadence while the screen is visible.
      */
     fun poll() {
-        viewModelScope.launch {
-            runCatching { climate.requestHeatPumpRead() }
+        if (refreshJob?.isActive == true || pollJob?.isActive == true) return
+        pollJob = viewModelScope.launch {
+            climateBestEffort { climate.requestHeatPumpRead() }
             loadSummaries(silent = true)
-            loadHeatPumpDuty()
+            loadHeatPumpDuty(force = false)
             if (!_snapshot.value.failed) _updatedAt.value = nowEpochSeconds()
         }
     }
 
     private suspend fun loadSummaries(silent: Boolean = false) {
         if (!silent) _snapshot.update { it.copy(loading = true) }
-        val hvac = runCatching { climate.hvacSummary() }.getOrNull()
-        val air = runCatching { climate.airQuality() }.getOrNull()
+        val hvac = climateBestEffort { climate.hvacSummary() }
+        val air = climateBestEffort { climate.airQuality() }
         _snapshot.update {
             it.copy(
                 hvac = hvac ?: it.hvac,
@@ -206,18 +227,40 @@ class IlmastoViewModel(
      * status bit (downsampled to 30-min bucket means), as a percentage. An empty
      * series leaves it null so the tile reads "Ei tietoa".
      */
-    private suspend fun loadHeatPumpDuty() {
-        val series = runCatching { climate.metricHistory("thermia", "compressor", "-24h", "30m") }
-            .getOrDefault(emptyList())
+    private suspend fun loadHeatPumpDuty(force: Boolean) {
+        val now = nowEpochSeconds()
+        if (!force && lastDutyLoadEpochSeconds > 0L &&
+            now - lastDutyLoadEpochSeconds < DUTY_REFRESH_SECONDS
+        ) {
+            return
+        }
+        // Throttle attempts as well as successes so an unavailable InfluxDB is
+        // not queried again by every visible-screen poll.
+        lastDutyLoadEpochSeconds = now
+        val series = climateBestEffort {
+            climate.metricHistory("thermia", "compressor", "-24h", "30m")
+        }.orEmpty()
         _heatPumpDuty.value = if (series.isEmpty()) null else series.average() * 100.0
     }
 
     private suspend fun loadHistory(range: TimeRangeOption) {
         val (flux, every) = range.fluxWindow()
-        val history = runCatching { climate.temperatureHistory(flux, every) }
-            .getOrElse { emptyMap() }
-        _snapshot.update { it.copy(history = history) }
+        val history = climateBestEffort { climate.temperatureHistory(flux, every) }.orEmpty()
+        // A range tap may have superseded this request while it was in flight.
+        if (_snapshot.value.range == range) _snapshot.update { it.copy(history = history) }
     }
+
+    private companion object {
+        const val DUTY_REFRESH_SECONDS = 5 * 60L
+    }
+}
+
+private suspend fun <T> climateBestEffort(block: suspend () -> T): T? = try {
+    block()
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (_: Throwable) {
+    null
 }
 
 /** Maps a UI time range onto a Flux `range` / `every` pair. */

@@ -3,6 +3,8 @@ package fi.marmorikatu.core.repository
 import com.russhwolf.settings.MapSettings
 import fi.marmorikatu.core.fakes.FakeMcpApi
 import fi.marmorikatu.core.fakes.FakeMqttClient
+import fi.marmorikatu.core.model.Floor
+import fi.marmorikatu.core.model.LightInfo
 import fi.marmorikatu.core.transport.mqtt.MqttTopics
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.test.runCurrent
@@ -13,6 +15,19 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class LightsRepositoryTest {
+
+    @Test
+    fun duplicateCatalogRefreshesWithinStartupBurstAreCollapsed() = runTest {
+        val mcp = FakeMcpApi()
+        val repo = DefaultLightsRepository(FakeMqttClient(), mcp, backgroundScope, MapSettings())
+        runCurrent()
+
+        repo.refreshCatalog()
+        repo.refreshCatalog()
+
+        assertEquals(1, mcp.calls.count { it == "list_lights" })
+        coroutineContext.cancelChildren()
+    }
 
     @Test
     fun mergesCatalogWithLiveStateAndReflectsToggle() = runTest {
@@ -115,16 +130,67 @@ class LightsRepositoryTest {
         runCurrent()
         repo.refreshCatalog()
 
-        // A fresh repository over the same settings sees names without MCP.
+        // A fresh repository has the names ready, but must not fabricate `off`
+        // states before the authoritative retained MQTT snapshot arrives.
+        val offlineMqtt = FakeMqttClient()
         val offlineRepo = DefaultLightsRepository(
-            FakeMqttClient(), FakeMcpApi().apply { catalog = emptyList() },
+            offlineMqtt, FakeMcpApi().apply { catalog = emptyList() },
             backgroundScope, settings,
         )
         runCurrent() // the initial publish is dispatched, not inline
+        assertTrue(offlineRepo.lights.value.isEmpty())
+
+        // Once live state arrives, the cached catalog labels it without MCP.
+        offlineMqtt.emit(MqttTopics.LIGHTS, """{"1":false,"43":true,"51":false}""")
+        runCurrent()
         assertEquals(
             setOf("Kylpyhuone", "Olohuone", "Biljardipöytä"),
             offlineRepo.lights.value.map { it.name }.toSet(),
         )
+        coroutineContext.cancelChildren()
+    }
+
+    @Test
+    fun catalogNeverInventsOffStatesBeforeMqttSnapshot() = runTest {
+        val mqtt = FakeMqttClient()
+        val repo = DefaultLightsRepository(mqtt, FakeMcpApi(), backgroundScope, MapSettings())
+        runCurrent()
+
+        repo.refreshCatalog()
+        runCurrent()
+        assertTrue(repo.lights.value.isEmpty())
+
+        mqtt.emit(MqttTopics.LIGHTS, """{"1":false,"43":true,"51":false}""")
+        runCurrent()
+        assertEquals(
+            setOf("Kylpyhuone", "Olohuone", "Biljardipöytä"),
+            repo.lights.value.map { it.name }.toSet(),
+        )
+
+        coroutineContext.cancelChildren()
+    }
+
+    @Test
+    fun mcpStateSeedsStartupButMqttRemainsAuthoritative() = runTest {
+        val mqtt = FakeMqttClient()
+        val mcp = FakeMcpApi().apply {
+            catalog = listOf(LightInfo(43, "Olohuone", Floor.ALAKERTA, isOn = true))
+        }
+        val repo = DefaultLightsRepository(mqtt, mcp, backgroundScope, MapSettings())
+        runCurrent()
+
+        repo.refreshCatalog()
+        runCurrent()
+        assertTrue(repo.lights.value.single().isOn)
+
+        mqtt.emit(MqttTopics.LIGHTS, """{"43":false}""")
+        runCurrent()
+        assertEquals(false, repo.lights.value.single().isOn)
+
+        // A later, stale MCP result can update the label but never the state.
+        repo.refreshCatalog()
+        runCurrent()
+        assertEquals(false, repo.lights.value.single().isOn)
 
         coroutineContext.cancelChildren()
     }
