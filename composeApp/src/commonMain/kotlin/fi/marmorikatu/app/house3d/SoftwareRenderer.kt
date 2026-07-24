@@ -471,6 +471,7 @@ internal fun DrawScope.drawHouse(
     showWalls: Boolean,
     explode: Float,
     cache: SoftwareRenderCache,
+    showHeating: Boolean = false,
 ) {
     require(cache.model === model) { "SoftwareRenderCache belongs to a different model" }
     val w = size.width
@@ -510,7 +511,7 @@ internal fun DrawScope.drawHouse(
         for (t in 0 until model.triCount) {
             val g = HouseGroup.entries[model.group[t]]
             val cls = MatClass.entries[model.matClass[t]]
-            if (!triVisible(g, cls, mode, showRoof, showWalls)) continue
+            if (!triVisible(g, cls, mode, showRoof, showWalls, showHeating = showHeating)) continue
             val yoff = groupTier(g) * explode
             val face = t * 3
             val nx = cache.normals[face]

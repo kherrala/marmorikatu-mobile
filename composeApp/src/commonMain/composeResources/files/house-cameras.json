@@ -122,18 +122,18 @@
    "center": [
     1.18,
     -3.024,
-    -6.76
+    -1.23
    ],
    "size": [
     1.54,
     0.008,
-    1.62
+    1.64
    ],
    "orbit": {
     "target": [
      1.18,
      -1.92,
-     -6.76
+     -1.23
     ],
     "radius": 3.5,
     "phi": 0.55
@@ -141,43 +141,22 @@
   },
   "Room_1krs_ET": {
    "center": [
-    4.275,
-    0.016,
-    -1.36
-   ],
-   "size": [
-    0.95,
-    0.008,
-    2.12
-   ],
-   "orbit": {
-    "target": [
-     4.27,
-     1.12,
-     -1.36
-    ],
-    "radius": 4.45,
-    "phi": 0.55
-   }
-  },
-  "Room_1krs_ET2": {
-   "center": [
     5.835,
     0.016,
-    -3.96
+    -2.85
    ],
    "size": [
     4.07,
     0.008,
-    2.88
+    5.1
    ],
    "orbit": {
     "target": [
      5.83,
      1.12,
-     -3.96
+     -2.85
     ],
-    "radius": 8.55,
+    "radius": 10.71,
     "phi": 0.55
    }
   },
@@ -374,20 +353,20 @@
    "center": [
     5.545,
     0.016,
-    -1.36
+    -1.375
    ],
    "size": [
     1.49,
     0.008,
-    2.12
+    2.15
    ],
    "orbit": {
     "target": [
      5.55,
      1.12,
-     -1.36
+     -1.38
     ],
-    "radius": 4.45,
+    "radius": 4.52,
     "phi": 0.55
    }
   },
@@ -416,20 +395,20 @@
    "center": [
     7.13,
     0.016,
-    -1.385
+    -1.375
    ],
    "size": [
     1.48,
     0.008,
-    2.17
+    2.15
    ],
    "orbit": {
     "target": [
      7.13,
      1.12,
-     -1.39
+     -1.38
     ],
-    "radius": 4.56,
+    "radius": 4.52,
     "phi": 0.55
    }
   },
@@ -456,64 +435,64 @@
   },
   "Room_2krs_AULA": {
    "center": [
-    5.49,
+    7.19,
     3.026,
-    -2.875
+    -2.9
    ],
    "size": [
-    10.38,
+    6.98,
     0.008,
-    5.15
+    5.2
    ],
    "orbit": {
     "target": [
-     5.49,
+     7.19,
      4.13,
-     -2.87
+     -2.9
     ],
-    "radius": 21.8,
+    "radius": 14.66,
     "phi": 0.55
    }
   },
   "Room_2krs_KPH": {
    "center": [
-    7.655,
+    7.485,
     3.026,
     -6.665
    ],
    "size": [
-    2.01,
+    2.35,
     0.008,
     2.03
    ],
    "orbit": {
     "target": [
-     7.65,
+     7.48,
      4.13,
      -6.66
     ],
-    "radius": 4.26,
+    "radius": 4.93,
     "phi": 0.55
    }
   },
   "Room_2krs_MH": {
    "center": [
-    2.8,
+    2.51,
     3.026,
-    -6.165
+    -5.84
    ],
    "size": [
-    5.0,
+    4.42,
     0.008,
-    3.03
+    3.68
    ],
    "orbit": {
     "target": [
-     2.8,
+     2.51,
      4.13,
-     -6.16
+     -5.84
     ],
-    "radius": 10.5,
+    "radius": 9.28,
     "phi": 0.55
    }
   },
@@ -521,20 +500,20 @@
    "center": [
     1.95,
     3.026,
-    -2.115
+    -2.1
    ],
    "size": [
     3.3,
     0.008,
-    3.63
+    3.6
    ],
    "orbit": {
     "target": [
      1.95,
      4.13,
-     -2.12
+     -2.1
     ],
-    "radius": 7.62,
+    "radius": 7.56,
     "phi": 0.55
    }
   },
@@ -542,37 +521,37 @@
    "center": [
     9.06,
     3.026,
-    -2.115
+    -2.1
    ],
    "size": [
     3.24,
     0.008,
-    3.63
+    3.6
    ],
    "orbit": {
     "target": [
      9.06,
      4.13,
-     -2.12
+     -2.1
     ],
-    "radius": 7.62,
+    "radius": 7.56,
     "phi": 0.55
    }
   },
   "Room_2krs_VH": {
    "center": [
-    5.975,
+    5.525,
     3.026,
     -6.665
    ],
    "size": [
-    1.15,
+    1.39,
     0.008,
     2.03
    ],
    "orbit": {
     "target": [
-     5.98,
+     5.52,
      4.13,
      -6.66
     ],
@@ -619,9 +598,9 @@
   },
   "Light_kellari_VAR1_2": {
    "position": [
-    6.85,
+    5.55,
     -1.44,
-    -5.75
+    -4.55
    ]
   },
   "Light_kellari_VAR2_1": {
@@ -642,7 +621,7 @@
    "position": [
     1.2,
     -0.634,
-    -6.75
+    -1.25
    ]
   },
   "Light_1krs_ET": {
@@ -652,39 +631,25 @@
     -3.2
    ]
   },
-  "Light_1krs_KHH_1": {
+  "Light_1krs_IKKUNA": {
    "position": [
-    5.4,
-    2.426,
-    -7.25
+    12.39,
+    2.52,
+    -7.655
    ]
   },
-  "Light_1krs_KHH_2": {
+  "Light_1krs_KHH": {
    "position": [
-    6.4,
-    2.426,
-    -7.25
+    5.0,
+    2.501,
+    -6.25
    ]
   },
-  "Light_1krs_KT_1": {
+  "Light_1krs_KT": {
    "position": [
-    8.35,
-    2.481,
-    -2.0
-   ]
-  },
-  "Light_1krs_KT_2": {
-   "position": [
-    8.35,
-    2.481,
-    -3.3
-   ]
-  },
-  "Light_1krs_KT_3": {
-   "position": [
-    10.24,
-    2.075,
-    -3.78
+    9.15,
+    2.501,
+    -1.9
    ]
   },
   "Light_1krs_LH": {
@@ -701,46 +666,18 @@
     -2.0
    ]
   },
-  "Light_1krs_OH_1": {
+  "Light_1krs_OH": {
    "position": [
-    13.1,
-    2.521,
-    -6.0
-   ]
-  },
-  "Light_1krs_OH_2": {
-   "position": [
-    14.5,
-    2.521,
-    -6.0
-   ]
-  },
-  "Light_1krs_OH_3": {
-   "position": [
-    15.8,
-    2.521,
-    -6.0
-   ]
-  },
-  "Light_1krs_OH_4": {
-   "position": [
-    12.3,
-    2.521,
-    -5.2
-   ]
-  },
-  "Light_1krs_OH_5": {
-   "position": [
-    16.5,
-    2.521,
-    -5.1
+    13.0,
+    2.541,
+    -5.35
    ]
   },
   "Light_1krs_PH": {
    "position": [
-    3.2,
-    2.406,
-    -6.6
+    2.95,
+    2.401,
+    -6.3
    ]
   },
   "Light_1krs_PORRAS": {
@@ -755,6 +692,13 @@
     12.6,
     1.975,
     -2.0
+   ]
+  },
+  "Light_1krs_SAAREKE": {
+   "position": [
+    10.24,
+    2.075,
+    -2.7
    ]
   },
   "Light_1krs_TEKN": {
@@ -827,81 +771,60 @@
     0.045
    ]
   },
-  "Light_2krs_AULA_1": {
-   "position": [
-    5.3,
-    5.496,
-    -3.3
-   ]
-  },
-  "Light_2krs_AULA_2": {
-   "position": [
-    7.3,
-    5.496,
-    -4.7
-   ]
-  },
-  "Light_2krs_AULA_3": {
+  "Light_2krs_AULA": {
    "position": [
     4.5,
+    5.491,
+    -4.2
+   ]
+  },
+  "Light_2krs_AULA_KATTO": {
+   "position": [
+    5.55,
     5.496,
     -1.0
    ]
   },
-  "Light_2krs_KPH_1": {
+  "Light_2krs_KPH": {
    "position": [
-    7.1,
-    5.491,
-    -6.3
-   ]
-  },
-  "Light_2krs_KPH_2": {
-   "position": [
-    8.2,
-    5.491,
-    -7.1
+    7.8,
+    5.496,
+    -6.65
    ]
   },
   "Light_2krs_MH": {
    "position": [
-    2.6,
+    2.25,
     5.496,
-    -6.2
+    -6.27
    ]
   },
   "Light_2krs_MH2": {
    "position": [
-    2.0,
+    0.85,
     5.496,
-    -2.0
+    -2.2
    ]
   },
   "Light_2krs_MH3": {
    "position": [
-    9.0,
+    8.81,
     5.496,
-    -2.0
-   ]
-  },
-  "Light_2krs_PORRAS": {
-   "position": [
-    9.8,
-    5.496,
-    -6.5
+    -2.22
    ]
   },
   "Light_2krs_VH": {
    "position": [
-    5.95,
+    5.6,
     5.496,
-    -6.6
+    -6.8
    ]
   },
   "Light_ulko_parveke": {
    "position": [
     -0.045,
     5.16,
-    -6.9
+    -4.45
    ]
   },
   "Light_ulko_piha_1": {
@@ -923,6 +846,349 @@
     16.4,
     -1.3,
     3.435
+   ]
+  }
+ },
+ "heating": {
+  "Heat_kellari_11": {
+   "circuit": "11",
+   "floor": "kellari",
+   "center": [
+    15.135,
+    -2.996,
+    -5.575
+   ],
+   "size": [
+    2.87,
+    0.004,
+    3.99
+   ],
+   "rooms": "VAR2 eteläosa",
+   "loop_m": 61
+  },
+  "Heat_kellari_12": {
+   "circuit": "12",
+   "floor": "kellari",
+   "center": [
+    12.28,
+    -2.996,
+    -3.99
+   ],
+   "size": [
+    2.68,
+    0.004,
+    7.16
+   ],
+   "rooms": "VAR2 pohjoisosa",
+   "loop_m": 69
+  },
+  "Heat_kellari_21": {
+   "circuit": "21",
+   "floor": "kellari",
+   "center": [
+    5.54,
+    -2.996,
+    -1.295
+   ],
+   "size": [
+    10.26,
+    0.004,
+    1.77
+   ],
+   "rooms": "VAR1 länsikaista",
+   "loop_m": 56
+  },
+  "Heat_kellari_22": {
+   "circuit": "22",
+   "floor": "kellari",
+   "center": [
+    5.54,
+    -2.996,
+    -3.095
+   ],
+   "size": [
+    10.26,
+    0.004,
+    1.75
+   ],
+   "rooms": "VAR1",
+   "loop_m": 62
+  },
+  "Heat_kellari_23": {
+   "circuit": "23",
+   "floor": "kellari",
+   "center": [
+    5.54,
+    -2.996,
+    -4.885
+   ],
+   "size": [
+    10.26,
+    0.004,
+    1.75
+   ],
+   "rooms": "VAR1",
+   "loop_m": 67
+  },
+  "Heat_kellari_24": {
+   "circuit": "24",
+   "floor": "kellari",
+   "center": [
+    5.54,
+    -2.996,
+    -6.685
+   ],
+   "size": [
+    10.26,
+    0.004,
+    1.77
+   ],
+   "rooms": "VAR1 itäkaista",
+   "loop_m": 74
+  },
+  "Heat_1krs_31": {
+   "circuit": "31",
+   "floor": "1krs",
+   "center": [
+    2.345,
+    0.044,
+    -6.59
+   ],
+   "size": [
+    4.09,
+    0.004,
+    2.18
+   ],
+   "rooms": "LH+PH",
+   "loop_m": 35
+  },
+  "Heat_1krs_32": {
+   "circuit": "32",
+   "floor": "1krs",
+   "center": [
+    7.04,
+    0.044,
+    -6.665
+   ],
+   "size": [
+    5.1,
+    0.004,
+    2.03
+   ],
+   "rooms": "KHH+VH",
+   "loop_m": 56
+  },
+  "Heat_1krs_33": {
+   "circuit": "33",
+   "floor": "1krs",
+   "center": [
+    4.085,
+    0.044,
+    -2.85
+   ],
+   "size": [
+    7.57,
+    0.004,
+    5.1
+   ],
+   "rooms": "ET+TK+VH2+WC+TEKN",
+   "loop_m": 70
+  },
+  "Heat_1krs_34": {
+   "circuit": "34",
+   "floor": "1krs",
+   "center": [
+    2.0,
+    0.044,
+    -2.075
+   ],
+   "size": [
+    3.4,
+    0.004,
+    3.55
+   ],
+   "rooms": "MH",
+   "loop_m": 57
+  },
+  "Heat_1krs_41": {
+   "circuit": "41",
+   "floor": "1krs",
+   "center": [
+    9.445,
+    0.044,
+    -2.91
+   ],
+   "size": [
+    2.95,
+    0.004,
+    5.22
+   ],
+   "rooms": "KT",
+   "loop_m": 42
+  },
+  "Heat_1krs_42": {
+   "circuit": "42",
+   "floor": "1krs",
+   "center": [
+    12.51,
+    0.044,
+    -1.865
+   ],
+   "size": [
+    3.1,
+    0.004,
+    3.13
+   ],
+   "rooms": "RUOKAILU",
+   "loop_m": 55
+  },
+  "Heat_1krs_43": {
+   "circuit": "43",
+   "floor": "1krs",
+   "center": [
+    13.82,
+    0.044,
+    -4.475
+   ],
+   "size": [
+    5.72,
+    0.004,
+    2.01
+   ],
+   "rooms": "OH länsiosa",
+   "loop_m": 56
+  },
+  "Heat_1krs_44": {
+   "circuit": "44",
+   "floor": "1krs",
+   "center": [
+    13.82,
+    0.044,
+    -6.6
+   ],
+   "size": [
+    5.72,
+    0.004,
+    2.16
+   ],
+   "rooms": "OH itäosa",
+   "loop_m": 48
+  },
+  "Heat_2krs_51": {
+   "circuit": "51",
+   "floor": "2krs",
+   "center": [
+    3.26,
+    3.054,
+    -5.84
+   ],
+   "size": [
+    5.92,
+    0.004,
+    3.68
+   ],
+   "rooms": "MH+VH",
+   "loop_m": 64
+  },
+  "Heat_2krs_52": {
+   "circuit": "52",
+   "floor": "2krs",
+   "center": [
+    1.95,
+    3.054,
+    -2.1
+   ],
+   "size": [
+    3.3,
+    0.004,
+    3.6
+   ],
+   "rooms": "MH2",
+   "loop_m": 52
+  },
+  "Heat_2krs_53": {
+   "circuit": "53",
+   "floor": "2krs",
+   "center": [
+    7.19,
+    3.054,
+    -2.9
+   ],
+   "size": [
+    6.98,
+    0.004,
+    5.2
+   ],
+   "rooms": "AULA",
+   "loop_m": 61
+  },
+  "Heat_2krs_54": {
+   "circuit": "54",
+   "floor": "2krs",
+   "center": [
+    9.06,
+    3.054,
+    -2.1
+   ],
+   "size": [
+    3.24,
+    0.004,
+    3.6
+   ],
+   "rooms": "MH3",
+   "loop_m": 70
+  },
+  "Heat_2krs_55": {
+   "circuit": "55",
+   "floor": "2krs",
+   "center": [
+    7.485,
+    3.054,
+    -6.665
+   ],
+   "size": [
+    2.35,
+    0.004,
+    2.03
+   ],
+   "rooms": "KPH",
+   "loop_m": 22
+  }
+ },
+ "manifolds": {
+  "Heat_kellari_JT1": {
+   "center": [
+    10.98,
+    -2.54,
+    -0.8
+   ]
+  },
+  "Heat_kellari_JT2": {
+   "center": [
+    10.635,
+    -2.54,
+    -0.8
+   ]
+  },
+  "Heat_1krs_JT3": {
+   "center": [
+    1.1,
+    0.5,
+    -5.34
+   ]
+  },
+  "Heat_1krs_JT4": {
+   "center": [
+    9.35,
+    0.5,
+    -5.72
+   ]
+  },
+  "Heat_2krs_JT5": {
+   "center": [
+    8.15,
+    3.51,
+    -5.68
    ]
   }
  },

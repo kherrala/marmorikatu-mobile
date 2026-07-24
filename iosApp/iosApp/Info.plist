@@ -31,6 +31,12 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- Kiosk app: require full screen so iPad renders at the native 2.0 scale.
+	     Without this, iPad runs it in a scaled multitasking window whose Compose
+	     density diverges from the screen scale, which mis-sizes the SceneKit
+	     UIKit-interop view (the model filled only part of the stage). -->
+	<key>UIRequiresFullScreen</key>
+	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

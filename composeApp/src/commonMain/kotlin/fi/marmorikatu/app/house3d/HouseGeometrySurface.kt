@@ -21,6 +21,17 @@ expect fun HouseGeometrySurface(
     showRoof: Boolean,
     showWalls: Boolean,
     showFurniture: Boolean,
+    /** "Lämmitys" mode: reveal the underfloor-heating loop overlays (hidden otherwise). */
+    showHeating: Boolean,
+    /** Circuit "nn" → 0..1 heat intensity, colouring each loop cold→hot in Lämmitys mode. */
+    heatByCircuit: Map<String, Float>,
     explode: Float,
+    /**
+     * World positions of the fixtures that are currently on (floor-filtered,
+     * explode-adjusted). In dark mode the GPU renderers place a warm point light
+     * at each so lit rooms glow and unlit rooms fall dark; in light mode they keep
+     * the flat global lighting and ignore this.
+     */
+    litLights: List<Vec3>,
     modifier: Modifier,
 )

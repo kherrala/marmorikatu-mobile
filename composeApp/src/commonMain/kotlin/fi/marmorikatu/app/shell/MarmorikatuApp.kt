@@ -974,8 +974,18 @@ private fun PhoneSurface(
         }
     }
 
-        // The active-voice UI floats above the whole surface over its scrim, so
-        // it sits on top of the content and tab bar rather than in its own row.
+        if (showHouse3d) {
+            // House3dOverlay owns Back: it steps room → floor → whole house → close.
+            House3dOverlay(
+                onDismiss = { showHouse3d = false },
+                presentation = housePresentation,
+                floorTarget = houseFloorTarget,
+                floorNonce = houseFloorNonce,
+            )
+        }
+
+        // The active-voice UI floats above the whole surface (including the 3D
+        // overlay) over its scrim, so the in-viewer mic can surface it too.
         VoiceOverlay(
             voice = voice,
             voiceHint = voiceHint,
@@ -987,16 +997,6 @@ private fun PhoneSurface(
             onDismiss = viewModel::stopListening,
             onRunCommand = viewModel::runQuickCommand,
         )
-
-        if (showHouse3d) {
-            BackHandler { showHouse3d = false }
-            House3dOverlay(
-                onDismiss = { showHouse3d = false },
-                presentation = housePresentation,
-                floorTarget = houseFloorTarget,
-                floorNonce = houseFloorNonce,
-            )
-        }
     }
 }
 

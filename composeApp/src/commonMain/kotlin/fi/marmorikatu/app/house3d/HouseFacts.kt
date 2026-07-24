@@ -136,6 +136,40 @@ private fun roomTempLabel(key: String): String = when (key) {
 }
 
 /**
+ * Building-systems facts for the showcase: ground-source heat pump + MVHR in the
+ * technical room (top of the plan, own outside door → `Room_1krs_TEKN`), and the
+ * electricity main/fuses in the carport at the back (`Room_katos_AUTOKATOS`).
+ * Anchored to the model's real room centres via [roomCenter]. Only emits a marker
+ * when its live value is present.
+ */
+fun techFacts(
+    heatPumpAvailable: Boolean,
+    heatPumpPowerKw: Double?,
+    heatPumpSupplyC: Double?,
+    ventSupplyC: Double?,
+    electricityLabel: String?,
+    roomCenter: (String) -> Vec3?,
+): List<HouseMarker> = buildList {
+    roomCenter("Room_1krs_TEKN")?.let { tekn ->
+        if (heatPumpAvailable) {
+            val v = heatPumpPowerKw?.let { "${oneDecimal(it)} kW" }
+                ?: heatPumpSupplyC?.let { "${oneDecimal(it)}° meno" }
+            if (v != null) {
+                add(HouseMarker("Maalämpö", v, Vec3(tekn.x + 0.4f, tekn.y + 1.1f, tekn.z), HouseGroup.Krs1, MarkerKind.Info))
+            }
+        }
+        if (ventSupplyC != null) {
+            add(HouseMarker("Ilmanvaihto", "${oneDecimal(ventSupplyC)}° tulo", Vec3(tekn.x - 0.4f, tekn.y + 1.1f, tekn.z), HouseGroup.Krs1, MarkerKind.Info))
+        }
+    }
+    if (electricityLabel != null) {
+        roomCenter("Room_katos_AUTOKATOS")?.let { katos ->
+            add(HouseMarker("Sähkö", electricityLabel, Vec3(katos.x, katos.y + 1.1f, katos.z), HouseGroup.Katos, MarkerKind.Info))
+        }
+    }
+}
+
+/**
  * Infographic facts for floors without Ruuvi sensors (2nd floor + basement).
  * Their values come from the PLC room temperatures, anchored to the model's real
  * room centres (via [roomCenter]) so each label sits over the right room — the

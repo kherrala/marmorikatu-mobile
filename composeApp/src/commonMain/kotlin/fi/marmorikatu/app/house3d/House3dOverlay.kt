@@ -37,6 +37,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -92,6 +93,7 @@ private sealed interface HouseLoad {
  * own and facts cycle at their real positions. [idle] adds the screensaver
  * takeover (big clock + "Kosketa jatkaaksesi"); any tap calls [onDismiss].
  */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun House3dOverlay(
     onDismiss: () -> Unit,
@@ -134,8 +136,20 @@ fun House3dOverlay(
     // Upstairs has no Ruuvi sensors; its infographic pins come from the PLC room
     // temperatures instead (anchored to the model's real room centres below).
     val roomTemps by ilmastoVm.roomTemperatures.collectAsState()
+    // Building-systems telemetry for the showcase (heat pump + MVHR).
+    val heatPump by ilmastoVm.heatPump.collectAsState()
+    val ventilation by ilmastoVm.ventilation.collectAsState()
+    // Underfloor-heating loop demand (0..1 per circuit) for the "Lämmitys" colouring.
+    val heatingDemand by ilmastoVm.heatingDemand.collectAsState()
+    val heatByCircuit = remember(heatingDemand) {
+        heatIntensityByCircuit(heatingDemand.associate { it.key to it.percent })
+    }
     val kotiVm: KotiViewModel = koinViewModel()
     val koti by kotiVm.uiState.collectAsState()
+    // Shared shell VM for the in-viewer theme toggle + voice mic (same instance
+    // the app shell uses, so toggling here flips the whole app's theme).
+    val shell: fi.marmorikatu.app.shell.ShellViewModel = koinViewModel()
+    val darkTheme by shell.dark.collectAsState()
     // The live repository deliberately clears Ruuvi state on disconnect so
     // normal screens cannot raise stale alerts. The presentation layer keeps a
     // separate latest-known copy for its non-alarming carousel fallback.
@@ -180,6 +194,8 @@ fun House3dOverlay(
     var showWalls by remember { mutableStateOf(presentation) }
     var showRoof by remember { mutableStateOf(presentation) }
     var showFurniture by remember { mutableStateOf(true) }
+    // "Lämmitys" inspection mode: reveal + colour the underfloor-heating loops.
+    var showHeating by remember { mutableStateOf(false) }
     var explode by remember { mutableFloatStateOf(0f) }
     var dataLayer by remember { mutableStateOf(DataLayer.Valot) }
     var spin by remember { mutableStateOf(presentation) }
@@ -188,7 +204,19 @@ fun House3dOverlay(
     var focusToken by remember { mutableIntStateOf(0) }
 
     // Voice/presentation requests can change while the overlay is already open.
-    LaunchedEffect(presentation, idle) { spin = presentation || idle }
+    // When the showcase/screensaver starts, leave any focused floor or room and
+    // return to the whole-house rotating overview.
+    LaunchedEffect(presentation, idle) {
+        spin = presentation || idle
+        if (presentation || idle) {
+            selectedRoom = null
+            floorMode = FloorMode.All
+            (load as? HouseLoad.Ready)?.let {
+                focus = frameVisible(it.model, FloorMode.All, showRoof, showWalls)
+                focusToken++
+            }
+        }
+    }
 
     val ready = load as? HouseLoad.Ready
 
@@ -276,6 +304,16 @@ fun House3dOverlay(
         }
     }
 
+    // Back steps out one layer at a time: room → floor → whole house → close
+    // (which returns to the home view). Only the top level dismisses the overlay.
+    BackHandler(enabled = true) {
+        when {
+            selectedRoom != null -> clearRoomSelection()
+            floorMode != FloorMode.All -> applyFloor(FloorMode.All)
+            else -> onDismiss()
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(colors.appBg)) {
         Column(
             Modifier.fillMaxSize()
@@ -301,6 +339,17 @@ fun House3dOverlay(
                             color = colors.inkLo,
                         )
                     }
+                    // Quick dark/light toggle (the night lighting only shows in dark)
+                    // and a voice mic, mirroring the main nav.
+                    MkIconButton(
+                        icon = if (darkTheme) MkIcons.Sun else MkIcons.Moon,
+                        onClick = { shell.toggleTheme() },
+                        label = "Teema",
+                        round = true,
+                    )
+                    Spacer(Modifier.width(MkSpacing.x2))
+                    MkIconButton(icon = MkIcons.Microphone, onClick = { shell.onMic() }, label = "Puhu", round = true)
+                    Spacer(Modifier.width(MkSpacing.x2))
                     MkIconButton(icon = MkIcons.X, onClick = onDismiss, label = "Sulje", round = true)
                 }
             }
@@ -330,6 +379,20 @@ fun House3dOverlay(
                                 s.model.rooms.firstOrNull { it.name == name }?.center
                             }
                         }
+                        // Building systems: heat pump + MVHR (technical room) and the
+                        // electricity main (carport at the back).
+                        val elecLabel = koti.kpis.firstOrNull { it.key == "sahko" }
+                            ?.takeIf { it.value != "Ei tietoa" }
+                            ?.let { "${it.value} ${it.unit.orEmpty()}".trim() }
+                        val tech = remember(heatPump, ventilation, elecLabel, s.model) {
+                            techFacts(
+                                heatPumpAvailable = heatPump.available,
+                                heatPumpPowerKw = heatPump.powerKw,
+                                heatPumpSupplyC = heatPump.supplyC,
+                                ventSupplyC = ventilation.supplyC,
+                                electricityLabel = elecLabel,
+                            ) { name -> s.model.rooms.firstOrNull { it.name == name }?.center }
+                        }
                         HouseView3d(
                             model = s.model,
                             presets = s.presets,
@@ -337,6 +400,8 @@ fun House3dOverlay(
                             showRoof = showRoof,
                             showWalls = showWalls,
                             showFurniture = showFurniture,
+                            showHeating = showHeating,
+                            heatByCircuit = heatByCircuit,
                             explode = explode,
                             selectedRoom = selectedRoom,
                             focus = focus ?: initialFocus,
@@ -347,14 +412,26 @@ fun House3dOverlay(
                             // Alerts never enter the rotating reel: their source
                             // pin stays present until the live condition clears.
                             markers = pinnedAlerts + listOfNotNull(liveAnnouncementMarker),
-                            facts = (facts + upstairs).filter { it.kind != MarkerKind.Alert },
+                            facts = (facts + upstairs + tech).filter { it.kind != MarkerKind.Alert },
                             autoSpin = spin,
                             infomercial = presentation,
                             accent = colors.accent,
                             glow = colors.warm,
                             onRoomTap = { name ->
-                                selectedRoom = name
-                                s.presets.rooms[name]?.let { focus = comfortableRoomFocus(it); focusToken++ }
+                                // In the screensaver a tap should only wake the kiosk
+                                // (handled by the shell's interaction observer), not
+                                // pick a room.
+                                if (!idle) {
+                                    selectedRoom = name
+                                    // Lock the floor filter to the room's floor so it
+                                    // doesn't fall back to the whole house when the
+                                    // room selection later clears (e.g. picked from a
+                                    // showcase floor tour).
+                                    s.model.rooms.firstOrNull { it.name == name }?.group?.let {
+                                        floorMode = floorModeForGroup(it)
+                                    }
+                                    s.presets.rooms[name]?.let { focus = comfortableRoomFocus(it); focusToken++ }
+                                }
                             },
                         )
                     }
@@ -462,6 +539,7 @@ fun House3dOverlay(
                                 Chip("Katto", active = showRoof) { onRoof() }
                                 Chip("Seinät", active = showWalls) { onWalls() }
                                 Chip("Kalusteet", active = showFurniture) { showFurniture = !showFurniture }
+                                Chip("Lämmitys", active = showHeating) { showHeating = !showHeating }
                                 Chip("Pyöritä", active = spin) { spin = !spin }
                                 Spacer(Modifier.width(MkSpacing.x2))
                                 Text("KERROSVÄLI", style = type.caption.copy(fontFamily = type.mono, fontSize = 9.5.sp), color = colors.inkLo)
@@ -488,6 +566,7 @@ fun House3dOverlay(
                                     Chip("Katto", active = showRoof) { onRoof() }
                                     Chip("Seinät", active = showWalls) { onWalls() }
                                     Chip("Kalusteet", active = showFurniture) { showFurniture = !showFurniture }
+                                    Chip("Lämmitys", active = showHeating) { showHeating = !showHeating }
                                     Chip("Pyöritä", active = spin) { spin = !spin }
                                 }
                                 // The Kerrosväli (explode) slider is a kiosk/tablet

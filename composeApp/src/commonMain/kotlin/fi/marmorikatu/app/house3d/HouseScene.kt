@@ -15,9 +15,15 @@ data class OrbitPreset(val target: Vec3, val radius: Float, val phi: Float)
 
 /** Keeps small-room presets from cropping away all surrounding floor context. */
 fun comfortableRoomFocus(preset: OrbitPreset): OrbitPreset =
-    if (preset.radius >= MIN_ROOM_FOCUS_RADIUS) preset else preset.copy(radius = MIN_ROOM_FOCUS_RADIUS)
+    preset.copy(
+        radius = preset.radius.coerceAtLeast(MIN_ROOM_FOCUS_RADIUS),
+        // Steeper than the floorplan (0.32) so the walls don't hide the room —
+        // a near-overhead look straight into the selected room.
+        phi = ROOM_FOCUS_PHI,
+    )
 
 private const val MIN_ROOM_FOCUS_RADIUS = 8.5f
+private const val ROOM_FOCUS_PHI = 0.22f
 
 /** Per-room orbit presets + all light anchors, parsed from `house-cameras.json`. */
 class CameraPresets(
@@ -93,11 +99,15 @@ fun triVisible(
     showRoof: Boolean,
     showWalls: Boolean,
     showFurniture: Boolean = true,
+    showHeating: Boolean = false,
 ): Boolean {
     // Light-fixture meshes are never drawn as geometry — the on/off state is shown
     // by the animated ring overlay instead (the software parser drops them; the
     // Filament path relies on this rule).
     if (matClass == MatClass.Fixture) return false
+    // Floor-heating loop overlays are only drawn in the "Lämmitys" mode (they'd
+    // otherwise mask the oak floor); then only on the shown floor.
+    if (matClass == MatClass.Heating) return showHeating && group in mode.groups
     // "Kalusteet" off hides the movable furnishings/decor.
     if (!showFurniture && matClass == MatClass.Furniture) return false
     if (group !in mode.groups) return false
@@ -116,6 +126,37 @@ fun triVisible(
         return false
     }
     return true
+}
+
+/**
+ * Underfloor-heating circuit number (`Heat_<floor>_<nn>`) → the PLC heating-demand
+ * key that regulates it. From the LVI Lattialämmitys loop table; the keittiö PT100
+ * regulates the whole open-plan wing (41–44). Circuits with no matching PLC key yet
+ * (31 KPH+S, 32 KHH, 55 kylpyhuone) stay neutral until their key is known.
+ */
+val CIRCUIT_TO_HEATING_KEY: Map<String, String> = mapOf(
+    "11" to "kellari", "12" to "kellari",
+    "21" to "kellari", "22" to "kellari", "23" to "kellari", "24" to "kellari",
+    "33" to "eteinen",
+    "34" to "mh_ak",
+    "41" to "keittio", "42" to "keittio", "43" to "keittio", "44" to "keittio",
+    "51" to "essi", "52" to "onni", "53" to "yk_aula", "54" to "aatu",
+)
+
+/** Loops with no PLC thermostat — manually controlled and generally on (drawn hot). */
+private val ALWAYS_ON_CIRCUITS = setOf("31", "32", "55")
+
+/**
+ * circuit "nn" → 0..1 heat intensity for lerping each loop's colour cold→hot.
+ * PLC-regulated loops use their live demand percentage; the manual bathroom/utility
+ * loops (31/32/55) read as always on. Loops with no data at all are omitted (drawn
+ * neutral). [demand] is (heating key → percent 0..100).
+ */
+fun heatIntensityByCircuit(demand: Map<String, Int>): Map<String, Float> = buildMap {
+    CIRCUIT_TO_HEATING_KEY.forEach { (circuit, key) ->
+        demand[key]?.let { put(circuit, it.coerceIn(0, 100) / 100f) }
+    }
+    ALWAYS_ON_CIRCUITS.forEach { put(it, 1f) }
 }
 
 /**

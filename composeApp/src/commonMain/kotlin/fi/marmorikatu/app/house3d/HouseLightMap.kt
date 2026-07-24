@@ -10,24 +10,24 @@ package fi.marmorikatu.app.house3d
  */
 object HouseLightMap {
 
-    /** GLB light-anchor name → the light-area key whose on-state drives its glow. */
+    /**
+     * GLB light-anchor name → the light-area key whose on-state drives its glow.
+     * Names match the consolidated `lights` in the current `cameras.json` (the
+     * export merges each switch's 4–6 series LEDs into one anchor, so there is one
+     * entry per switch, not per bulb).
+     */
     val anchorToArea: Map<String, String> = mapOf(
         // 1. krs
         "Light_1krs_ET" to "ala_eteinen",
         "Light_1krs_TK" to "ala_eteinen",
         "Light_1krs_VH" to "ala_eteinen",
         "Light_1krs_VH2" to "ala_eteinen",
-        "Light_1krs_KHH_1" to "ala_khh",
-        "Light_1krs_KHH_2" to "ala_khh",
-        "Light_1krs_KT_1" to "ala_keittio",
-        "Light_1krs_KT_2" to "ala_keittio",
-        "Light_1krs_KT_3" to "ala_keittio",
+        "Light_1krs_KHH" to "ala_khh",
+        "Light_1krs_KT" to "ala_keittio",
+        "Light_1krs_SAAREKE" to "ala_keittio",   // island pendants
         "Light_1krs_RUOKAILU" to "ala_ruokailu",
-        "Light_1krs_OH_1" to "ala_olohuone",
-        "Light_1krs_OH_2" to "ala_olohuone",
-        "Light_1krs_OH_3" to "ala_olohuone",
-        "Light_1krs_OH_4" to "ala_olohuone",
-        "Light_1krs_OH_5" to "ala_olohuone",
+        "Light_1krs_OH" to "ala_olohuone",
+        "Light_1krs_IKKUNA" to "ala_olohuone",    // decorative window lights over the wing glazing
         "Light_1krs_LH" to "ala_sauna",
         "Light_1krs_PH" to "ala_sauna",
         "Light_1krs_MH" to "ala_mh",
@@ -56,12 +56,9 @@ object HouseLightMap {
         "Light_ulko_piha_3" to "ulko_piha",
         "Light_ulko_tekn" to "ulko_tekninen",
         // 2. krs
-        "Light_2krs_AULA_1" to "yla_aula",
-        "Light_2krs_AULA_2" to "yla_aula",
-        "Light_2krs_AULA_3" to "yla_aula",
-        "Light_2krs_PORRAS" to "yla_aula",
-        "Light_2krs_KPH_1" to "yla_kylpy",
-        "Light_2krs_KPH_2" to "yla_kylpy",
+        "Light_2krs_AULA" to "yla_aula",
+        "Light_2krs_AULA_KATTO" to "yla_aula",
+        "Light_2krs_KPH" to "yla_kylpy",
         "Light_2krs_MH" to "yla_aikuiset",
         "Light_2krs_VH" to "yla_aikuiset",
         "Light_2krs_MH2" to "yla_aarni",

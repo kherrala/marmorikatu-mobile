@@ -20,6 +20,9 @@ import marmorikatu_mobile.composeapp.generated.resources.Res
  */
 private const val USE_SCENEKIT = true
 
+/** Set true to overlay the Compose slot size vs native view bounds for diagnosing interop sizing. */
+internal const val DEBUG_SURFACE_SIZE = true
+
 private sealed interface HouseAssetState {
     data object Loading : HouseAssetState
     data class Ready(val bytes: ByteArray) : HouseAssetState
@@ -35,7 +38,10 @@ actual fun HouseGeometrySurface(
     showRoof: Boolean,
     showWalls: Boolean,
     showFurniture: Boolean,
+    showHeating: Boolean,
+    heatByCircuit: Map<String, Float>,
     explode: Float,
+    litLights: List<Vec3>,
     modifier: Modifier,
 ) {
     var asset by remember {
@@ -66,7 +72,10 @@ actual fun HouseGeometrySurface(
                 showRoof,
                 showWalls,
                 showFurniture,
+                showHeating,
+                heatByCircuit,
                 explode,
+                litLights,
                 modifier,
             )
         HouseAssetState.Unavailable -> {
@@ -83,7 +92,7 @@ actual fun HouseGeometrySurface(
                 }
             }
             Canvas(modifier) {
-                drawHouse(model, eye, target, mode, showRoof, showWalls, explode, cache)
+                drawHouse(model, eye, target, mode, showRoof, showWalls, explode, cache, showHeating)
             }
         }
     }

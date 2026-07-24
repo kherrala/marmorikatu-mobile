@@ -17,7 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 enum class HouseGroup { Kellari, Krs1, Krs2, Terassi, Katos, Katto }
 
 /** How a triangle should be shaded/toggled, derived from its glTF material name. */
-enum class MatClass { Solid, ExteriorWall, InteriorWall, Glass, Roof, Door, Fixture, Furniture }
+enum class MatClass { Solid, ExteriorWall, InteriorWall, Glass, Roof, Door, Fixture, Furniture, Heating }
 
 /** A tappable room patch — the flat `Room_*` mesh sitting just above a floor. */
 class RoomPatch(
@@ -100,8 +100,14 @@ fun matClassForMaterial(matName: String?): MatClass = when (matName) {
     "WallInt", "ConcreteW" -> MatClass.InteriorWall
     "Glass" -> MatClass.Glass
     "Roof", "Canopy" -> MatClass.Roof // Canopy = terrace shade roof; hides with roof
-    "Door" -> MatClass.Door
+    // Door leaves AND window/door frames (spec `Frame`): both belong to the wall
+    // openings, so they hide with the walls instead of floating once the wall is gone.
+    "Door", "Frame" -> MatClass.Door
     "LightOff" -> MatClass.Fixture
+    // Underfloor-heating overlays (`Heat_*`): the solid zone patch (`HeatOff`) and
+    // the serpentine loop (`HeatPipe`). Hidden by default (see triVisible) — they
+    // otherwise cover the oak floor; "Lämmitys" mode reveals + colours them.
+    "HeatOff", "HeatPipe" -> MatClass.Heating
     // Movable furnishings/decor — hidden by the "Kalusteet" toggle. Structural
     // items (floors, railings, stairs, walls) stay so the shell reads clearly.
     "WoodFurn", "SofaWhite", "SofaGreen", "FabricBlue", "Cabinet", "BedWhite",

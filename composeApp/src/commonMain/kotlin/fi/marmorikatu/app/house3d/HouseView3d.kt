@@ -49,7 +49,9 @@ import androidx.compose.ui.unit.sp
 import fi.marmorikatu.app.theme.MkRadius
 import fi.marmorikatu.app.theme.MkTheme
 import kotlinx.coroutines.delay
+import kotlin.math.PI
 import kotlin.math.roundToInt
+import kotlin.math.tan
 
 /**
  * The interactive orbit view: owns the camera, handles drag/pinch/tap, draws the
@@ -66,6 +68,8 @@ fun HouseView3d(
     showRoof: Boolean,
     showWalls: Boolean,
     showFurniture: Boolean,
+    showHeating: Boolean,
+    heatByCircuit: Map<String, Float>,
     explode: Float,
     selectedRoom: String?,
     focus: OrbitPreset?,
@@ -108,6 +112,13 @@ fun HouseView3d(
     val latestOnRoomTap by rememberUpdatedState(onRoomTap)
     var interactionTick by remember { mutableIntStateOf(0) }
     var spinPaused by remember { mutableStateOf(false) }
+    val latestUserFloor by rememberUpdatedState(floorMode)
+
+    // A single floor reads as a floorplan: lock the orbit to a canonical top-down
+    // orientation with the street side up, so every floor lines up the same way.
+    LaunchedEffect(floorMode) {
+        if (floorMode != FloorMode.All) theta = STREET_VIEW_THETA
+    }
 
     // Auto-rotate, pausing 25 s after any user gesture.
     LaunchedEffect(interactionTick) {
@@ -120,7 +131,8 @@ fun HouseView3d(
         var pendingNanos = 0L
         while (true) {
             val now = withFrameNanos { it }
-            if (last != 0L && !spinPaused) {
+            // Only the whole-house view spins; a locked floorplan must stay put.
+            if (last != 0L && !spinPaused && latestUserFloor == FloorMode.All) {
                 // ProMotion can otherwise make the software renderer alternate
                 // between 120 Hz and missed frames. A steady 60 Hz workload is
                 // visibly smoother, and a long suspended frame cannot jump the camera.
@@ -322,8 +334,16 @@ fun HouseView3d(
                         val eye = orbitEye(target, theta, phi, radius)
                         val right = (target - eye).normalized().cross(Vec3.UP).normalized()
                         val fwdFloor = Vec3.UP.cross(right).normalized()
-                        val k = radius * 0.0016f
-                        target = target + right * (pan.x * k) + fwdFloor * (pan.y * k)
+                        // Move 1:1 with the floor under the finger: world-units per
+                        // pixel = the visible world height (2·r·tan(fov/2)) / view height.
+                        val k = if (size.height > 0) {
+                            2f * tan(PROJECTION_FOV_RAD / 2f) * radius / size.height
+                        } else {
+                            radius * 0.0005f
+                        }
+                        // X is inverted vs the natural cross-product so a left swipe
+                        // moves the plan left; Y already reads correctly.
+                        target = target + right * (-pan.x * k) + fwdFloor * (pan.y * k)
                     } else {
                         theta -= pan.x * 0.005f
                         phi = (phi - pan.y * 0.005f).coerceIn(0.12f, 1.52f)
@@ -345,6 +365,21 @@ fun HouseView3d(
 
     Box(modifier = modifier.fillMaxSize().onSizeChanged { canvasSize = Size(it.width.toFloat(), it.height.toFloat()) }.then(gestures)) {
         val eye = orbitEye(cameraTarget, theta, phi, radius)
+        // World positions of the fixtures currently on, on the shown floor. Drives
+        // both the dark-mode point lights (below, in the native renderers) and the
+        // ring overlay. Unlike the rings, illumination is NOT gated on walls — a
+        // lit room glows whether or not its walls are drawn.
+        val litLights = remember(lightOnAreas, presets, explodeAnim, renderedFloorMode) {
+            presets.lights.filter {
+                anchorGroup(it.name) in renderedFloorMode.groups &&
+                    // DEBUG_ALL_LIGHTS: light every fixture to tune the dark-mode glow
+                    // offline (no live light data on the emulator). Revert to the
+                    // lightOnAreas check before committing.
+                    (DEBUG_ALL_LIGHTS ||
+                        (HouseLightMap.anchorToArea[it.name]?.let { key -> key in lightOnAreas } ?: false))
+            }
+                .map { Vec3(it.pos.x, it.pos.y + groupTier(anchorGroup(it.name)) * explodeAnim, it.pos.z) }
+        }
         // The 3D geometry (software on iOS, Filament GPU on Android)…
         HouseGeometrySurface(
             model = model,
@@ -354,7 +389,10 @@ fun HouseView3d(
             showRoof = showRoof,
             showWalls = showWalls,
             showFurniture = showFurniture,
+            showHeating = showHeating,
+            heatByCircuit = heatByCircuit,
             explode = explodeAnim,
+            litLights = litLights,
             modifier = Modifier.fillMaxSize(),
         )
         // …then the shared room tint + selection highlight on top, projected with
@@ -372,18 +410,8 @@ fun HouseView3d(
         // Light glows only read in the cutaway view. With the walls in place the
         // room is enclosed, so a projected 2D ring (which has no depth test) would
         // otherwise bleed through the walls and roof — show them only when the
-        // walls are hidden and you can actually see into the rooms.
-        val onLightPos = remember(lightOnAreas, presets, explodeAnim, renderedFloorMode, showWalls) {
-            if (showWalls) {
-                emptyList()
-            } else {
-                presets.lights.filter {
-                    anchorGroup(it.name) in renderedFloorMode.groups &&
-                        (HouseLightMap.anchorToArea[it.name]?.let { key -> key in lightOnAreas } ?: false)
-                }
-                    .map { Vec3(it.pos.x, it.pos.y + groupTier(anchorGroup(it.name)) * explodeAnim, it.pos.z) }
-            }
-        }
+        // walls are hidden. (The 3D point lights above are not gated this way.)
+        val onLightPos = if (showWalls) emptyList() else litLights
         val w = canvasSize.width; val h = canvasSize.height
         val canProjectMarkers = markerProjector.update(eye, cameraTarget, w, h)
         val visibleMarkers = remember(markers, renderedFloorMode) {
@@ -537,23 +565,54 @@ internal fun buildShowcasePages(
     facts: List<HouseMarker>,
     selected: FloorMode,
 ): List<ShowcasePage> {
+    if (selected != FloorMode.All) {
+        val floorFacts = facts.filter { it.group in selected.groups }
+        return if (floorFacts.isEmpty()) listOf(ShowcasePage(selected, emptyList()))
+        else floorFacts.chunked(SHOWCASE_FACTS_PER_PAGE).map { ShowcasePage(selected, it) }
+    }
+    // The whole-house page opens the loop with the house-level systems (outdoor,
+    // electricity, heat pump, ventilation, lights) instead of being blank; each
+    // floor then tours its own room facts.
+    val overview = facts.filter { it.label in SHOWCASE_OVERVIEW_LABELS }
     fun floorPages(mode: FloorMode): List<ShowcasePage> {
-        val floorFacts = facts.filter { it.group in mode.groups }
+        val floorFacts = facts.filter { it.group in mode.groups && it.label !in SHOWCASE_OVERVIEW_LABELS }
         return if (floorFacts.isEmpty()) {
             listOf(ShowcasePage(mode, emptyList()))
         } else {
-            floorFacts.chunked(3).map { ShowcasePage(mode, it) }
+            floorFacts.chunked(SHOWCASE_FACTS_PER_PAGE).map { ShowcasePage(mode, it) }
         }
     }
-
-    if (selected != FloorMode.All) return floorPages(selected)
     return buildList {
-        add(ShowcasePage(FloorMode.All, emptyList()))
+        if (overview.isNotEmpty()) {
+            overview.chunked(SHOWCASE_FACTS_PER_PAGE).forEach { add(ShowcasePage(FloorMode.All, it)) }
+        } else {
+            add(ShowcasePage(FloorMode.All, emptyList()))
+        }
         addAll(floorPages(FloorMode.Kellari))
         addAll(floorPages(FloorMode.Alakerta))
         addAll(floorPages(FloorMode.Ylakerta))
     }
 }
+
+/** House-level facts shown on the whole-house overview page (not a specific floor). */
+private val SHOWCASE_OVERVIEW_LABELS = setOf("Ulkoilma", "Sähkö", "Maalämpö", "Ilmanvaihto", "Valot päällä")
+
+/** DEBUG: force every fixture on to tune dark-mode lighting offline. Revert to false. */
+private const val DEBUG_ALL_LIGHTS = false
+
+/**
+ * Canonical top-down azimuth for a single-floor (floorplan) view: puts the street
+ * side (world −x) at the top of the screen, so every floor is oriented the same
+ * way regardless of how the whole-house view was rotated. (θ=0 → the far/top of
+ * the tilted-down view faces −x.)
+ */
+private const val STREET_VIEW_THETA = 0f
+
+/** Vertical field of view (radians) the renderers/projection use (48°). */
+private const val PROJECTION_FOV_RAD = (48.0 * PI / 180.0).toFloat()
+
+/** How many live observations the infomercial shows on one page/frame. */
+private const val SHOWCASE_FACTS_PER_PAGE = 4
 
 private const val AUTO_SPIN_STEP_NANOS = 16_666_667L
 private const val AUTO_SPIN_RADIANS_PER_SECOND = 0.16f
@@ -690,7 +749,9 @@ internal fun placeHudLabels(
 private fun MarkerLabel(marker: HouseMarker, accent: Color, modifier: Modifier = Modifier) {
     val c = MkTheme.colors
     val type = MkTheme.type
-    val dot = when (marker.kind) {
+    // Dot legend: grey = stale (last-known reading), otherwise by kind — red for a
+    // person/alert, amber for a door/sauna/announcement, green for a live reading.
+    val dot = if (marker.stale) c.inkLo else when (marker.kind) {
         MarkerKind.Person, MarkerKind.Alert -> c.statusAlarm
         MarkerKind.Announcement -> c.warm
         MarkerKind.Door -> c.warm
@@ -705,14 +766,12 @@ private fun MarkerLabel(marker: HouseMarker, accent: Color, modifier: Modifier =
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(9.dp).clip(RoundedCornerShape(MkRadius.round))
-                .background(dot.copy(alpha = if (marker.stale) 0.45f else 1f)),
+            Modifier.size(9.dp).clip(RoundedCornerShape(MkRadius.round)).background(dot),
         )
         Text(
             text = buildString {
                 append(marker.label)
                 marker.sub?.let { append(" · "); append(it) }
-                if (marker.stale) append(" · viimeisin mittaus")
             },
             style = type.caption.copy(fontSize = 10.5.sp),
             color = if (marker.stale) c.inkMid else c.inkHi,

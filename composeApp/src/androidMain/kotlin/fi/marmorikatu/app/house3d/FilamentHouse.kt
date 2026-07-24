@@ -31,6 +31,23 @@ import java.nio.ByteBuffer
 class FilamentHouse {
     companion object {
         init { Utils.init() }
+
+        // Circuit number from a Heat_ node name (Heat_1krs_41[.pipe] → 41; JT boxes none).
+        private val HEAT_CIRCUIT_RE = Regex("Heat_\\w+?_(\\d\\d)")
+
+        // Loop colours: cold #3b82f6 → hot #ef4444, neutral #8E9AA8 for "no data".
+        private val HEAT_COLD = floatArrayOf(0.231f, 0.510f, 0.965f)
+        private val HEAT_HOT = floatArrayOf(0.937f, 0.267f, 0.267f)
+        private val HEAT_NEUTRAL = floatArrayOf(0.557f, 0.604f, 0.659f)
+
+        private fun lerp3(a: FloatArray, b: FloatArray, t: Float): FloatArray {
+            val s = t.coerceIn(0f, 1f)
+            return floatArrayOf(
+                a[0] + (b[0] - a[0]) * s,
+                a[1] + (b[1] - a[1]) * s,
+                a[2] + (b[2] - a[2]) * s,
+            )
+        }
     }
 
     private val engine = Engine.create()
@@ -77,6 +94,7 @@ class FilamentHouse {
     @Volatile private var showRoof = false
     @Volatile private var showWalls = false
     @Volatile private var showFurniture = true
+    @Volatile private var showHeating = false
     @Volatile private var explode = 0f
     @Volatile private var ready = false
     @Volatile private var dirty = true
@@ -84,6 +102,21 @@ class FilamentHouse {
 
     private val sunEntity = EntityManager.get().create()
     private var indirect: IndirectLight? = null
+
+    // --- Floor-heating "Lämmitys" colouring ---
+    // Per-loop material instance (cloned so each circuit colours independently) +
+    // its circuit number, and the live 0..1 intensity per circuit.
+    private val heatCircuitOf = HashMap<Int, String>()
+    private val heatInstanceOf = HashMap<Int, com.google.android.filament.MaterialInstance>()
+    @Volatile private var heatByCircuit: Map<String, Float> = emptyMap()
+    @Volatile private var heatColorDirty = true
+
+    // --- Dark-mode room lighting ---
+    private val pointLightPool = ArrayList<Int>()
+    @Volatile private var darkLighting = false
+    @Volatile private var litPositions: List<Vec3> = emptyList()
+    @Volatile private var lightingDirty = true
+    private var appliedDarkLighting: Boolean? = null
 
     init {
         // Exposure (setExposure below) is ~EV15 daylight, so a ~70k-lux key gives
@@ -188,30 +221,144 @@ class FilamentHouse {
             } else {
                 matClassForMaterial(matName)
             }
+            // Floor-heating overlays: zones (HeatOff) + pipes (HeatPipe) come from the
+            // material; the manifold boxes (Heat_*_JT*, Metal material) are caught by
+            // name so they reveal/hide with the layer.
+            if (nodeName?.startsWith("Heat_") == true) {
+                classOf[e] = MatClass.Heating
+                // Circuit number for colouring; JT manifolds have none → stay neutral.
+                HEAT_CIRCUIT_RE.find(nodeName)?.groupValues?.get(1)?.let { heatCircuitOf[e] = it }
+                runCatching {
+                    val mi = rm.getMaterialInstanceAt(ri, 0).material.createInstance()
+                    rm.setMaterialInstanceAt(ri, 0, mi)
+                    heatInstanceOf[e] = mi
+                }
+            }
+        }
+        heatColorDirty = true
+    }
+
+    private fun applyHeatColors() {
+        if (!heatColorDirty) return
+        heatColorDirty = false
+        for ((e, circuit) in heatCircuitOf) {
+            val mi = heatInstanceOf[e] ?: continue
+            val t = heatByCircuit[circuit]
+            val c = if (t != null) lerp3(HEAT_COLD, HEAT_HOT, t) else HEAT_NEUTRAL
+            // Flat emissive overlay (README recipe): black base + full emissive so the
+            // loop stays saturated under any lighting/tone mapping.
+            runCatching { mi.setParameter("baseColorFactor", 0f, 0f, 0f, 1f) }
+            runCatching { mi.setParameter("emissiveFactor", c[0], c[1], c[2]) }
         }
     }
 
-    fun update(eye: Vec3, target: Vec3, mode: FloorMode, showRoof: Boolean, showWalls: Boolean, showFurniture: Boolean, explode: Float) {
+    fun update(eye: Vec3, target: Vec3, mode: FloorMode, showRoof: Boolean, showWalls: Boolean, showFurniture: Boolean, showHeating: Boolean, explode: Float) {
         if (this.eye == eye && this.target == target && this.mode == mode &&
             this.showRoof == showRoof && this.showWalls == showWalls &&
-            this.showFurniture == showFurniture && this.explode == explode
+            this.showFurniture == showFurniture && this.showHeating == showHeating && this.explode == explode
         ) {
             return
         }
         val geometryChanged = this.mode != mode || this.showRoof != showRoof ||
-            this.showWalls != showWalls || this.showFurniture != showFurniture || this.explode != explode
+            this.showWalls != showWalls || this.showFurniture != showFurniture ||
+            this.showHeating != showHeating || this.explode != explode
         this.eye = eye
         this.target = target
         this.mode = mode
         this.showRoof = showRoof
         this.showWalls = showWalls
         this.showFurniture = showFurniture
+        this.showHeating = showHeating
         this.explode = explode
         if (geometryChanged) sceneStateDirty = true
         dirty = true
     }
 
+    /**
+     * Realistic per-room lighting in dark mode: dim the daylight key + indirect
+     * fill and place a warm point light at each active fixture, so lit rooms glow
+     * and unlit rooms fall dark. Light mode restores the flat daylight unchanged.
+     */
+    /** Push the live per-circuit heat intensities; recolours the loops next frame. */
+    fun updateHeating(map: Map<String, Float>) {
+        if (map == heatByCircuit) return
+        heatByCircuit = map
+        heatColorDirty = true
+        dirty = true
+    }
+
+    fun updateLighting(dark: Boolean, positions: List<Vec3>) {
+        if (dark == darkLighting && positions == litPositions) return
+        darkLighting = dark
+        litPositions = positions
+        lightingDirty = true
+        dirty = true
+    }
+
+    private fun rebuildIndirect(intensity: Float) {
+        indirect?.let { engine.destroyIndirectLight(it) }
+        indirect = IndirectLight.Builder()
+            .irradiance(1, floatArrayOf(0.35f, 0.37f, 0.40f))
+            .intensity(intensity)
+            .build(engine)
+        scene.indirectLight = indirect
+    }
+
+    private fun applyLighting() {
+        if (!lightingDirty) return
+        lightingDirty = false
+        val lm = engine.lightManager
+        // Sun + indirect only change when the dark/light mode itself flips.
+        if (appliedDarkLighting != darkLighting) {
+            appliedDarkLighting = darkLighting
+            // No sun in dark mode — rooms are lit only by their own lamps + a faint
+            // ambient fill. Light mode keeps the full daylight key.
+            val sunInst = lm.getInstance(sunEntity)
+            if (sunInst != 0) lm.setIntensity(sunInst, if (darkLighting) 0f else 70_000f)
+            if (darkLighting) {
+                // Night look (~EV13): only a whisper of ambient so the exterior reads
+                // dark at night; lit lamps/windows glow above it. (With 0 lights on
+                // offline this looks near-black — that's expected; real light data
+                // makes the lit rooms pop.)
+                camera.setExposure(8f, 1f / 125f, 100f)
+                rebuildIndirect(1_500f)
+            } else {
+                camera.setExposure(16f, 1f / 125f, 100f)
+                rebuildIndirect(6_000f)
+            }
+        }
+        if (!darkLighting) {
+            for (e in pointLightPool) if (scene.hasEntity(e)) scene.removeEntity(e)
+            return
+        }
+        val positions = litPositions
+        while (pointLightPool.size < positions.size) {
+            val e = EntityManager.get().create()
+            LightManager.Builder(LightManager.Type.POINT)
+                .color(1f, 0.86f, 0.62f)
+                .intensity(400_000f)
+                .falloff(7f)
+                .position(0f, 0f, 0f)
+                .build(engine, e)
+            pointLightPool.add(e)
+        }
+        positions.forEachIndexed { i, p ->
+            val e = pointLightPool[i]
+            val inst = lm.getInstance(e)
+            if (inst != 0) {
+                lm.setPosition(inst, p.x, p.y, p.z)
+                lm.setIntensity(inst, 400_000f)
+            }
+            if (!scene.hasEntity(e)) scene.addEntity(e)
+        }
+        for (i in positions.size until pointLightPool.size) {
+            if (scene.hasEntity(pointLightPool[i])) scene.removeEntity(pointLightPool[i])
+        }
+    }
+
     private fun applyFrame() {
+        applyLighting()
+        applyHeatColors()
         // Orbiting changes only the camera. Walking hundreds of entities and
         // writing every transform on all 60 camera frames caused avoidable work
         // on Android tablets; visibility/explode state changes far less often.
@@ -220,7 +367,7 @@ class FilamentHouse {
             for (tier in tierTransforms.indices) tierTransforms[tier][13] = tier * explode
             for ((e, grp) in groupOf) {
                 val cls = classOf[e] ?: MatClass.Solid
-                val visible = e !in hiddenEntities && triVisible(grp, cls, mode, showRoof, showWalls, showFurniture)
+                val visible = e !in hiddenEntities && triVisible(grp, cls, mode, showRoof, showWalls, showFurniture, showHeating)
                 val inScene = scene.hasEntity(e)
                 if (visible && !inScene) scene.addEntity(e) else if (!visible && inScene) scene.removeEntity(e)
                 if (visible) {
@@ -246,6 +393,8 @@ class FilamentHouse {
         asset = null
         ready = false
         materialProvider.destroyMaterials()
+        for (e in pointLightPool) { engine.destroyEntity(e); EntityManager.get().destroy(e) }
+        pointLightPool.clear()
         indirect?.let { engine.destroyIndirectLight(it) }
         engine.destroyEntity(sunEntity)
         engine.destroyCameraComponent(cameraEntity)
