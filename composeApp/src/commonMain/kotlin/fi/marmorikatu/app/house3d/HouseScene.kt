@@ -212,16 +212,27 @@ fun frameVisible(
         embedded -> FLOOR_VIEW_THETA + HALF_PI
         else -> FLOOR_VIEW_THETA
     }
-    // The kiosk frames tighter (fills the wide screen); floors tightest of all since
-    // their long axis is laid along the width.
+    // Framing tightness (radius = extent * factor + pad). The kiosk fills the wide
+    // screen; a single floor on the phone frames close so the plan fills the portrait
+    // height instead of floating in empty space. Whole-house keeps a comfortable margin.
     val factor = when {
-        !embedded -> 1.35f
-        mode == FloorMode.All -> 1.1f
-        else -> 0.85f
+        embedded && mode == FloorMode.All -> 1.1f
+        embedded -> 0.85f              // kiosk floor (long axis laid along the width)
+        mode == FloorMode.All -> 1.35f // phone whole-house
+        else -> 1.0f                   // phone single floor — tighter
     }
-    val pad = if (embedded) 1f else 2f
+    val pad = when {
+        !embedded && mode != FloorMode.All -> 1.4f // phone floor: room for the walls
+        embedded -> 1f
+        else -> 2f
+    }
     if (!any) return OrbitPreset(model.center, max(model.size.x, model.size.z) * factor + pad, phi, theta)
-    val center = Vec3((minX + maxX) / 2f, (minY + maxY) / 2f, (minZ + maxZ) / 2f)
+    // The phone floor view is tilted (theta=0, phi=0.32): the near (+X) side looms
+    // large in perspective and drags the plan low, clipping its walls. Bias the
+    // look-point toward +X so the plan lifts and the far walls come fully into frame.
+    val phoneFloor = !embedded && mode != FloorMode.All
+    val cx = (minX + maxX) / 2f + if (phoneFloor) (maxX - minX) * 0.14f else 0f
+    val center = Vec3(cx, (minY + maxY) / 2f, (minZ + maxZ) / 2f)
     val radius = max(maxX - minX, maxZ - minZ) * factor + pad
     return OrbitPreset(center, radius, phi, theta)
 }

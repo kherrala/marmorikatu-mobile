@@ -1,5 +1,5 @@
 {
- "coordinate_system": "three.js / glTF",
+ "coordinate_system": "three.js / glTF: x=plan-x (pohjoinen->etela), y=up (0 = 1krs floor), z=-plan-y (lansi->ita negative)",
  "floors": {
   "kellari": {
    "groups": [
@@ -1192,5 +1192,5 @@
    ]
   }
  },
- "tween": "easeInOutQuad"
+ "tween": "easeInOutQuad over 700-900 ms on {target,radius,phi,theta} - see viewer source"
 }

@@ -311,8 +311,17 @@ class SceneKitHouse {
         for ((node, circuit) in heatNodeCircuit) {
             val t = byCircuit[circuit]
             val mat = node.geometry?.firstMaterial ?: continue
-            mat.emission?.setContents(heatColor(t, 1.0))
-            mat.diffuse?.setContents(heatColor(t, 0.25))
+            // Split the loop from its zone bed so the routing reads: the PIPE glows the
+            // full circuit colour, the ZONE is a dimmer flat bed underneath.
+            val nm = node.name
+            val isPipe = nm != null && (nm.contains(".pipe") || nm.contains("_pipe"))
+            if (isPipe) {
+                mat.emission?.setContents(heatColor(t, 1.0))
+                mat.diffuse?.setContents(heatColor(t, 0.35))
+            } else {
+                mat.emission?.setContents(heatColor(t, 0.35))
+                mat.diffuse?.setContents(heatColor(t, 0.16))
+            }
         }
         view.setNeedsDisplay()
     }

@@ -114,6 +114,9 @@ class FilamentHouse {
     private val heatCircuitOf = HashMap<Int, String>()
     private val heatInstanceOf = HashMap<Int, com.google.android.filament.MaterialInstance>()
     private val heatRevealEntities = HashSet<Int>()
+    // The serpentine loop tubes (vs the flat zone patch under them) — coloured
+    // brighter + glossier so the pipe routing reads against its zone bed.
+    private val heatPipeEntities = HashSet<Int>()
     // Distinct oak-floor material instances, dimmed while the heating layer is shown.
     private val floorDimInstances = HashSet<com.google.android.filament.MaterialInstance>()
     private var floorDimApplied: Boolean? = null
@@ -268,6 +271,9 @@ class FilamentHouse {
                 if (nodeName.contains(".pipe") || nodeName.contains("_pipe") || nodeName.contains("_JT")) {
                     heatRevealEntities.add(e)
                 }
+                if (nodeName.contains(".pipe") || nodeName.contains("_pipe")) {
+                    heatPipeEntities.add(e)
+                }
                 // Colour each loop/zone's own material instance directly. The model
                 // gives every heat circuit a UNIQUE material (Heat_off_<nn>/Heat_pipe_<nn>),
                 // so gltfio backs each with its own native MaterialInstance and circuits
@@ -308,21 +314,18 @@ class FilamentHouse {
             val mi = heatInstanceOf[e] ?: continue
             val t = heatByCircuit[circuit]
             val c = if (t != null) lerp3(HEAT_COLD, HEAT_HOT, t) else HEAT_NEUTRAL
-            // The instance was cloned from the ubershader's *default* material, whose
-            // metallicFactor defaults to 1.0 — a metal with no reflections renders
-            // black regardless of baseColour. Force a matte dielectric so the loop
-            // shows its colour, plus a modest emissive so it still reads if lighting
-            // is dim.
-            // Hotter loops glow more so the reds really pop against the oak; the
-            // emissive lifts saturation that the daylight key would otherwise wash out.
-            // A lit dielectric (metallic 0, mid roughness) so the daylight shades the
-            // round tube — highlights on top, darker sides — instead of reading as a
-            // flat sticker. Only a whisper of emissive so a loop in shadow still shows
-            // its colour without washing the 3D form to a uniform block.
-            val glow = 0.16f
-            runCatching { mi.setParameter("baseColorFactor", c[0], c[1], c[2], 1f) }
+            // The zone patch and the serpentine loop share a circuit colour, so drawn
+            // the same they blur together. Split them: the ZONE is a dimmer matte bed
+            // (dark tint, no glow) and the PIPE is the full, glossier, glowing colour on
+            // top — so the loop routing reads clearly against its heated area.
+            // (Force metallic 0: the ubershader default is 1.0, which renders black.)
+            val isPipe = e in heatPipeEntities
+            val bright = if (isPipe) 1f else 0.55f
+            val glow = if (isPipe) 0.22f else 0.0f
+            val rough = if (isPipe) 0.4f else 0.9f
+            runCatching { mi.setParameter("baseColorFactor", c[0] * bright, c[1] * bright, c[2] * bright, 1f) }
             runCatching { mi.setParameter("metallicFactor", 0f) }
-            runCatching { mi.setParameter("roughnessFactor", 0.55f) }
+            runCatching { mi.setParameter("roughnessFactor", rough) }
             runCatching { mi.setParameter("emissiveFactor", c[0] * glow, c[1] * glow, c[2] * glow) }
             // The round-tube export left the top faces culled (only the side edges of
             // each loop were drawing, floor showing through the middle). Render both
