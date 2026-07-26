@@ -1,5 +1,6 @@
 package fi.marmorikatu.app.house3d
 
+import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -43,6 +44,18 @@ fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 /** `easeInOutQuad`, the tween curve the reference viewer uses for orbit moves. */
 fun easeInOutQuad(t: Float): Float =
     if (t < 0.5f) 2f * t * t else 1f - (-2f * t + 2f) * (-2f * t + 2f) / 2f
+
+/**
+ * Signed shortest angular distance `from → to`, wrapped to `[-π, π]`, so easing a
+ * yaw takes the short way round even when the accumulated angle is many turns off.
+ */
+fun shortestAngleDelta(from: Float, to: Float): Float {
+    val twoPi = 2f * PI.toFloat()
+    var d = (to - from) % twoPi
+    if (d > PI) d -= twoPi
+    if (d < -PI) d += twoPi
+    return d
+}
 
 /** Row-major 4×4 matrix helpers operating on plain [FloatArray]s of length 16. */
 object Mat4 {

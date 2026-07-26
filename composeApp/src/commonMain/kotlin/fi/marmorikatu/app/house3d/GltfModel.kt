@@ -95,7 +95,15 @@ private fun f32le(b: ByteArray, o: Int): Float =
  * and the Android Filament renderer (which reads material-instance names), so the
  * floor/wall/roof visibility rules stay identical across both.
  */
-fun matClassForMaterial(matName: String?): MatClass = when (matName) {
+fun matClassForMaterial(matName: String?): MatClass {
+    // Each floor-heating circuit gets its own material so it can colour independently
+    // (a single shared "HeatOff"/"HeatPipe" would give gltfio one instance for the whole
+    // layer — last write wins). Match by prefix so "HeatOff_41"/"HeatPipe_41" still class
+    // as Heating.
+    if (matName != null && (matName.startsWith("HeatOff") || matName.startsWith("HeatPipe"))) {
+        return MatClass.Heating
+    }
+    return when (matName) {
     "WallExt", "WallExt2" -> MatClass.ExteriorWall
     "WallInt", "ConcreteW" -> MatClass.InteriorWall
     "Glass" -> MatClass.Glass
@@ -104,10 +112,6 @@ fun matClassForMaterial(matName: String?): MatClass = when (matName) {
     // openings, so they hide with the walls instead of floating once the wall is gone.
     "Door", "Frame" -> MatClass.Door
     "LightOff" -> MatClass.Fixture
-    // Underfloor-heating overlays (`Heat_*`): the solid zone patch (`HeatOff`) and
-    // the serpentine loop (`HeatPipe`). Hidden by default (see triVisible) — they
-    // otherwise cover the oak floor; "Lämmitys" mode reveals + colours them.
-    "HeatOff", "HeatPipe" -> MatClass.Heating
     // Movable furnishings/decor — hidden by the "Kalusteet" toggle. Structural
     // items (floors, railings, stairs, walls) stay so the shell reads clearly.
     "WoodFurn", "SofaWhite", "SofaGreen", "FabricBlue", "Cabinet", "BedWhite",
@@ -115,6 +119,7 @@ fun matClassForMaterial(matName: String?): MatClass = when (matName) {
     "Pot", "Plant", "SaunaWood",
     -> MatClass.Furniture
     else -> MatClass.Solid
+    }
 }
 
 /**

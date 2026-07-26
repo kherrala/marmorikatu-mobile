@@ -48,6 +48,7 @@ import platform.SceneKit.SCNLight
 import platform.SceneKit.SCNLightTypeAmbient
 import platform.SceneKit.SCNLightTypeOmni
 import platform.SceneKit.SCNLookAtConstraint
+import platform.SceneKit.SCNMaterial
 import platform.SceneKit.SCNNode
 import platform.SceneKit.SCNScene
 import platform.SceneKit.SCNTransaction
@@ -69,6 +70,8 @@ import platform.UIKit.UIScreen
  * [classifyLeaves] can reuse [matClassForMaterial] and the group ancestry, exactly
  * like the Filament path.
  */
+private val HEAT_CIRCUIT_RE = Regex("Heat_\\w+?_(\\d\\d)")
+
 class SceneKitHouse {
     val view: SCNView = SCNView(frame = CGRectMake(0.0, 0.0, 0.0, 0.0), options = null).apply {
         // Opaque + painted with the app background (set via [setBackground]). The
@@ -133,6 +136,12 @@ class SceneKitHouse {
             projectionDirection = SCNCameraProjectionDirectionVertical
             zNear = 0.1
             zFar = 500.0
+            // Tone-map highlights instead of clipping them to pure white (Filament
+            // tone-maps via exposure; SceneKit LDR did not, so lit rooms blew out).
+            // Fixed exposure (no adaptation) keeps brightness stable while orbiting.
+            wantsHDR = true
+            wantsExposureAdaptation = false
+            whitePoint = 4.0
         }
     }
     private val targetNode = SCNNode()
@@ -149,6 +158,12 @@ class SceneKitHouse {
 
     private val leaves = ArrayList<Triple<SCNNode, HouseGroup, MatClass>>()
     private val groupNodes = HashMap<HouseGroup, SCNNode>()
+
+    // --- Floor-heating "Lämmitys" colouring: each Heat_ node → its circuit number,
+    // so the whole heating surface (zones) + loops tint cold→hot with live demand,
+    // like the web viewer. Its material is cloned so each circuit colours alone.
+    private val heatNodeCircuit = HashMap<SCNNode, String>()
+    private var appliedHeatKey = ""
 
     // --- Dark-mode room lighting ---------------------------------------------
     private var sceneRoot: SCNNode? = null
@@ -171,8 +186,10 @@ class SceneKitHouse {
             color = UIColor.colorWithRed(1.0, green = 0.86, blue = 0.62, alpha = 1.0)
             intensity = 0.0
             // Keep each lamp roughly room-scale so it doesn't wash the whole house.
-            attenuationStartDistance = 0.6
-            attenuationEndDistance = 6.5
+            // Falls off sooner (5 m) and dimmer than before — the old 1300/6.5 m
+            // washed lit rooms far too bright vs the Android look.
+            attenuationStartDistance = 0.5
+            attenuationEndDistance = 5.0
         }
     }
 
@@ -222,7 +239,7 @@ class SceneKitHouse {
             return
         }
         view.autoenablesDefaultLighting = false
-        ambientNode.light?.intensity = 380.0
+        ambientNode.light?.intensity = 55.0
         while (lightPool.size < positions.size) {
             val node = newOmniLight()
             sceneRoot?.addChildNode(node)
@@ -230,7 +247,9 @@ class SceneKitHouse {
         }
         positions.forEachIndexed { i, p ->
             lightPool[i].position = SCNVector3Make(p.x, p.y, p.z)
-            lightPool[i].light?.intensity = 1300.0
+            // Lit room reads as a warm glow, not a blown-out white. Combined with the
+            // camera's HDR tone-mapping (above), highlights now roll off softly.
+            lightPool[i].light?.intensity = 72.0
         }
         for (i in positions.size until lightPool.size) lightPool[i].light?.intensity = 0.0
         view.setNeedsDisplay()
@@ -252,15 +271,62 @@ class SceneKitHouse {
             if (node.geometry != null) {
                 groupOf(node)?.let { group ->
                     // Floor-heating overlays (incl. the Metal manifold boxes) classify
-                    // by name so they hide/reveal with the Lämmitys layer.
-                    val cls = if (node.name?.startsWith("Heat_") == true) MatClass.Heating
-                    else matClassForMaterial(node.geometry?.firstMaterial?.name)
+                    // by name so they hide/reveal with the Lämmitys layer; the exterior
+                    // fire-escape ladder (`*.ladder.*`) and the roof-access ladder to the
+                    // chimney (`*.rlad.*`) class as Roof so they hide in floor cutaways.
+                    val nm = node.name
+                    val cls = when {
+                        nm?.startsWith("Heat_") == true -> MatClass.Heating
+                        nm?.contains("ladder") == true || nm?.contains("rlad") == true -> MatClass.Roof
+                        else -> matClassForMaterial(node.geometry?.firstMaterial?.name)
+                    }
+                    if (cls == MatClass.Heating) {
+                        HEAT_CIRCUIT_RE.find(nm ?: "")?.groupValues?.getOrNull(1)?.let { circuit ->
+                            // Give this loop/zone its own material copy so circuits colour
+                            // independently, then remember its circuit for updateHeatColors.
+                            node.geometry?.firstMaterial?.let { mat ->
+                                (mat.copyWithZone(null) as? SCNMaterial)?.let { node.geometry?.setFirstMaterial(it) }
+                            }
+                            heatNodeCircuit[node] = circuit
+                        }
+                    }
                     leaves.add(Triple(node, group, cls))
                 }
             }
             node.childNodes.forEach { visit(it as SCNNode) }
         }
         visit(root)
+    }
+
+    /**
+     * Tint every heating loop/zone cold→hot by its circuit's live demand, so the whole
+     * surface changes colour when Lämmitys is on (matching the web viewer). Emissive-led
+     * so the colour reads flat regardless of the room lighting.
+     */
+    fun updateHeatColors(byCircuit: Map<String, Float>) {
+        if (!loaded) return
+        val key = byCircuit.entries.sortedBy { it.key }.joinToString("|") { "${it.key}:${it.value}" }
+        if (key == appliedHeatKey) return
+        appliedHeatKey = key
+        for ((node, circuit) in heatNodeCircuit) {
+            val t = byCircuit[circuit]
+            val mat = node.geometry?.firstMaterial ?: continue
+            mat.emission?.setContents(heatColor(t, 1.0))
+            mat.diffuse?.setContents(heatColor(t, 0.25))
+        }
+        view.setNeedsDisplay()
+    }
+
+    private fun heatColor(t: Float?, scale: Double): UIColor {
+        val r: Double; val g: Double; val b: Double
+        if (t == null) { r = 0.557; g = 0.604; b = 0.659 } // neutral (no data)
+        else {
+            val s = t.coerceIn(0f, 1f).toDouble()
+            r = 0.05 + (0.92 - 0.05) * s      // cold #3b82f6 → hot #ef4444
+            g = 0.36 + (0.04 - 0.36) * s
+            b = 1.0 + (0.03 - 1.0) * s
+        }
+        return UIColor.colorWithRed(r * scale, green = g * scale, blue = b * scale, alpha = 1.0)
     }
 
     fun update(eye: Vec3, target: Vec3, mode: FloorMode, showRoof: Boolean, showWalls: Boolean, showFurniture: Boolean, showHeating: Boolean, explode: Float) {
@@ -349,12 +415,11 @@ fun SceneKitHouseSurface(
     showWalls: Boolean,
     showFurniture: Boolean,
     showHeating: Boolean,
-    @Suppress("UNUSED_PARAMETER") heatByCircuit: Map<String, Float>,
+    heatByCircuit: Map<String, Float>,
     explode: Float,
     litLights: List<Vec3>,
     modifier: Modifier,
 ) {
-    // TODO: per-circuit hot/cold colouring on SceneKit (Filament path colours first).
     val house = remember(usdz) { SceneKitHouse() }
     // Realistic room lighting only in dark mode; light mode keeps the flat default.
     val dark = MkTheme.colors.isDark
@@ -392,6 +457,7 @@ fun SceneKitHouseSurface(
                 house.setSlotSizePx(composeSize.width.toDouble(), composeSize.height.toDouble())
                 house.update(eye, target, mode, showRoof, showWalls, showFurniture, showHeating, explode)
                 house.updateLighting(dark, litLights)
+                house.updateHeatColors(heatByCircuit)
             },
             onRelease = { house.release() },
             onReset = null,

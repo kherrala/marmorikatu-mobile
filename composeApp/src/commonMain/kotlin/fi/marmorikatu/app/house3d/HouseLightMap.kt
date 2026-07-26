@@ -65,6 +65,39 @@ object HouseLightMap {
         "Light_2krs_MH3" to "yla_seela",
     )
 
+    /**
+     * Climate sources for a room's control panel: a Ruuvi sensor name and/or the
+     * PLC temperature key ([tempKey], the retained `temperatures` payload / mqttKey)
+     * for the reading, and the `heating` payload key ([heatingKey]) for the
+     * underfloor demand %. Any may be null when that room has no such source.
+     */
+    data class RoomClimate(val ruuvi: String? = null, val tempKey: String? = null, val heatingKey: String? = null)
+
+    /** GLB room-patch name → its climate sources (temp + underfloor-heating %). */
+    val roomClimate: Map<String, RoomClimate> = mapOf(
+        "Room_1krs_OH" to RoomClimate(ruuvi = "Olohuone", heatingKey = "keittio"),
+        "Room_1krs_KT" to RoomClimate(ruuvi = "Keittiö", tempKey = "keittio", heatingKey = "keittio"),
+        "Room_1krs_RUOKAILU" to RoomClimate(ruuvi = "Keittiö", heatingKey = "keittio"),
+        "Room_1krs_MH" to RoomClimate(tempKey = "mh_ak", heatingKey = "mh_ak"),
+        "Room_1krs_ET" to RoomClimate(tempKey = "eteinen", heatingKey = "eteinen"),
+        "Room_1krs_ET2" to RoomClimate(tempKey = "eteinen", heatingKey = "eteinen"),
+        "Room_1krs_TK" to RoomClimate(tempKey = "eteinen", heatingKey = "eteinen"),
+        "Room_1krs_VH" to RoomClimate(tempKey = "eteinen", heatingKey = "eteinen"),
+        "Room_1krs_VH2" to RoomClimate(tempKey = "eteinen", heatingKey = "eteinen"),
+        "Room_1krs_WC" to RoomClimate(tempKey = "eteinen", heatingKey = "eteinen"),
+        "Room_1krs_TEKN" to RoomClimate(tempKey = "eteinen", heatingKey = "eteinen"),
+        "Room_1krs_LH" to RoomClimate(ruuvi = "Sauna"),
+        "Room_1krs_PH" to RoomClimate(ruuvi = "Sauna"),
+        "Room_kellari_VAR1" to RoomClimate(tempKey = "kellari", heatingKey = "kellari"),
+        "Room_kellari_VAR2" to RoomClimate(tempKey = "kellari", heatingKey = "kellari"),
+        "Room_kellari_WC" to RoomClimate(tempKey = "kellari_eteinen", heatingKey = "kellari_eteinen"),
+        "Room_2krs_MH" to RoomClimate(tempKey = "yk_essi", heatingKey = "essi"),
+        "Room_2krs_VH" to RoomClimate(tempKey = "yk_essi", heatingKey = "essi"),
+        "Room_2krs_MH2" to RoomClimate(tempKey = "yk_onni", heatingKey = "onni"),
+        "Room_2krs_MH3" to RoomClimate(tempKey = "yk_aatu", heatingKey = "aatu"),
+        "Room_2krs_AULA" to RoomClimate(tempKey = "yk_aula", heatingKey = "yk_aula"),
+    )
+
     /** GLB room-patch name → the light-area keys physically inside that room. */
     val roomToAreas: Map<String, List<String>> = mapOf(
         // The open-plan wing is now three separately-focusable zones.

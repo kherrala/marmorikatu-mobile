@@ -36,7 +36,9 @@ actual fun HouseGeometrySurface(
     // Push the latest camera + visibility to the render loop each recomposition.
     SideEffect {
         filament.update(eye, target, mode, showRoof, showWalls, showFurniture, showHeating, explode)
-        filament.updateLighting(dark, litLights)
+        // The floor-heating inspection needs bright, flat lighting so the oak floor
+        // and the coloured loops read clearly — never the dim night lighting.
+        filament.updateLighting(dark && !showHeating, litLights)
         filament.updateHeating(heatByCircuit)
     }
     DisposableEffect(Unit) { onDispose { filament.destroy() } }

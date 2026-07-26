@@ -21,7 +21,7 @@ import marmorikatu_mobile.composeapp.generated.resources.Res
 private const val USE_SCENEKIT = true
 
 /** Set true to overlay the Compose slot size vs native view bounds for diagnosing interop sizing. */
-internal const val DEBUG_SURFACE_SIZE = true
+internal const val DEBUG_SURFACE_SIZE = false
 
 private sealed interface HouseAssetState {
     data object Loading : HouseAssetState

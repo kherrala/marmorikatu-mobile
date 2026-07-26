@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -34,8 +35,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.window.Dialog
-import fi.marmorikatu.app.components.CalendarNextCard
-import fi.marmorikatu.app.components.GarbageScheduleCard
 import fi.marmorikatu.app.components.MkButton
 import fi.marmorikatu.app.components.MkButtonSize
 import fi.marmorikatu.app.components.MkButtonVariant
@@ -91,18 +90,8 @@ fun KalenteriScreen(viewModel: KalenteriViewModel = koinViewModel()) {
                 )
             }
 
-            // The same compact widget the home screen shows: the summary you
-            // tapped to get here, carried over as this view's header.
-            item(key = "summary") {
-                CalendarNextCard(
-                    eventTime = state.days.firstOrNull()?.events?.firstOrNull()?.time,
-                    eventTitle = state.days.firstOrNull()?.events?.firstOrNull()?.title,
-                    garbage = state.garbage.firstOrNull(),
-                )
-            }
-
-            item(key = "garbage") { GarbageScheduleCard(state.garbage) }
-
+            // Simplified per the design: this view is the family calendar only — the
+            // next-event summary and the waste-pickup schedule live on the home screen.
             item(key = "cal-head") {
                 Text(
                     text = "Perhekalenteri".uppercase(),
@@ -175,7 +164,7 @@ private fun DayHeader(dayLabel: String, dateLabel: String) {
     }
 }
 
-/** One event: time · a coloured spine · title · who. */
+/** One event: time · a coloured spine · title · a right-aligned who/venue tag. */
 @Composable
 private fun EventRow(event: CalendarEvent, color: Color, onClick: () -> Unit) {
     val c = MkTheme.colors
@@ -186,46 +175,43 @@ private fun EventRow(event: CalendarEvent, color: Color, onClick: () -> Unit) {
             .background(c.surfaceCard)
             .border(1.dp, c.borderSubtle, RoundedCornerShape(MkRadius.md))
             .clickable(onClick = onClick)
-            .padding(horizontal = MkSpacing.x3, vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(11.dp),
+            .padding(horizontal = MkSpacing.x3, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = event.time,
             style = MkTheme.type.readout(13),
             color = c.inkHi,
-            modifier = Modifier.width(44.dp),
+            modifier = Modifier.width(48.dp),
             maxLines = 1,
         )
         Box(
             modifier = Modifier
                 .width(4.dp)
-                .height(if (event.who.isNotBlank()) 38.dp else 30.dp)
+                .height(22.dp)
                 .clip(RoundedCornerShape(2.dp))
                 .background(color),
         )
-        // Title and location on their own lines — a long address used to share the
-        // title's line and squeeze it out of view entirely.
-        Column(modifier = Modifier.weight(1f)) {
+        Text(
+            text = event.title,
+            style = MkTheme.type.body,
+            color = c.inkHi,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        // Who / venue as a right-aligned uppercase tag (HALLI, ONNI, MUISTUTUS…).
+        if (event.who.isNotBlank()) {
             Text(
-                text = event.title,
-                style = MkTheme.type.body,
-                color = c.inkHi,
-                maxLines = 2,
+                text = event.who.uppercase(),
+                style = MkTheme.type.readout(10, FontWeight.Normal).copy(letterSpacing = 0.08.em),
+                color = c.inkLo,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 96.dp),
             )
-            if (event.who.isNotBlank()) {
-                Text(
-                    text = event.who,
-                    style = MkTheme.type.readout(11, FontWeight.Normal),
-                    color = c.inkLo,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 1.dp),
-                )
-            }
         }
-        Icon(MkIcons.CaretRight, contentDescription = null, tint = c.inkLo, modifier = Modifier.size(16.dp))
     }
 }
 

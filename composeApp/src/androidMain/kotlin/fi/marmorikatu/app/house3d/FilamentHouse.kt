@@ -36,8 +36,8 @@ class FilamentHouse {
         private val HEAT_CIRCUIT_RE = Regex("Heat_\\w+?_(\\d\\d)")
 
         // Loop colours: cold #3b82f6 → hot #ef4444, neutral #8E9AA8 for "no data".
-        private val HEAT_COLD = floatArrayOf(0.231f, 0.510f, 0.965f)
-        private val HEAT_HOT = floatArrayOf(0.937f, 0.267f, 0.267f)
+        private val HEAT_COLD = floatArrayOf(0.05f, 0.36f, 1.0f)
+        private val HEAT_HOT = floatArrayOf(0.92f, 0.04f, 0.03f)
         private val HEAT_NEUTRAL = floatArrayOf(0.557f, 0.604f, 0.659f)
 
         private fun lerp3(a: FloatArray, b: FloatArray, t: Float): FloatArray {
@@ -75,6 +75,11 @@ class FilamentHouse {
     private val assetLoader = AssetLoader(engine, materialProvider, EntityManager.get())
     private val resourceLoader = ResourceLoader(engine)
     private var asset: FilamentAsset? = null
+    // The GLB source buffer must outlive the async texture decode (gltfio reads
+    // the embedded JPEGs from it on background threads) — hold a reference so it
+    // is not GC'd mid-load, which would silently drop every texture to a dummy.
+    private var modelBuffer: ByteBuffer? = null
+    @Volatile private var resourceLoading = false
 
     private val groupOf = HashMap<Int, HouseGroup>()
     private val classOf = HashMap<Int, MatClass>()
@@ -108,6 +113,10 @@ class FilamentHouse {
     // its circuit number, and the live 0..1 intensity per circuit.
     private val heatCircuitOf = HashMap<Int, String>()
     private val heatInstanceOf = HashMap<Int, com.google.android.filament.MaterialInstance>()
+    private val heatRevealEntities = HashSet<Int>()
+    // Distinct oak-floor material instances, dimmed while the heating layer is shown.
+    private val floorDimInstances = HashSet<com.google.android.filament.MaterialInstance>()
+    private var floorDimApplied: Boolean? = null
     @Volatile private var heatByCircuit: Map<String, Float> = emptyMap()
     @Volatile private var heatColorDirty = true
 
@@ -139,6 +148,20 @@ class FilamentHouse {
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             choreographer.postFrameCallback(this)
+            // Pump the async resource decode until textures finish streaming in;
+            // keep rendering each frame so they appear as soon as they land.
+            if (resourceLoading) {
+                resourceLoader.asyncUpdateLoad()
+                val p = resourceLoader.asyncGetLoadProgress()
+                if (p >= 1f) {
+                    resourceLoading = false
+                    // NOTE: deliberately NOT calling releaseSourceData()/freeing the
+                    // buffer — the background JPEG decode reads the embedded images
+                    // from the source, and freeing it here dropped every texture to a
+                    // white dummy (grey floors/walls). Holding ~6MB is a fair trade.
+                }
+                dirty = true
+            }
             if (!ready || !dirty) return
             applyFrame()
             val sc = swapChain ?: return
@@ -177,12 +200,15 @@ class FilamentHouse {
     fun loadModel(bytes: ByteArray) {
         if (asset != null) return
         val buffer = ByteBuffer.allocateDirect(bytes.size).apply { put(bytes); rewind() }
+        modelBuffer = buffer
         val a = assetLoader.createAsset(buffer) ?: return
-        resourceLoader.loadResources(a)
-        a.releaseSourceData()
         classify(a)
         scene.addEntities(a.entities)
         asset = a
+        // Stream buffers + textures on background threads; pumped in doFrame until
+        // complete. releaseSourceData happens only once decoding finishes.
+        resourceLoader.asyncBeginLoad(a)
+        resourceLoading = true
         ready = true
         sceneStateDirty = true
         dirty = true
@@ -208,7 +234,10 @@ class FilamentHouse {
             if (grp == null) continue
             groupOf[e] = grp
             val nodeName = a.getName(e)
-            if (nodeName?.startsWith("Room_") == true) hiddenEntities.add(e)
+            // NOTE: Room_* nodes are the finished floor slabs (oak/tile/concrete),
+            // NOT invisible pick patches — they carry the only oak (`Wood`) geometry
+            // in the model, so hiding them left the interior grey. Render them; room
+            // picking works off the parsed HouseModel, not these Filament entities.
             val ri = rm.getInstance(e)
             val matName = runCatching { rm.getMaterialInstanceAt(ri, 0).name }.getOrNull()
             // gltfio normally preserves the glTF material name, but keep a node-
@@ -218,6 +247,12 @@ class FilamentHouse {
                 !nodeName.endsWith(".cord") && !nodeName.endsWith(".pole")
             ) {
                 MatClass.Fixture
+            } else if (nodeName?.contains("ladder") == true || nodeName?.contains("rlad") == true) {
+                // The exterior fire-escape ladder (`*.ladder.*`) AND the roof-access
+                // ladder that runs up to the chimney (`*.rlad.*`) are tall roof-level
+                // features: class them Roof so they hide in floor cutaways (and with the
+                // roof toggle) and stay out of the framing bbox, like the eaves.
+                MatClass.Roof
             } else {
                 matClassForMaterial(matName)
             }
@@ -228,14 +263,42 @@ class FilamentHouse {
                 classOf[e] = MatClass.Heating
                 // Circuit number for colouring; JT manifolds have none → stay neutral.
                 HEAT_CIRCUIT_RE.find(nodeName)?.groupValues?.get(1)?.let { heatCircuitOf[e] = it }
-                runCatching {
-                    val mi = rm.getMaterialInstanceAt(ri, 0).material.createInstance()
-                    rm.setMaterialInstanceAt(ri, 0, mi)
-                    heatInstanceOf[e] = mi
+                // Reveal the thin pipes + manifolds (oak floor stays visible); the
+                // solid zone patches stay hidden until the Alueet/Molemmat view lands.
+                if (nodeName.contains(".pipe") || nodeName.contains("_pipe") || nodeName.contains("_JT")) {
+                    heatRevealEntities.add(e)
                 }
+                // Colour each loop/zone's own material instance directly. The model
+                // gives every heat circuit a UNIQUE material (Heat_off_<nn>/Heat_pipe_<nn>),
+                // so gltfio backs each with its own native MaterialInstance and circuits
+                // colour independently. (A single shared "HeatOff"/"HeatPipe" material
+                // would give one native instance for the whole layer — last write wins,
+                // painting everything one colour.)
+                runCatching { heatInstanceOf[e] = rm.getMaterialInstanceAt(ri, 0) }
+            }
+            // Textured floors (oak + concrete, both baseColorFactor-white) dim to a
+            // plain dark neutral while Lämmitys is on, so the loops read as a clean
+            // schematic instead of fighting the floor texture (the pipes are flat
+            // ribbons in the model, not tubes). Plain-colour tile floors are left as-is.
+            if (nodeName?.startsWith("Room_") == true && (matName == "Wood" || matName == "ConcreteF")) {
+                runCatching { floorDimInstances.add(rm.getMaterialInstanceAt(ri, 0)) }
             }
         }
         heatColorDirty = true
+    }
+
+    private fun applyFloorDim() {
+        if (floorDimApplied == showHeating) return
+        floorDimApplied = showHeating
+        for (mi in floorDimInstances) {
+            // baseColorFactor multiplies the oak texture: near-black cool grey while
+            // heating (grain fades into a dark backdrop), white (unchanged) otherwise.
+            if (showHeating) {
+                runCatching { mi.setParameter("baseColorFactor", 0.26f, 0.28f, 0.33f, 1f) }
+            } else {
+                runCatching { mi.setParameter("baseColorFactor", 1f, 1f, 1f, 1f) }
+            }
+        }
     }
 
     private fun applyHeatColors() {
@@ -245,10 +308,26 @@ class FilamentHouse {
             val mi = heatInstanceOf[e] ?: continue
             val t = heatByCircuit[circuit]
             val c = if (t != null) lerp3(HEAT_COLD, HEAT_HOT, t) else HEAT_NEUTRAL
-            // Flat emissive overlay (README recipe): black base + full emissive so the
-            // loop stays saturated under any lighting/tone mapping.
-            runCatching { mi.setParameter("baseColorFactor", 0f, 0f, 0f, 1f) }
-            runCatching { mi.setParameter("emissiveFactor", c[0], c[1], c[2]) }
+            // The instance was cloned from the ubershader's *default* material, whose
+            // metallicFactor defaults to 1.0 — a metal with no reflections renders
+            // black regardless of baseColour. Force a matte dielectric so the loop
+            // shows its colour, plus a modest emissive so it still reads if lighting
+            // is dim.
+            // Hotter loops glow more so the reds really pop against the oak; the
+            // emissive lifts saturation that the daylight key would otherwise wash out.
+            // A lit dielectric (metallic 0, mid roughness) so the daylight shades the
+            // round tube — highlights on top, darker sides — instead of reading as a
+            // flat sticker. Only a whisper of emissive so a loop in shadow still shows
+            // its colour without washing the 3D form to a uniform block.
+            val glow = 0.16f
+            runCatching { mi.setParameter("baseColorFactor", c[0], c[1], c[2], 1f) }
+            runCatching { mi.setParameter("metallicFactor", 0f) }
+            runCatching { mi.setParameter("roughnessFactor", 0.55f) }
+            runCatching { mi.setParameter("emissiveFactor", c[0] * glow, c[1] * glow, c[2] * glow) }
+            // The round-tube export left the top faces culled (only the side edges of
+            // each loop were drawing, floor showing through the middle). Render both
+            // sides so the whole tube fills in.
+            runCatching { mi.setCullingMode(com.google.android.filament.Material.CullingMode.NONE) }
         }
     }
 
@@ -359,6 +438,7 @@ class FilamentHouse {
     private fun applyFrame() {
         applyLighting()
         applyHeatColors()
+        applyFloorDim()
         // Orbiting changes only the camera. Walking hundreds of entities and
         // writing every transform on all 60 camera frames caused avoidable work
         // on Android tablets; visibility/explode state changes far less often.
@@ -367,6 +447,10 @@ class FilamentHouse {
             for (tier in tierTransforms.indices) tierTransforms[tier][13] = tier * explode
             for ((e, grp) in groupOf) {
                 val cls = classOf[e] ?: MatClass.Solid
+                // Show the whole heating layer when Lämmitys is on: the coloured zone
+                // patches (the "surface" that changes colour, like the web viewer) plus
+                // the loop pipes and manifolds on top. triVisible already gates Heating
+                // on showHeating + the shown floor.
                 val visible = e !in hiddenEntities && triVisible(grp, cls, mode, showRoof, showWalls, showFurniture, showHeating)
                 val inScene = scene.hasEntity(e)
                 if (visible && !inScene) scene.addEntity(e) else if (!visible && inScene) scene.removeEntity(e)

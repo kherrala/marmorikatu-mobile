@@ -1,7 +1,11 @@
 package fi.marmorikatu.app.house3d
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -24,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -33,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -84,12 +90,12 @@ fun HouseView3d(
     accent: Color,
     glow: Color,
     onRoomTap: (String) -> Unit,
+    onUserInteract: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val hudColors = MkTheme.colors
     // Opposite side of the house by default: over the terrace / living-room
     // corner (+x, +z), looking back at the interior.
-    var theta by remember { mutableStateOf(0.85f) }
+    var theta by remember { mutableStateOf(focus?.theta ?: WHOLE_HOUSE_THETA) }
     var phi by remember { mutableStateOf(focus?.phi ?: 0.95f) }
     var radius by remember { mutableStateOf(focus?.radius ?: 26f) }
     var target by remember { mutableStateOf(focus?.target ?: model.center) }
@@ -110,15 +116,18 @@ fun HouseView3d(
     val latestRadius by rememberUpdatedState(radius)
     val latestExplode by rememberUpdatedState(explodeAnim)
     val latestOnRoomTap by rememberUpdatedState(onRoomTap)
+    val latestOnUserInteract by rememberUpdatedState(onUserInteract)
     var interactionTick by remember { mutableIntStateOf(0) }
     var spinPaused by remember { mutableStateOf(false) }
     val latestUserFloor by rememberUpdatedState(floorMode)
 
-    // A single floor reads as a floorplan: lock the orbit to a canonical top-down
-    // orientation with the street side up, so every floor lines up the same way.
-    LaunchedEffect(floorMode) {
-        if (floorMode != FloorMode.All) theta = STREET_VIEW_THETA
-    }
+    // Yaw is no longer hard-snapped on floor change; the camera tween eases `theta`
+    // to each preset's target yaw (street-up for a floor, terrace corner for the
+    // whole house) so the move is one coordinated glide instead of an instant twist.
+    // [spinLock] suppresses auto-rotation while a tween runs or the showcase is
+    // parked on a single-floor page — both want a still camera.
+    val tweening = remember { mutableStateOf(false) }
+    val spinLock = remember { mutableStateOf(false) }
 
     // Auto-rotate, pausing 25 s after any user gesture.
     LaunchedEffect(interactionTick) {
@@ -131,8 +140,8 @@ fun HouseView3d(
         var pendingNanos = 0L
         while (true) {
             val now = withFrameNanos { it }
-            // Only the whole-house view spins; a locked floorplan must stay put.
-            if (last != 0L && !spinPaused && latestUserFloor == FloorMode.All) {
+            // Only the whole-house view spins; a locked floorplan / tween must stay put.
+            if (last != 0L && !spinPaused && !spinLock.value && latestUserFloor == FloorMode.All) {
                 // ProMotion can otherwise make the software renderer alternate
                 // between 120 Hz and missed frames. A steady 60 Hz workload is
                 // visibly smoother, and a long suspended frame cannot jump the camera.
@@ -145,7 +154,9 @@ fun HouseView3d(
                     theta += steps * AUTO_SPIN_STEP_NANOS / 1_000_000_000f * AUTO_SPIN_RADIANS_PER_SECOND
                     pendingNanos -= steps * AUTO_SPIN_STEP_NANOS
                 }
-            } else if (spinPaused) {
+            } else {
+                // Not spinning (paused, locked, or on a floor): drop the remainder so
+                // re-entering the whole-house view doesn't apply a stale accumulated step.
                 pendingNanos = 0L
             }
             last = now
@@ -164,24 +175,33 @@ fun HouseView3d(
     val showcasePages = remember(visibleFacts, floorMode) {
         buildShowcasePages(visibleFacts, floorMode)
     }
-    LaunchedEffect(infomercial, showcasePages.size, floorMode) {
+    // Read the freshest page list inside the loop so a live fact going stale/fresh
+    // (which changes the page COUNT) doesn't restart the tour at page 0. The effect
+    // only restarts when the showcase starts/stops or the user's floor changes.
+    val latestPages by rememberUpdatedState(showcasePages)
+    LaunchedEffect(infomercial, floorMode) {
         showcasePageIndex = 0
         factFade.snapTo(1f)
-        if (!infomercial || showcasePages.size <= 1) return@LaunchedEffect
+        if (!infomercial) return@LaunchedEffect
         while (true) {
             delay(4_800)
+            val n = latestPages.size
+            if (n <= 1) continue
             factFade.animateTo(0f, tween(420))
-            showcasePageIndex = (showcasePageIndex + 1) % showcasePages.size
+            showcasePageIndex = (showcasePageIndex + 1) % n
             factFade.animateTo(1f, tween(520))
         }
     }
-    val showcasePage = showcasePages.getOrNull(showcasePageIndex)
+    val showcasePage = showcasePages.getOrNull(
+        if (showcasePages.isEmpty()) 0 else showcasePageIndex % showcasePages.size,
+    )
     val shownFacts = showcasePage?.facts.orEmpty()
 
     // Alerts are not carousel entries: every active source pin stays on screen
     // until live state removes it. If several are active, the camera visits each
     // one while all pins remain visible. With no alert, it frames the current
-    // page of three facts so the house movement and infographic tell one story.
+    // page of facts (see SHOWCASE_FACTS_PER_PAGE) so the house movement and the
+    // infographic tell one story.
     val announcementMarkers = remember(markers) { markers.filter { it.kind == MarkerKind.Announcement } }
     val pinnedAlerts = remember(markers) { markers.filter { it.kind == MarkerKind.Alert } }
     val alertKey = remember(pinnedAlerts) {
@@ -202,12 +222,13 @@ fun HouseView3d(
         announcementMarkers, pinnedAlerts, alertFocusIndex, selectedRoom, spinPaused, shownFacts,
     ) {
         when {
+            // A just-arrived spoken announcement is intentional and always wins.
             announcementMarkers.isNotEmpty() -> listOf(announcementMarkers.last())
-            pinnedAlerts.isNotEmpty() -> listOf(pinnedAlerts[alertFocusIndex.coerceIn(0, pinnedAlerts.lastIndex)])
-            // Manual interaction owns the camera temporarily. Alerts and spoken
-            // announcements above still override this pause, but the ambient fact
-            // reel cannot immediately steal focus after a room timeout/gesture.
+            // Manual interaction owns the camera temporarily: while a room is open or
+            // within 25 s of a gesture, neither a standing alert nor the ambient fact
+            // reel may pull the camera (their pins still show via `markers`).
             selectedRoom != null || spinPaused -> emptyList()
+            pinnedAlerts.isNotEmpty() -> listOf(pinnedAlerts[alertFocusIndex.coerceIn(0, pinnedAlerts.lastIndex)])
             else -> shownFacts
         }
     }
@@ -231,6 +252,9 @@ fun HouseView3d(
         )
     }
     val latestFloorMode by rememberUpdatedState(renderedFloorMode)
+    // Suppress auto-rotation while a focus tween runs or the showcase has parked on a
+    // single floor page — the autospin loop (above) reads this each frame.
+    SideEffect { spinLock.value = tweening.value || renderedFloorMode != FloorMode.All }
     // Text/value updates at the same physical source must not restart a 900 ms
     // camera tween. Only source position/floor and carousel membership matter.
     val automaticFocusKey = remember(automaticMarkers) { markerCameraKey(automaticMarkers) }
@@ -259,9 +283,11 @@ fun HouseView3d(
         val hasNewExplicitFocus = focusToken != appliedExplicitFocusToken
         if (hasNewExplicitFocus) appliedExplicitFocusToken = focusToken
         if (announcementMarkers.isNotEmpty() && announcementReturnFocus == null) {
-            // Preserve the user's current orbit so a normal (non-presentation)
-            // view returns after the temporary announcement zoom.
-            announcementReturnFocus = CameraDestination(OrbitPreset(target, radius, phi), targetTier)
+            // Preserve the orbit to return to after the temporary announcement zoom.
+            // If a focus tween is mid-flight, the live pose is transient — capture its
+            // intended destination ([focus]) instead so we don't restore a half-move.
+            val returnOrbit = if (tweening.value && focus != null) focus else OrbitPreset(target, radius, phi)
+            announcementReturnFocus = CameraDestination(returnOrbit, targetTier)
             announcementReturnInteraction = interactionTick
         }
         if (hasNewExplicitFocus && announcementMarkers.isNotEmpty() && focus != null) {
@@ -295,18 +321,29 @@ fun HouseView3d(
         val startT = target
         val startR = radius
         val startP = phi
+        val startTheta = theta
+        // Ease yaw only when the preset asks for a specific one; otherwise keep the
+        // current yaw so most focus moves don't twist the house. Take the shortest
+        // way round so a wrap-around doesn't spin the long way.
+        val destTheta = destination.orbit.theta
         val startTier = targetTier
         val interactionAtStart = interactionTick
         val startNs = withFrameNanos { it }
         var progress = 0f
-        while (progress < 1f && interactionTick == interactionAtStart) {
-            val now = withFrameNanos { it }
-            progress = (((now - startNs) / 1_000_000L).toFloat() / 900f).coerceIn(0f, 1f)
-            val eased = easeInOutQuad(progress)
-            target = lerp(startT, destination.orbit.target, eased)
-            radius = lerp(startR, destination.orbit.radius, eased)
-            phi = lerp(startP, destination.orbit.phi, eased)
-            targetTier = lerp(startTier, destination.tier, eased)
+        tweening.value = true
+        try {
+            while (progress < 1f && interactionTick == interactionAtStart) {
+                val now = withFrameNanos { it }
+                progress = (((now - startNs) / 1_000_000L).toFloat() / 900f).coerceIn(0f, 1f)
+                val eased = easeInOutQuad(progress)
+                target = lerp(startT, destination.orbit.target, eased)
+                radius = lerp(startR, destination.orbit.radius, eased)
+                phi = lerp(startP, destination.orbit.phi, eased)
+                targetTier = lerp(startTier, destination.tier, eased)
+                if (destTheta != null) theta = startTheta + shortestAngleDelta(startTheta, destTheta) * eased
+            }
+        } finally {
+            tweening.value = false
         }
     }
 
@@ -316,13 +353,32 @@ fun HouseView3d(
             // floorplan (+ pinch to zoom).
             awaitEachGesture {
                 awaitFirstDown(requireUnconsumed = false)
+                var dragging = false
+                var travelled = Offset.Zero
                 do {
                     val event = awaitPointerEvent()
                     val pressed = event.changes.count { it.pressed }
                     if (pressed == 0) break
                     val pan = event.calculatePan()
                     val zoom = event.calculateZoom()
-                    if (pan != Offset.Zero || zoom != 1f) interactionTick += 1
+                    // A single finger must travel past touch slop before this becomes a
+                    // manipulation; below that we consume nothing so a tap-to-select can
+                    // still land (a tiny jitter was previously eaten as a pan). A second
+                    // finger / pinch is always a manipulation.
+                    if (!dragging) {
+                        travelled += pan
+                        if (pressed >= 2 || zoom != 1f || travelled.getDistance() > viewConfiguration.touchSlop) {
+                            dragging = true
+                        } else {
+                            continue
+                        }
+                    }
+                    if (pan != Offset.Zero || zoom != 1f) {
+                        interactionTick += 1
+                        // Manual drag/pan/zoom means the user has taken the wheel —
+                        // stop the auto-showcase so its tour stops fighting them.
+                        latestOnUserInteract()
+                    }
                     // A single floor reads as a floorplan: the camera angle is locked
                     // and a one-finger drag scrolls across the plan. The whole house
                     // ("Koko talo") orbits with one finger, pans with two.
@@ -466,50 +522,9 @@ fun HouseView3d(
         }
 
         if (projectedLabels.isNotEmpty()) {
-            // The label pill sits above the actual source. Draw the source core
-            // and two outward-fading rings at the world anchor, matching the
-            // original showcase treatment for people, doors, and energy facts.
-            Canvas(Modifier.fillMaxSize()) {
-                val ms = pulseMillis?.value ?: return@Canvas
-                val ringStart = 7.dp.toPx()
-                val ringTravel = 24.dp.toPx()
-                val coreRadius = 4.dp.toPx()
-                val stroke = 1.5.dp.toPx()
-                projectedLabels.forEachIndexed { index, label ->
-                    val sourceColor = markerPulseColor(
-                        marker = label.marker,
-                        accent = accent,
-                        alarm = hudColors.statusAlarm,
-                        warm = hudColors.warm,
-                    )
-                    val sourceAlpha = label.alpha * if (label.marker.stale) 0.45f else 1f
-                    for (ring in 0 until 2) {
-                        val phase = ((ms / 1_800f) + ring * 0.5f + index * 0.11f) % 1f
-                        val fade = (1f - phase) * (1f - phase)
-                        drawCircle(
-                            color = sourceColor.copy(alpha = sourceAlpha * fade * 0.72f),
-                            radius = ringStart + phase * ringTravel,
-                            center = label.anchor,
-                            style = Stroke(width = stroke),
-                        )
-                    }
-                    drawCircle(
-                        color = sourceColor.copy(alpha = sourceAlpha * 0.16f),
-                        radius = coreRadius * 2.2f,
-                        center = label.anchor,
-                    )
-                    drawCircle(
-                        color = sourceColor.copy(alpha = sourceAlpha * 0.96f),
-                        radius = coreRadius,
-                        center = label.anchor,
-                    )
-                    drawCircle(
-                        color = Color.White.copy(alpha = sourceAlpha * 0.82f),
-                        radius = coreRadius * 0.32f,
-                        center = label.anchor,
-                    )
-                }
-            }
+            // The pulse now radiates from each label's own dot (see MarkerLabel), so a
+            // marker is one cohesive chip instead of a floating pill plus a separate
+            // ring/core at the source below it.
             MarkerHud(
                 labels = projectedLabels,
                 accent = accent,
@@ -532,8 +547,10 @@ internal fun markerCameraTier(markers: List<HouseMarker>): Float =
 internal fun floorModeForGroup(group: HouseGroup): FloorMode = when (group) {
     HouseGroup.Kellari -> FloorMode.Kellari
     HouseGroup.Krs2 -> FloorMode.Ylakerta
-    HouseGroup.Krs1, HouseGroup.Terassi, HouseGroup.Katos -> FloorMode.Alakerta
-    HouseGroup.Katto -> FloorMode.All
+    HouseGroup.Krs1 -> FloorMode.Alakerta
+    // The terrace/lawn and detached carport aren't part of a single floor cutaway;
+    // selecting them shows the whole-house view where they live.
+    HouseGroup.Terassi, HouseGroup.Katos, HouseGroup.Katto -> FloorMode.All
 }
 
 internal fun focusedFloorMode(
@@ -558,8 +575,8 @@ internal data class ShowcasePage(
 /**
  * Builds a deterministic bottom-to-top presentation tour. The whole-house page
  * resets spatial context between loops; each physical floor then gets at least
- * one page even when it currently has no fact, while populated floors retain
- * the three-highlights-at-a-time carousel contract.
+ * one page even when it currently has no fact, while populated floors are chunked
+ * into pages of SHOWCASE_FACTS_PER_PAGE highlights.
  */
 internal fun buildShowcasePages(
     facts: List<HouseMarker>,
@@ -600,14 +617,6 @@ private val SHOWCASE_OVERVIEW_LABELS = setOf("Ulkoilma", "Sähkö", "Maalämpö"
 /** DEBUG: force every fixture on to tune dark-mode lighting offline. Revert to false. */
 private const val DEBUG_ALL_LIGHTS = false
 
-/**
- * Canonical top-down azimuth for a single-floor (floorplan) view: puts the street
- * side (world −x) at the top of the screen, so every floor is oriented the same
- * way regardless of how the whole-house view was rotated. (θ=0 → the far/top of
- * the tilted-down view faces −x.)
- */
-private const val STREET_VIEW_THETA = 0f
-
 /** Vertical field of view (radians) the renderers/projection use (48°). */
 private const val PROJECTION_FOV_RAD = (48.0 * PI / 180.0).toFloat()
 
@@ -623,16 +632,6 @@ private data class ProjectedHudLabel(
     val anchor: Offset,
 )
 
-private fun markerPulseColor(
-    marker: HouseMarker,
-    accent: Color,
-    alarm: Color,
-    warm: Color,
-): Color = when (marker.kind) {
-    MarkerKind.Person, MarkerKind.Alert -> alarm
-    MarkerKind.Announcement, MarkerKind.Door, MarkerKind.Sauna -> warm
-    MarkerKind.Info -> accent
-}
 
 /**
  * Measures the marker pills before placing them so labels remain inside the 3D
@@ -758,15 +757,43 @@ private fun MarkerLabel(marker: HouseMarker, accent: Color, modifier: Modifier =
         MarkerKind.Sauna -> c.warm
         MarkerKind.Info -> accent
     }
+    // A gentle pulse radiates from the dot itself (a live reading only — stale
+    // readings stay a flat grey dot). This replaces the old separate source ping.
+    val pulse = rememberInfiniteTransition(label = "markerPulse")
+    val phase by pulse.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1_800, easing = LinearEasing)),
+        label = "markerPulsePhase",
+    )
     Row(
+        // Background WITHOUT clip so the dot's pulse rings can extend past the pill.
         modifier = modifier
-            .clip(RoundedCornerShape(MkRadius.round))
-            .background(c.surfaceCard.copy(alpha = 0.94f))
+            .background(c.surfaceCard.copy(alpha = 0.94f), RoundedCornerShape(MkRadius.round))
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(9.dp).clip(RoundedCornerShape(MkRadius.round)).background(dot),
+            Modifier
+                .size(9.dp)
+                .drawBehind {
+                    if (marker.stale) return@drawBehind
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val base = 4.dp.toPx()
+                    val travel = 11.dp.toPx()
+                    for (ring in 0 until 2) {
+                        val p = (phase + ring * 0.5f) % 1f
+                        val fade = (1f - p) * (1f - p)
+                        drawCircle(
+                            color = dot.copy(alpha = fade * 0.55f),
+                            radius = base + p * travel,
+                            center = center,
+                            style = Stroke(width = 1.5.dp.toPx()),
+                        )
+                    }
+                }
+                .clip(RoundedCornerShape(MkRadius.round))
+                .background(dot),
         )
         Text(
             text = buildString {

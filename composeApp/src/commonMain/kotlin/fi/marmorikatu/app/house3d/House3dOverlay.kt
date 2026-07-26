@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -51,6 +53,8 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import fi.marmorikatu.app.components.rememberWallClock
 import fi.marmorikatu.app.components.MkIconButton
+import fi.marmorikatu.app.components.MkSwitch
+import fi.marmorikatu.app.format.Fmt
 import fi.marmorikatu.app.icons.MkIcons
 import fi.marmorikatu.app.screens.KotiViewModel
 import fi.marmorikatu.app.screens.ValotViewModel
@@ -105,6 +109,12 @@ fun House3dOverlay(
     /** External fly-to-floor request (voice); each new [floorNonce] re-applies. */
     floorTarget: FloorMode? = null,
     floorNonce: Int = 0,
+    /**
+     * Bumped by the shell each time it (re-)asserts [presentation] (e.g. a voice
+     * "show the house"), so the showcase can restart even after a manual interaction
+     * left `presenting` false while [presentation] itself stayed true.
+     */
+    presentationNonce: Int = 0,
 ) {
     val colors = MkTheme.colors
     val type = MkTheme.type
@@ -199,6 +209,35 @@ fun House3dOverlay(
     var explode by remember { mutableFloatStateOf(0f) }
     var dataLayer by remember { mutableStateOf(DataLayer.Valot) }
     var spin by remember { mutableStateOf(presentation) }
+    // Local mirror of the incoming presentation flag. The auto-showcase (spin +
+    // floor tour) starts when the overlay opens, but any deliberate interaction
+    // must stop it — otherwise the running tour keeps yanking the camera back to
+    // the whole house and wipes a just-picked room / floor / filter.
+    var presenting by remember { mutableStateOf(presentation) }
+    // Re-sync on either a change of the flag itself OR a shell nonce bump, so a fresh
+    // voice "show the house" restarts the reel even when `presentation` was already true.
+    LaunchedEffect(presentation, presentationNonce) { presenting = presentation }
+    // Phone: once a manual interaction has stopped the showcase, resume it after a
+    // spell of no interaction — the attract-loop should return by itself, in both the
+    // whole-house and floor views (the tablet kiosk handles its own idle in the shell,
+    // so this is scoped to the non-embedded overlay). `touch()` marks activity cheaply
+    // (a plain array write, no recomposition, safe to call every drag frame); the
+    // watcher polls it and re-arms `presenting`.
+    val lastTouch = remember { arrayOf(TimeSource.Monotonic.markNow()) }
+    val touch = { lastTouch[0] = TimeSource.Monotonic.markNow() }
+    if (!embedded) {
+        LaunchedEffect(presenting, idle) {
+            if (presenting || idle) return@LaunchedEffect
+            lastTouch[0] = TimeSource.Monotonic.markNow()
+            while (true) {
+                delay(1_000)
+                if (lastTouch[0].elapsedNow().inWholeMilliseconds >= SHOWCASE_IDLE_RESTART_MS) {
+                    presenting = true
+                    break
+                }
+            }
+        }
+    }
     var selectedRoom by remember { mutableStateOf<String?>(null) }
     var focus by remember { mutableStateOf<OrbitPreset?>(null) }
     var focusToken by remember { mutableIntStateOf(0) }
@@ -206,13 +245,24 @@ fun House3dOverlay(
     // Voice/presentation requests can change while the overlay is already open.
     // When the showcase/screensaver starts, leave any focused floor or room and
     // return to the whole-house rotating overview.
-    LaunchedEffect(presentation, idle) {
-        spin = presentation || idle
-        if (presentation || idle) {
+    LaunchedEffect(presenting, idle) {
+        // Only drive state when the showcase/screensaver turns ON. When it turns
+        // off (a deliberate interaction), leave spin/floor as the interaction set
+        // them — otherwise this would immediately undo e.g. the Pyöritä toggle.
+        if (presenting || idle) {
+            spin = true
             selectedRoom = null
             floorMode = FloorMode.All
+            if (idle) {
+                // The screensaver always comes up as the clean textured exterior,
+                // spinning, with facts — no matter what the user last toggled (they
+                // may have hidden walls, exploded the model, or stopped presenting).
+                presenting = true
+                showWalls = true; showRoof = true; showFurniture = true
+                showHeating = false; explode = 0f
+            }
             (load as? HouseLoad.Ready)?.let {
-                focus = frameVisible(it.model, FloorMode.All, showRoof, showWalls)
+                focus = frameVisible(it.model, FloorMode.All, showRoof, showWalls, embedded)
                 focusToken++
             }
         }
@@ -223,15 +273,18 @@ fun House3dOverlay(
     fun clearRoomSelection() {
         selectedRoom = null
         ready?.let {
-            focus = frameVisible(it.model, floorMode, showRoof, showWalls)
+            focus = frameVisible(it.model, floorMode, showRoof, showWalls, embedded)
             focusToken++
         }
     }
 
-    // Room inspection is intentionally temporary on the shared kiosk. Return
-    // to the current building/floor overview even if nobody closes the panel.
-    LaunchedEffect(selectedRoom) {
-        if (selectedRoom == null) return@LaunchedEffect
+    // Room inspection auto-returns only on the shared kiosk (embedded), and the
+    // timer restarts on any in-panel interaction ([roomInteractionNonce], bumped by
+    // the light toggles) so it can't close under someone who's actively using it. On
+    // the phone the panel stays until dismissed.
+    var roomInteractionNonce by remember { mutableIntStateOf(0) }
+    LaunchedEffect(selectedRoom, roomInteractionNonce) {
+        if (selectedRoom == null || !embedded) return@LaunchedEffect
         delay(ROOM_SELECTION_TIMEOUT_MS)
         clearRoomSelection()
     }
@@ -268,9 +321,11 @@ fun House3dOverlay(
     }
 
     fun applyFloor(mode: FloorMode) {
+        touch(); presenting = false
+        spin = false
         floorMode = mode
         selectedRoom = null
-        ready?.let { focus = frameVisible(it.model, mode, showRoof, showWalls); focusToken++ }
+        ready?.let { focus = frameVisible(it.model, mode, showRoof, showWalls, embedded); focusToken++ }
     }
 
     // Apply an external fly-to-floor request once the model is ready.
@@ -278,9 +333,12 @@ fun House3dOverlay(
         if (floorNonce > 0 && floorTarget != null && ready != null) applyFloor(floorTarget)
     }
 
-    // When a live announcement pinpoints activity on a different floor while a
-    // single floor is shown, switch to that floor so the event is visible.
+    // When a live announcement pinpoints activity on a different floor, follow it —
+    // but ONLY during the auto-showcase and never with a room open. A user who has
+    // deliberately parked on a floor (or opened a room) keeps their view; the event
+    // still shows its pin, it just doesn't hijack the camera.
     LaunchedEffect(liveAnnouncementMarker) {
+        if (!presenting || selectedRoom != null) return@LaunchedEffect
         val group = liveAnnouncementMarker?.group ?: return@LaunchedEffect
         val floor = floorModeForGroup(group)
         if (floorMode != FloorMode.All && floor != FloorMode.All && floor != floorMode) applyFloor(floor)
@@ -348,7 +406,7 @@ fun House3dOverlay(
                         round = true,
                     )
                     Spacer(Modifier.width(MkSpacing.x2))
-                    MkIconButton(icon = MkIcons.Microphone, onClick = { shell.onMic() }, label = "Puhu", round = true)
+                    MkIconButton(icon = MkIcons.Microphone, onClick = { touch(); presenting = false; shell.onMic() }, label = "Puhu", round = true)
                     Spacer(Modifier.width(MkSpacing.x2))
                     MkIconButton(icon = MkIcons.X, onClick = onDismiss, label = "Sulje", round = true)
                 }
@@ -366,7 +424,7 @@ fun House3dOverlay(
                 )
                 when (val s = load) {
                     is HouseLoad.Ready -> {
-                        val initialFocus = remember(s.model) { frameVisible(s.model, FloorMode.All, false, false) }
+                        val initialFocus = remember(s.model) { frameVisible(s.model, FloorMode.All, false, false, embedded) }
                         val selectedGroup = selectedRoom?.let { name -> s.model.rooms.firstOrNull { it.name == name }?.group }
                         val pinnedAlerts = remember(koti.attention, facts, s.model) {
                             (activeAlertMarkers(koti.attention, s.model) + facts.filter { it.kind == MarkerKind.Alert })
@@ -414,7 +472,7 @@ fun House3dOverlay(
                             markers = pinnedAlerts + listOfNotNull(liveAnnouncementMarker),
                             facts = (facts + upstairs + tech).filter { it.kind != MarkerKind.Alert },
                             autoSpin = spin,
-                            infomercial = presentation,
+                            infomercial = presenting,
                             accent = colors.accent,
                             glow = colors.warm,
                             onRoomTap = { name ->
@@ -422,6 +480,10 @@ fun House3dOverlay(
                                 // (handled by the shell's interaction observer), not
                                 // pick a room.
                                 if (!idle) {
+                                    // A deliberate room pick ends the auto-showcase so
+                                    // its floor tour stops fighting the selection.
+                                    touch(); presenting = false
+                                    spin = false
                                     selectedRoom = name
                                     // Lock the floor filter to the room's floor so it
                                     // doesn't fall back to the whole house when the
@@ -433,6 +495,9 @@ fun House3dOverlay(
                                     s.presets.rooms[name]?.let { focus = comfortableRoomFocus(it); focusToken++ }
                                 }
                             },
+                            // Any manual orbit/pan/zoom ends the auto-showcase; in the
+                            // screensaver the same gesture wakes the kiosk instead.
+                            onUserInteract = { if (idle) onExitIdle() else { touch(); presenting = false; spin = false } },
                         )
                     }
                     is HouseLoad.Failed -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -485,14 +550,26 @@ fun House3dOverlay(
                 }
 
                 selectedRoom?.let { room ->
+                    val climate = HouseLightMap.roomClimate[room]
+                    val roomTempC = climate?.let { cl ->
+                        cl.ruuvi?.let { showcaseRuuvi[it]?.temperature }
+                            ?: cl.tempKey?.let { key -> roomTemps.firstOrNull { it.key == key }?.celsius }
+                    }
+                    val roomHeatingPct = climate?.heatingKey?.let { key ->
+                        heatingDemand.firstOrNull { it.key == key }?.percent
+                    }
                     RoomPanel(
                         room = room,
                         dataLayer = dataLayer,
                         nowSec = nowSec,
                         valotVm = valotVm,
+                        tempC = roomTempC,
+                        targetC = heatPump.indoorTargetC,
+                        heatingPct = roomHeatingPct,
                         onClose = {
                             clearRoomSelection()
                         },
+                        onInteract = { roomInteractionNonce++ },
                         modifier = Modifier.align(Alignment.BottomEnd).padding(MkSpacing.x3),
                     )
                 }
@@ -506,20 +583,27 @@ fun House3dOverlay(
                     .padding(horizontal = MkSpacing.pagePad, vertical = MkSpacing.x3),
                 verticalArrangement = Arrangement.spacedBy(MkSpacing.x2),
             ) {
+                // Every control-rail toggle also ends the auto-showcase so the tour
+                // stops driving the camera once the user takes manual control.
                 val onRoof = {
+                    touch(); presenting = false
                     showRoof = !showRoof
                     if (selectedRoom == null) ready?.let {
-                        focus = frameVisible(it.model, floorMode, showRoof, showWalls); focusToken++
+                        focus = frameVisible(it.model, floorMode, showRoof, showWalls, embedded); focusToken++
                     }
                     Unit
                 }
                 val onWalls = {
+                    touch(); presenting = false
                     showWalls = !showWalls
                     if (selectedRoom == null) ready?.let {
-                        focus = frameVisible(it.model, floorMode, showRoof, showWalls); focusToken++
+                        focus = frameVisible(it.model, floorMode, showRoof, showWalls, embedded); focusToken++
                     }
                     Unit
                 }
+                val onFurniture = { touch(); presenting = false; showFurniture = !showFurniture; Unit }
+                val onHeating = { touch(); presenting = false; showHeating = !showHeating; Unit }
+                val onSpin = { touch(); presenting = false; spin = !spin; Unit }
                 val sliderColors = SliderDefaults.colors(
                     thumbColor = colors.accent, activeTrackColor = colors.accent, inactiveTrackColor = colors.track,
                 )
@@ -538,12 +622,12 @@ fun House3dOverlay(
                                 Spacer(Modifier.width(MkSpacing.x2))
                                 Chip("Katto", active = showRoof) { onRoof() }
                                 Chip("Seinät", active = showWalls) { onWalls() }
-                                Chip("Kalusteet", active = showFurniture) { showFurniture = !showFurniture }
-                                Chip("Lämmitys", active = showHeating) { showHeating = !showHeating }
-                                Chip("Pyöritä", active = spin) { spin = !spin }
+                                Chip("Kalusteet", active = showFurniture) { onFurniture() }
+                                Chip("Lämmitys", active = showHeating) { onHeating() }
+                                Chip("Pyöritä", active = spin) { onSpin() }
                                 Spacer(Modifier.width(MkSpacing.x2))
                                 Text("KERROSVÄLI", style = type.caption.copy(fontFamily = type.mono, fontSize = 9.5.sp), color = colors.inkLo)
-                                Slider(explode, { explode = it }, valueRange = 0f..3f, colors = sliderColors, modifier = Modifier.weight(2f))
+                                Slider(explode, { touch(); presenting = false; explode = it }, valueRange = 0f..3f, colors = sliderColors, modifier = Modifier.weight(2f))
                             }
                         }
                         HouseControlLayout.CompactStacked -> {
@@ -565,9 +649,9 @@ fun House3dOverlay(
                                 ) {
                                     Chip("Katto", active = showRoof) { onRoof() }
                                     Chip("Seinät", active = showWalls) { onWalls() }
-                                    Chip("Kalusteet", active = showFurniture) { showFurniture = !showFurniture }
-                                    Chip("Lämmitys", active = showHeating) { showHeating = !showHeating }
-                                    Chip("Pyöritä", active = spin) { spin = !spin }
+                                    Chip("Kalusteet", active = showFurniture) { onFurniture() }
+                                    Chip("Lämmitys", active = showHeating) { onHeating() }
+                                    Chip("Pyöritä", active = spin) { onSpin() }
                                 }
                                 // The Kerrosväli (explode) slider is a kiosk/tablet
                                 // affordance; on the phone overlay it isn't useful, so
@@ -575,7 +659,7 @@ fun House3dOverlay(
                                 if (embedded) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("KERROSVÄLI", style = type.caption.copy(fontFamily = type.mono, fontSize = 9.5.sp), color = colors.inkLo, modifier = Modifier.width(84.dp))
-                                        Slider(explode, { explode = it }, valueRange = 0f..3f, colors = sliderColors, modifier = Modifier.weight(1f))
+                                        Slider(explode, { touch(); presenting = false; explode = it }, valueRange = 0f..3f, colors = sliderColors, modifier = Modifier.weight(1f))
                                     }
                                 }
                             }
@@ -593,6 +677,9 @@ fun House3dOverlay(
 }
 
 private const val ROOM_SELECTION_TIMEOUT_MS = 15_000L
+
+/** Phone: resume the auto-showcase this long after the last manual interaction. */
+private const val SHOWCASE_IDLE_RESTART_MS = 20_000L
 
 private fun Int.pad2(): String = if (this < 10) "0$this" else "$this"
 
@@ -659,7 +746,10 @@ internal enum class HouseControlLayout { WideSingleRow, CompactStacked }
 
 /** A phone in landscape may use the embedded shell; width, not shell type, decides density. */
 internal fun houseControlLayout(widthDp: Float, embedded: Boolean): HouseControlLayout =
-    if (embedded && widthDp >= 1_050f) HouseControlLayout.WideSingleRow
+    // The iPad kiosk's content column (nav rail subtracted) sits around ~880–900dp,
+    // below the old 1050 gate, so it fell back to the 3-row stacked layout. Lower the
+    // gate so the tablet uses the single control row the design intends.
+    if (embedded && widthDp >= 700f) HouseControlLayout.WideSingleRow
     else HouseControlLayout.CompactStacked
 
 @Composable
@@ -668,7 +758,11 @@ private fun RoomPanel(
     dataLayer: DataLayer,
     nowSec: Long,
     valotVm: ValotViewModel,
+    tempC: Double?,
+    targetC: Double?,
+    heatingPct: Int?,
     onClose: () -> Unit,
+    onInteract: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val c = MkTheme.colors
@@ -677,57 +771,79 @@ private fun RoomPanel(
     val commandFailed by valotVm.failure.collectAsState()
     val areaKeys = HouseLightMap.roomToAreas[room] ?: emptyList()
     val areas = remember(valot, room) { valot.floors.flatMap { it.areas }.filter { it.key in areaKeys } }
+    val lights = remember(areas) { areas.flatMap { it.lights } }
+    val onCount = lights.count { it.on }
     Column(
         modifier = modifier
-            .width(260.dp)
+            .width(320.dp)
             .clip(RoundedCornerShape(MkRadius.md))
             .background(c.surfaceCard)
             .border(1.dp, c.borderSubtle, RoundedCornerShape(MkRadius.md))
-            .padding(MkSpacing.x3),
-        verticalArrangement = Arrangement.spacedBy(MkSpacing.x2),
+            .padding(MkSpacing.x4),
+        verticalArrangement = Arrangement.spacedBy(MkSpacing.x3),
     ) {
+        // Header: room title + close
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(HouseLightMap.roomTitle(room), style = type.label, color = c.inkHi, modifier = Modifier.weight(1f))
+            Text(HouseLightMap.roomTitle(room), style = type.title, color = c.inkHi, modifier = Modifier.weight(1f))
             Box(
-                Modifier.size(24.dp).clip(RoundedCornerShape(MkRadius.round)).background(c.track).clickable(onClick = onClose),
+                Modifier.size(30.dp).clip(RoundedCornerShape(MkRadius.round)).background(c.track).clickable(onClick = onClose),
                 contentAlignment = Alignment.Center,
-            ) { Icon(MkIcons.X, contentDescription = "Sulje", tint = c.inkMid, modifier = Modifier.size(12.dp)) }
+            ) { Icon(MkIcons.X, contentDescription = "Sulje", tint = c.inkMid, modifier = Modifier.size(14.dp)) }
         }
-        if (dataLayer == DataLayer.Energia && !valot.loading) {
-            val since = areas.mapNotNull { it.onSinceSec }.minOrNull()
-            val label = if (since == null) "Ei valoja päällä" else "Päällä ${durationLabel(nowSec - since)}"
-            Text(label, style = type.caption.copy(fontFamily = type.mono), color = c.warm)
+        // Room + temperature
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(MkIcons.House, contentDescription = null, tint = c.accent, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(HouseLightMap.roomTitle(room), style = type.body, color = c.inkMid, modifier = Modifier.weight(1f))
+            Text(tempC?.let { "${Fmt.comma(it, 1)}°" } ?: "–", style = type.readout(30), color = c.inkHi)
+        }
+        // Target + floor-heating demand
+        if (targetC != null || heatingPct != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    targetC?.let { "tavoite ${Fmt.comma(it, 1)}°" }.orEmpty(),
+                    style = type.caption.copy(fontFamily = type.mono), color = c.inkLo, modifier = Modifier.weight(1f),
+                )
+                if (heatingPct != null) {
+                    Text("Lattialämmitys ", style = type.caption.copy(fontFamily = type.mono), color = c.inkLo)
+                    Text("$heatingPct %", style = type.caption.copy(fontFamily = type.mono, fontWeight = FontWeight.Bold), color = c.warm)
+                }
+            }
+        }
+        if (heatingPct != null) {
+            Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(MkRadius.round)).background(c.track)) {
+                Box(
+                    Modifier.fillMaxWidth((heatingPct.coerceIn(0, 100)) / 100f).fillMaxHeight()
+                        .clip(RoundedCornerShape(MkRadius.round)).background(c.warm),
+                )
+            }
         }
         if (commandFailed) {
             Text("Valon ohjaus epäonnistui", style = type.caption, color = c.statusAlarm)
         }
+        // Lights section header + divider
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("VALOT $onCount / ${lights.size}", style = type.caption.copy(fontFamily = type.mono), color = c.inkLo)
+            Box(Modifier.weight(1f).height(1.dp).background(c.borderSubtle))
+        }
         if (valot.loading) {
             Text("Ladataan valoja…", style = type.caption, color = c.inkLo)
-        } else if (areas.all { it.lights.isEmpty() }) {
+        } else if (lights.isEmpty()) {
             Text("Ei valaisimia tässä huoneessa.", style = type.caption, color = c.inkLo)
         } else {
             Column(
-                Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                areas.forEach { area ->
-                    area.lights.forEach { light ->
-                        Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(MkRadius.sm))
-                                .background(c.surfaceInset)
-                                // Optimistic: always tappable (a pending command must
-                                // not block the opposite toggle, or you could turn a
-                                // light on but never off).
-                                .clickable { valotVm.toggle(light.id, !light.on) }
-                                .padding(horizontal = MkSpacing.x2, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                if (light.pending) "${light.label}…" else light.label,
-                                style = type.caption, color = c.inkMid, modifier = Modifier.weight(1f),
-                            )
-                            Box(Modifier.size(9.dp).clip(RoundedCornerShape(MkRadius.round)).background(if (light.on) c.warm else c.statusIdle))
-                        }
+                lights.forEach { light ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (light.pending) "${light.label}…" else light.label,
+                            style = type.body, color = c.inkHi, modifier = Modifier.weight(1f),
+                        )
+                        // Optimistic toggle: always enabled so a pending command can't
+                        // block turning the light back the other way.
+                        MkSwitch(checked = light.on, onChange = { onInteract(); valotVm.toggle(light.id, it) })
                     }
                 }
             }

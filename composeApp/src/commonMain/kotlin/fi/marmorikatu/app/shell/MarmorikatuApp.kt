@@ -816,6 +816,7 @@ private fun PhoneSurface(
     // a voice command ("Näytä talo 3D:nä" / "Näytä yläkerta") via UiSignals.
     var showHouse3d by remember { mutableStateOf(false) }
     var housePresentation by remember { mutableStateOf(true) }
+    var housePresentationNonce by remember { mutableIntStateOf(0) }
     var houseFloorTarget by remember { mutableStateOf<fi.marmorikatu.app.house3d.FloorMode?>(null) }
     var houseFloorNonce by remember { mutableIntStateOf(0) }
     val uiSignals = koinInject<UiSignals>()
@@ -823,8 +824,12 @@ private fun PhoneSurface(
     LaunchedEffect(houseReq) {
         houseReq?.let { req ->
             showHouse3d = true
-            housePresentation = req.spin
-            fi.marmorikatu.app.house3d.floorModeFromToken(req.floor)?.let { houseFloorTarget = it; houseFloorNonce++ }
+            val target = fi.marmorikatu.app.house3d.floorModeFromToken(req.floor)
+            // A targeted floor request is a focus, not a showcase — otherwise the
+            // presentation reset races the fly-to-floor and snaps back to whole house.
+            housePresentation = req.spin && target == null
+            housePresentationNonce++
+            target?.let { houseFloorTarget = it; houseFloorNonce++ }
             uiSignals.houseView.value = null
         }
     }
@@ -979,6 +984,7 @@ private fun PhoneSurface(
             House3dOverlay(
                 onDismiss = { showHouse3d = false },
                 presentation = housePresentation,
+                presentationNonce = housePresentationNonce,
                 floorTarget = houseFloorTarget,
                 floorNonce = houseFloorNonce,
             )
@@ -1142,15 +1148,18 @@ private fun TabletSurface(
     var houseOpen by remember { mutableStateOf(true) }
     var houseIdle by remember { mutableStateOf(false) }
     var housePresentation by remember { mutableStateOf(true) }
+    var housePresentationNonce by remember { mutableIntStateOf(0) }
     var interaction by remember { mutableIntStateOf(0) }
     var houseFloorTarget by remember { mutableStateOf<fi.marmorikatu.app.house3d.FloorMode?>(null) }
     var houseFloorNonce by remember { mutableIntStateOf(0) }
     LaunchedEffect(interaction) {
         houseIdle = false
         delay(90_000)
+        // Entering the screensaver only asserts presentation+idle; the overlay's reset
+        // effect frames the whole house and starts the spin. Bumping a floor nonce here
+        // would run applyFloor() and kill the rotation before it began.
         housePresentation = true
-        houseFloorTarget = fi.marmorikatu.app.house3d.FloorMode.All
-        houseFloorNonce++
+        housePresentationNonce++
         houseIdle = true
         houseOpen = true
     }
@@ -1160,8 +1169,11 @@ private fun TabletSurface(
     LaunchedEffect(houseReq) {
         houseReq?.let { req ->
             houseOpen = true; houseIdle = false; interaction++
-            housePresentation = req.spin
-            fi.marmorikatu.app.house3d.floorModeFromToken(req.floor)?.let { houseFloorTarget = it; houseFloorNonce++ }
+            val target = fi.marmorikatu.app.house3d.floorModeFromToken(req.floor)
+            // A targeted floor request is a focus, not a showcase (see phone path).
+            housePresentation = req.spin && target == null
+            housePresentationNonce++
+            target?.let { houseFloorTarget = it; houseFloorNonce++ }
             uiSignals.houseView.value = null
         }
     }
@@ -1308,6 +1320,7 @@ private fun TabletSurface(
                         idle = houseIdle,
                         embedded = true,
                         onExitIdle = { houseIdle = false; interaction++ },
+                        presentationNonce = housePresentationNonce,
                         floorTarget = houseFloorTarget,
                         floorNonce = houseFloorNonce,
                     )

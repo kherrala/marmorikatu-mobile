@@ -10,8 +10,12 @@ import kotlin.math.max
 /** A named light fixture anchor in world space (from `house-cameras.json`). */
 class LightAnchor(val name: String, val pos: Vec3)
 
-/** An orbit-camera preset: where to look, how far, and the polar angle. */
-data class OrbitPreset(val target: Vec3, val radius: Float, val phi: Float)
+/**
+ * An orbit-camera preset: where to look, how far, and the polar angle. [theta] is
+ * an optional target yaw the camera should ease to when this preset is applied;
+ * `null` keeps the current yaw (so most focus moves don't twist the house).
+ */
+data class OrbitPreset(val target: Vec3, val radius: Float, val phi: Float, val theta: Float? = null)
 
 /** Keeps small-room presets from cropping away all surrounding floor context. */
 fun comfortableRoomFocus(preset: OrbitPreset): OrbitPreset =
@@ -47,7 +51,10 @@ fun groupTier(group: HouseGroup): Float = when (group) {
 enum class FloorMode(val label: String, val groups: Set<HouseGroup>) {
     All("Koko talo", HouseGroup.entries.toSet()),
     Kellari("Kellari", setOf(HouseGroup.Kellari)),
-    Alakerta("Alakerta", setOf(HouseGroup.Krs1, HouseGroup.Terassi, HouseGroup.Katos)),
+    // A single floor frames only its building level — the terrace/lawn (Terassi)
+    // and the detached carport (Katos) belong to the whole-house overview, not the
+    // floor cutaway, so they don't drag the framing out to the yard.
+    Alakerta("Alakerta", setOf(HouseGroup.Krs1)),
     Ylakerta("Yläkerta", setOf(HouseGroup.Krs2)),
 }
 
@@ -111,9 +118,11 @@ fun triVisible(
     // "Kalusteet" off hides the movable furnishings/decor.
     if (!showFurniture && matClass == MatClass.Furniture) return false
     if (group !in mode.groups) return false
-    // Roof off hides the main roof group AND every roof-material surface (carport
-    // + wing roofs live in other groups), so nothing roof-like blocks the view.
-    if (!showRoof && (group == HouseGroup.Katto || matClass == MatClass.Roof)) return false
+    // Roof handling: a single-floor view is always a cutaway, so every roof-like
+    // surface (the Katto group + any Roof-material tri, e.g. wing/carport roofs in
+    // other groups) is hidden regardless of the toggle. In the whole-house view the
+    // Katto/Roof toggle applies.
+    if ((mode != FloorMode.All || !showRoof) && (group == HouseGroup.Katto || matClass == MatClass.Roof)) return false
     // Dollhouse ("Seinät" off): drop all walls — exterior and interior — plus the
     // doors and windows they held, so nothing floats once its wall is gone.
     if (!showWalls && (
@@ -169,12 +178,17 @@ fun frameVisible(
     mode: FloorMode,
     showRoof: Boolean,
     showWalls: Boolean,
+    embedded: Boolean = false,
 ): OrbitPreset {
     var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var minZ = Float.MAX_VALUE
     var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE; var maxZ = -Float.MAX_VALUE
     var any = false
     for (t in 0 until model.triCount) {
-        if (!triVisible(HouseGroup.entries[model.group[t]], MatClass.entries[model.matClass[t]], mode, showRoof, showWalls)) continue
+        val mc = MatClass.entries[model.matClass[t]]
+        if (!triVisible(HouseGroup.entries[model.group[t]], mc, mode, showRoof, showWalls)) continue
+        // The roof/eave overhang extends past the walls; framing to it would zoom the
+        // camera out whenever the roof is shown. Frame to the footprint (walls/floors).
+        if (mc == MatClass.Roof) continue
         any = true
         val base = t * 9
         for (v in 0 until 3) {
@@ -189,11 +203,33 @@ fun frameVisible(
     // A single floor is viewed near-top-down (upright camera) so inner walls don't
     // hide the room contents; the whole house keeps the lower orbit angle.
     val phi = if (mode == FloorMode.All) 0.9f else 0.32f
-    if (!any) return OrbitPreset(model.center, max(model.size.x, model.size.z) * 1.4f, phi)
+    // Yaw: the whole house sits at its terrace-corner view; a single floor squares up
+    // to the street-up floorplan on the phone. The wide landscape KIOSK rotates the
+    // floorplan 90° so the building's long (X) axis fills the width and the entrance
+    // (+Z end) sits at the bottom, instead of a tall shape wasting the wide screen.
+    val theta = when {
+        mode == FloorMode.All -> WHOLE_HOUSE_THETA
+        embedded -> FLOOR_VIEW_THETA + HALF_PI
+        else -> FLOOR_VIEW_THETA
+    }
+    // The kiosk frames tighter (fills the wide screen); floors tightest of all since
+    // their long axis is laid along the width.
+    val factor = when {
+        !embedded -> 1.35f
+        mode == FloorMode.All -> 1.1f
+        else -> 0.85f
+    }
+    val pad = if (embedded) 1f else 2f
+    if (!any) return OrbitPreset(model.center, max(model.size.x, model.size.z) * factor + pad, phi, theta)
     val center = Vec3((minX + maxX) / 2f, (minY + maxY) / 2f, (minZ + maxZ) / 2f)
-    val radius = max(maxX - minX, maxZ - minZ) * 1.35f + 2f
-    return OrbitPreset(center, radius, phi)
+    val radius = max(maxX - minX, maxZ - minZ) * factor + pad
+    return OrbitPreset(center, radius, phi, theta)
 }
+
+/** Terrace-corner yaw for the whole-house view; street-up yaw for a floorplan. */
+const val WHOLE_HOUSE_THETA = 0.85f
+const val FLOOR_VIEW_THETA = 0f
+private const val HALF_PI = 1.5707964f
 
 /** Vertical explode tier the camera should follow for the active focus. */
 fun cameraExplodeTier(mode: FloorMode, showRoof: Boolean, selectedGroup: HouseGroup?): Float =
