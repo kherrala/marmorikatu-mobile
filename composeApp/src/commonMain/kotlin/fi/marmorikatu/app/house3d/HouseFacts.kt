@@ -10,7 +10,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /** The visual style of a floating marker — colours its dot. */
-enum class MarkerKind { Person, Door, Sauna, Info, Alert, Announcement }
+enum class MarkerKind { Person, Door, Sauna, Info, Alert, Announcement, Notice }
 
 /**
  * A labelled point pinned to a world position that reads through walls: an
@@ -53,6 +53,9 @@ private fun oneDecimal(v: Double): String {
     return "$sign$whole,$frac"
 }
 
+/** Sauna is "heating" (amber marker) at or above this °C; below reads as ambient. */
+private const val SAUNA_WARM_C = 40.0
+
 /**
  * The infomercial fact reel. Values are always real measurements, but may be
  * latest-known readings retained for the presentation loop; [staleSensors]
@@ -73,7 +76,10 @@ fun liveFacts(
     // Ordering deliberately forms spatially-varied pages of three for the
     // infomercial carousel rather than stacking three labels in one room.
     saunaC?.let {
-        add(HouseMarker("Sauna", "${oneDecimal(it)}°", Vec3(1.35f, 1.1f, -6.6f), HouseGroup.Krs1, MarkerKind.Sauna, RuuviSensors.SAUNA in staleSensors))
+        // Amber (warm) only while the stove is actually heating the room; a cold sauna
+        // is just an ordinary live reading (green) — an always-orange dot read as "on".
+        val kind = if (it >= SAUNA_WARM_C) MarkerKind.Sauna else MarkerKind.Info
+        add(HouseMarker("Sauna", "${oneDecimal(it)}°", Vec3(1.35f, 1.1f, -6.6f), HouseGroup.Krs1, kind, RuuviSensors.SAUNA in staleSensors))
     }
     outdoorC?.let {
         // In the front yard, south of the house, raised to chest height so the
@@ -136,11 +142,11 @@ private fun roomTempLabel(key: String): String = when (key) {
 }
 
 /**
- * Building-systems facts for the showcase: ground-source heat pump + MVHR in the
- * technical room (top of the plan, own outside door → `Room_1krs_TEKN`), and the
- * electricity main/fuses in the carport at the back (`Room_katos_AUTOKATOS`).
- * Anchored to the model's real room centres via [roomCenter]. Only emits a marker
- * when its live value is present.
+ * Building-systems facts for the showcase: ground-source heat pump + MVHR + the
+ * electricity main all live in the technical room (top of the plan, own outside
+ * door → `Room_1krs_TEKN`) where the distribution board sits. Anchored to the
+ * model's real room centres via [roomCenter]. Only emits a marker when its live
+ * value is present.
  */
 fun techFacts(
     heatPumpAvailable: Boolean,
@@ -163,8 +169,11 @@ fun techFacts(
         }
     }
     if (electricityLabel != null) {
-        roomCenter("Room_katos_AUTOKATOS")?.let { katos ->
-            add(HouseMarker("Sähkö", electricityLabel, Vec3(katos.x, katos.y + 1.1f, katos.z), HouseGroup.Katos, MarkerKind.Info))
+        // The electricity main/price sits on the house (technical room), not the
+        // detached carport. Offset in Z so it doesn't overlap the heat-pump /
+        // ventilation labels sharing this room.
+        roomCenter("Room_1krs_TEKN")?.let { tekn ->
+            add(HouseMarker("Sähkö", electricityLabel, Vec3(tekn.x, tekn.y + 1.1f, tekn.z + 1.0f), HouseGroup.Krs1, MarkerKind.Info))
         }
     }
 }
@@ -215,6 +224,13 @@ internal fun retainHouseReadings(
  * Active warn/alarm conditions become persistent world-space pins. Because the
  * list is rebuilt from live state, a pin remains until its source condition is
  * actually resolved; carousel timing can never dismiss it.
+ *
+ * Severity decides whether the pin *steals the camera*: a genuine `alarm`
+ * (a heat-pump fault, an MVHR freeze, a too-long sauna) becomes a red
+ * [MarkerKind.Alert] and isolates its floor in the kiosk tour. A softer `warn`
+ * (sauna simply on, ventilation boost, a sensor niggle) becomes a non-blocking
+ * amber [MarkerKind.Notice] — still shown at its source, but it never locks the
+ * floor selection or halts the showcase.
  */
 fun activeAlertMarkers(items: List<AttentionItem>, model: HouseModel): List<HouseMarker> =
     items.mapNotNull { item ->
@@ -231,7 +247,7 @@ fun activeAlertMarkers(items: List<AttentionItem>, model: HouseModel): List<Hous
                 else -> model.center
             },
             group = room?.group ?: HouseGroup.Krs1,
-            kind = MarkerKind.Alert,
+            kind = if (item.status == "alarm") MarkerKind.Alert else MarkerKind.Notice,
         )
     }
 

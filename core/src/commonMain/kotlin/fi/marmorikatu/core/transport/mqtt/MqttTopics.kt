@@ -44,10 +44,20 @@ object MqttTopics {
     /** Prefix used to recognise a Ruuvi message by its per-tag topic. */
     const val RUUVI_PREFIX = "ruuvi/"
 
+    /**
+     * Per-room presence + light level — one message per room under `presence/<room>`
+     * every ~10 s, carrying `occupied`, `illuminance` (lux) and battery. The 3D dark
+     * view uses the illuminance to glow each room by its real brightness.
+     */
+    const val PRESENCE = "presence/#"
+
+    /** Prefix used to recognise a presence message by its per-room topic. */
+    const val PRESENCE_PREFIX = "presence/"
+
     /** All state topics the app subscribes to. */
     val STATE_SUBSCRIPTIONS = listOf(
         LIGHTS, LIGHT_NAMES, OUTLETS, TEMPERATURES, HEATING, COOLING,
-        VENTILATION, STATUS, ENERGY_HEATPUMP, ENERGY_EXTRA, THERMIQ, RUUVI,
+        VENTILATION, STATUS, ENERGY_HEATPUMP, ENERGY_EXTRA, THERMIQ, RUUVI, PRESENCE,
     )
 
     /**

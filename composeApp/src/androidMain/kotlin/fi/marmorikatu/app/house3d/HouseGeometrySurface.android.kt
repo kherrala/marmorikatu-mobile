@@ -25,11 +25,16 @@ actual fun HouseGeometrySurface(
     heatByCircuit: Map<String, Float>,
     explode: Float,
     litLights: List<Vec3>,
+    roomGlows: List<LitLight>,
     modifier: Modifier,
 ) {
     val filament = remember { FilamentHouse() }
     // Realistic room lighting only in dark mode; light mode keeps the flat default.
     val dark = MkTheme.colors.isDark
+    // Fixtures glow full; illuminance carries a subtle per-room glow on top of them.
+    val lights = remember(litLights, roomGlows) {
+        litLights.map { LitLight(it, 1f) } + roomGlows
+    }
     LaunchedEffect(Unit) {
         filament.loadModel(Res.readBytes("files/marmorikatu-house.glb"))
     }
@@ -38,7 +43,7 @@ actual fun HouseGeometrySurface(
         filament.update(eye, target, mode, showRoof, showWalls, showFurniture, showHeating, explode)
         // The floor-heating inspection needs bright, flat lighting so the oak floor
         // and the coloured loops read clearly — never the dim night lighting.
-        filament.updateLighting(dark && !showHeating, litLights)
+        filament.updateLighting(dark && !showHeating, lights)
         filament.updateHeating(heatByCircuit)
     }
     DisposableEffect(Unit) { onDispose { filament.destroy() } }

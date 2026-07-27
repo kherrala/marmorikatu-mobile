@@ -45,8 +45,11 @@ import platform.Foundation.writeToURL
 import platform.SceneKit.SCNCamera
 import platform.SceneKit.SCNCameraProjectionDirectionVertical
 import platform.SceneKit.SCNLight
+import platform.CoreGraphics.CGSizeMake
 import platform.SceneKit.SCNLightTypeAmbient
+import platform.SceneKit.SCNLightTypeDirectional
 import platform.SceneKit.SCNLightTypeOmni
+import platform.SceneKit.SCNShadowModeDeferred
 import platform.SceneKit.SCNLookAtConstraint
 import platform.SceneKit.SCNMaterial
 import platform.SceneKit.SCNNode
@@ -71,6 +74,29 @@ import platform.UIKit.UIScreen
  * like the Filament path.
  */
 private val HEAT_CIRCUIT_RE = Regex("Heat_\\w+?_(\\d\\d)")
+
+// Daylight key intensity in SceneKit lux. SceneKit's scale is ~50x smaller than
+// Filament's (engine calibrated around a 1000 default) — the author's spec puts the key
+// at ~1600 here vs 80000 there; do NOT port Filament's number across. Fill = 0.31x key;
+// the sky IBL (lightingEnvironment) carries the ambient/interior brightness.
+private const val KEY_LUX_IOS = 1600.0
+// Bright sky IBL for the high-key daylight look — the shadowed elevations stay legible
+// and colourful (matching the Blender preview) instead of falling into dull mid-grey.
+private const val DAY_IBL = 0.95
+// White point per mode: a low one by day clips the pale timber toward white for a punchy,
+// sunlit image; a high one at night keeps the room lamps from blowing out.
+private const val DAY_WHITE_POINT = 1.3
+private const val NIGHT_WHITE_POINT = 4.0
+// Colour saturation (SceneKit HDR camera): lift daylight toward the vivid Blender look;
+// a gentler lift at night so the moonlit exterior isn't grey but doesn't look neon.
+private const val DAY_SATURATION = 1.28
+private const val NIGHT_SATURATION = 1.1
+// Night baseline so the house stays readable with NO lamps on: a moonlit ambient plus a
+// faint dusk-sky IBL, rather than the near-black the tiny old ambient produced.
+private const val NIGHT_AMBIENT = 105.0
+private const val NIGHT_IBL = 0.09
+// A full dark-mode room lamp (LitLight.level 1.0); illuminance glows ride below it.
+private const val FIXTURE_INTENSITY_IOS = 72.0
 
 class SceneKitHouse {
     val view: SCNView = SCNView(frame = CGRectMake(0.0, 0.0, 0.0, 0.0), options = null).apply {
@@ -147,6 +173,7 @@ class SceneKitHouse {
     private val targetNode = SCNNode()
     private var loaded = false
     private var sourceUrl: NSURL? = null
+    private var scnScene: SCNScene? = null
     private var appliedEye: Vec3? = null
     private var appliedTarget: Vec3? = null
     private var appliedMode: FloorMode? = null
@@ -165,9 +192,48 @@ class SceneKitHouse {
     private val heatNodeCircuit = HashMap<SCNNode, String>()
     private var appliedHeatKey = ""
 
+    // --- Daylight rig (light mode) -------------------------------------------
+    // Same key/fill/ambient the Android (Filament) renderer uses, per the model
+    // author's spec, so both platforms match. A SceneKit directional light shines down
+    // its node's -Z axis, so we aim each with a look-at target placed along the light's
+    // direction of travel. Model frame: +x SOUTH, +y UP, +z WEST. Key = warm SW sun
+    // (the shadow caster); fill = cool NE counter-key that lifts the east facade (which
+    // the sun can't reach) and casts NO shadow; ambient = sky, the interior control.
+    private val keyTargetNode = SCNNode().apply { position = SCNVector3Make(-0.374f, -0.820f, -0.434f) }
+    private val keyLightNode = SCNNode().apply {
+        light = SCNLight().apply {
+            type = SCNLightTypeDirectional
+            color = UIColor.colorWithRed(1.0, green = 0.945, blue = 0.839, alpha = 1.0) // #FFF1D6
+            intensity = 0.0
+            castsShadow = true
+            // A directional shadow needs an ortho frustum that actually covers the ~18 m
+            // model, or the shadow map falls outside the building and nothing shows.
+            shadowMode = SCNShadowModeDeferred
+            shadowMapSize = CGSizeMake(2048.0, 2048.0)
+            shadowSampleCount = 16u
+            shadowRadius = 3.0
+            shadowColor = UIColor.colorWithWhite(0.0, alpha = 0.45)
+            orthographicScale = 14.0
+            zNear = 1.0
+            zFar = 120.0
+            shadowBias = 0.004
+        }
+        constraints = listOf(SCNLookAtConstraint.lookAtConstraintWithTarget(keyTargetNode))
+    }
+    private val fillTargetNode = SCNNode().apply { position = SCNVector3Make(0.586f, -0.506f, 0.633f) }
+    private val fillLightNode = SCNNode().apply {
+        light = SCNLight().apply {
+            type = SCNLightTypeDirectional
+            color = UIColor.colorWithRed(0.875, green = 0.914, blue = 1.0, alpha = 1.0) // #DFE9FF
+            intensity = 0.0
+            castsShadow = false
+        }
+        constraints = listOf(SCNLookAtConstraint.lookAtConstraintWithTarget(fillTargetNode))
+    }
+
     // --- Dark-mode room lighting ---------------------------------------------
     private var sceneRoot: SCNNode? = null
-    // Dim cool fill so unlit rooms read as moonlit, not pitch black.
+    // Shared ambient — recoloured/retuned per mode (cool moonlight at night, sky by day).
     private val ambientNode = SCNNode().apply {
         light = SCNLight().apply {
             type = SCNLightTypeAmbient
@@ -211,6 +277,11 @@ class SceneKitHouse {
         // transparent and the dark app background shows through instead of a white box.
         scene.background.contents = null
         scene.rootNode.addChildNode(ambientNode)
+        scene.rootNode.addChildNode(keyTargetNode)
+        scene.rootNode.addChildNode(keyLightNode)
+        scene.rootNode.addChildNode(fillTargetNode)
+        scene.rootNode.addChildNode(fillLightNode)
+        scnScene = scene
         sceneRoot = scene.rootNode
         view.scene = scene
         view.pointOfView = cameraNode
@@ -225,33 +296,60 @@ class SceneKitHouse {
      * glow and unlit ones fall dark. In light mode, restore the flat default light
      * and turn every added light off (the normal look is unchanged).
      */
-    fun updateLighting(dark: Boolean, positions: List<Vec3>) {
+    fun updateLighting(dark: Boolean, lights: List<LitLight>) {
         if (!loaded) return
-        val key = positions.joinToString("|") { "${it.x},${it.y},${it.z}" }
+        val key = lights.joinToString("|") { "${it.pos.x},${it.pos.y},${it.pos.z}:${it.level}" }
         if (dark == appliedDark && key == appliedLightKey) return
         appliedDark = dark
         appliedLightKey = key
+        // Never use SceneKit's default camera light — it's flat and washes the model.
+        view.autoenablesDefaultLighting = false
         if (!dark) {
-            view.autoenablesDefaultLighting = true
-            ambientNode.light?.intensity = 0.0
+            // Daylight: key + fill directionals + a bright sky IBL. The imported USDZ
+            // materials are physicallyBased and render dark + flat without a
+            // lightingEnvironment, so this is not optional — it is also the interior /
+            // fill-brightness control that gives the crisp, high-key "sunny" look
+            // (the shadowed elevations still read bright, like the Blender preview).
+            keyLightNode.light?.intensity = KEY_LUX_IOS
+            fillLightNode.light?.intensity = KEY_LUX_IOS * 0.31
+            scnScene?.lightingEnvironment?.contents =
+                UIColor.colorWithRed(0.957, green = 0.965, blue = 1.0, alpha = 1.0) // sky #F4F6FF
+            scnScene?.lightingEnvironment?.intensity = DAY_IBL
+            ambientNode.light?.intensity = 0.0 // IBL replaces the flat ambient by day
             lightPool.forEach { it.light?.intensity = 0.0 }
+            // A low white point clips the bright timber toward white (punchy daylight)
+            // rather than compressing everything into the dull mid-tones the night-time
+            // white point produces. Saturation lifts the muted PBR colours toward the
+            // vivid Blender look (warm timber, green grass) without touching materials.
+            cameraNode.camera?.whitePoint = DAY_WHITE_POINT
+            cameraNode.camera?.saturation = DAY_SATURATION
             view.setNeedsDisplay()
             return
         }
-        view.autoenablesDefaultLighting = false
-        ambientNode.light?.intensity = 55.0
-        while (lightPool.size < positions.size) {
+        // Night: the daylight sun/fill are off; the room lamps carry the glow. A moonlit
+        // ambient + faint sky IBL keep the house readable when NO lamps are on (instead
+        // of near-black), while the high white point still stops lit lamps blowing out.
+        keyLightNode.light?.intensity = 0.0
+        fillLightNode.light?.intensity = 0.0
+        scnScene?.lightingEnvironment?.contents =
+            UIColor.colorWithRed(0.30, green = 0.38, blue = 0.52, alpha = 1.0) // dusk sky
+        scnScene?.lightingEnvironment?.intensity = NIGHT_IBL
+        ambientNode.light?.color = UIColor.colorWithRed(0.42, green = 0.5, blue = 0.62, alpha = 1.0)
+        ambientNode.light?.intensity = NIGHT_AMBIENT
+        cameraNode.camera?.whitePoint = NIGHT_WHITE_POINT
+        cameraNode.camera?.saturation = NIGHT_SATURATION
+        while (lightPool.size < lights.size) {
             val node = newOmniLight()
             sceneRoot?.addChildNode(node)
             lightPool.add(node)
         }
-        positions.forEachIndexed { i, p ->
-            lightPool[i].position = SCNVector3Make(p.x, p.y, p.z)
-            // Lit room reads as a warm glow, not a blown-out white. Combined with the
-            // camera's HDR tone-mapping (above), highlights now roll off softly.
-            lightPool[i].light?.intensity = 72.0
+        lights.forEachIndexed { i, light ->
+            lightPool[i].position = SCNVector3Make(light.pos.x, light.pos.y, light.pos.z)
+            // A fixture glows full (72); an illuminance-only glow rides at its level, so a
+            // bright room reads lit even with no lamp. HDR tone-mapping rolls off the tops.
+            lightPool[i].light?.intensity = FIXTURE_INTENSITY_IOS * light.level
         }
-        for (i in positions.size until lightPool.size) lightPool[i].light?.intensity = 0.0
+        for (i in lights.size until lightPool.size) lightPool[i].light?.intensity = 0.0
         view.setNeedsDisplay()
     }
 
@@ -426,7 +524,7 @@ fun SceneKitHouseSurface(
     showHeating: Boolean,
     heatByCircuit: Map<String, Float>,
     explode: Float,
-    litLights: List<Vec3>,
+    lights: List<LitLight>,
     modifier: Modifier,
 ) {
     val house = remember(usdz) { SceneKitHouse() }
@@ -465,7 +563,7 @@ fun SceneKitHouseSurface(
                 house.setBackground(uiBg)
                 house.setSlotSizePx(composeSize.width.toDouble(), composeSize.height.toDouble())
                 house.update(eye, target, mode, showRoof, showWalls, showFurniture, showHeating, explode)
-                house.updateLighting(dark, litLights)
+                house.updateLighting(dark, lights)
                 house.updateHeatColors(heatByCircuit)
             },
             onRelease = { house.release() },

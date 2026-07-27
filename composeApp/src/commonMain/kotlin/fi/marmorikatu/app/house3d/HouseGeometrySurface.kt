@@ -33,5 +33,11 @@ expect fun HouseGeometrySurface(
      * the flat global lighting and ignore this.
      */
     litLights: List<Vec3>,
+    /**
+     * Subtle per-room glows driven by live illuminance (dark mode only). Each carries a
+     * gentle [LitLight.level]; added on top of [litLights] so a room reads as lit when
+     * EITHER a fixture is on OR the room is measurably bright.
+     */
+    roomGlows: List<LitLight>,
     modifier: Modifier,
 )

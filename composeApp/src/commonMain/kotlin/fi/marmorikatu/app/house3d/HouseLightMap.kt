@@ -98,6 +98,19 @@ object HouseLightMap {
         "Room_2krs_AULA" to RoomClimate(tempKey = "yk_aula", heatingKey = "yk_aula"),
     )
 
+    /**
+     * Rooms whose floor heating is manually controlled (no PLC thermostat / demand
+     * key) and kept permanently on. Their loops are the always-on circuits (31 sauna+
+     * pesuhuone, 32 KHH, 55 vaatehuone), so the room card shows a fixed 100 % instead of
+     * a blank where a PID reading would otherwise sit.
+     */
+    val manualHeatRooms: Set<String> = setOf(
+        "Room_1krs_LH",   // Löylyhuone (sauna)
+        "Room_1krs_PH",   // Pesuhuone
+        "Room_1krs_KHH",  // Kodinhoitohuone
+        "Room_1krs_VH",   // Vaatehuone
+    )
+
     /** GLB room-patch name → the light-area keys physically inside that room. */
     val roomToAreas: Map<String, List<String>> = mapOf(
         // The open-plan wing is now three separately-focusable zones.

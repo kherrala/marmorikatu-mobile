@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.positionChanged
@@ -82,6 +83,8 @@ fun HouseView3d(
     focusTier: Float,
     focusToken: Int,
     lightOnAreas: Set<String>,
+    /** Live per-room illuminance (lux) keyed by presence room, for the dark-mode glow. */
+    roomIlluminance: Map<String, Int>,
     roomTint: (RoomPatch) -> Color?,
     markers: List<HouseMarker>,
     facts: List<HouseMarker>,
@@ -90,7 +93,11 @@ fun HouseView3d(
     accent: Color,
     glow: Color,
     onRoomTap: (String) -> Unit,
-    onUserInteract: () -> Unit = {},
+    // Called when a gesture grabs the wheel from the showcase; carries the floor the
+    // showcase was presenting at that moment so the caller can persist it (the tour is
+    // touring floors internally via renderedFloorMode while the caller's floorMode stays
+    // Koko talo).
+    onUserInteract: (FloorMode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // Opposite side of the house by default: over the terrace / living-room
@@ -252,9 +259,10 @@ fun HouseView3d(
         )
     }
     val latestFloorMode by rememberUpdatedState(renderedFloorMode)
-    // Suppress auto-rotation while a focus tween runs or the showcase has parked on a
-    // single floor page — the autospin loop (above) reads this each frame.
-    SideEffect { spinLock.value = tweening.value || renderedFloorMode != FloorMode.All }
+    // Suppress auto-rotation while a focus tween runs. A single-floor page normally
+    // stays still, but the SHOWCASE keeps rotating through its floor pages too (the
+    // attract loop turns the whole tour), so only lock a floor page outside the reel.
+    SideEffect { spinLock.value = tweening.value || (renderedFloorMode != FloorMode.All && !infomercial) }
     // Text/value updates at the same physical source must not restart a 900 ms
     // camera tween. Only source position/floor and carousel membership matter.
     val automaticFocusKey = remember(automaticMarkers) { markerCameraKey(automaticMarkers) }
@@ -361,10 +369,15 @@ fun HouseView3d(
                     if (pressed == 0) break
                     val pan = event.calculatePan()
                     val zoom = event.calculateZoom()
+                    // Two-finger twist. Available in every view (even the otherwise
+                    // angle-locked floorplans) so the user can always spin the plan
+                    // back to a comfortable heading — e.g. after a standing alarm has
+                    // parked the camera at its own orientation.
+                    val twist = if (pressed >= 2) event.calculateRotation() else 0f
                     // A single finger must travel past touch slop before this becomes a
                     // manipulation; below that we consume nothing so a tap-to-select can
                     // still land (a tiny jitter was previously eaten as a pan). A second
-                    // finger / pinch is always a manipulation.
+                    // finger / pinch / twist is always a manipulation.
                     if (!dragging) {
                         travelled += pan
                         if (pressed >= 2 || zoom != 1f || travelled.getDistance() > viewConfiguration.touchSlop) {
@@ -373,17 +386,25 @@ fun HouseView3d(
                             continue
                         }
                     }
-                    if (pan != Offset.Zero || zoom != 1f) {
+                    if (pan != Offset.Zero || zoom != 1f || twist != 0f) {
                         interactionTick += 1
-                        // Manual drag/pan/zoom means the user has taken the wheel —
-                        // stop the auto-showcase so its tour stops fighting them.
-                        latestOnUserInteract()
+                        // Manual drag/pan/zoom/twist means the user has taken the wheel —
+                        // stop the auto-showcase so its tour stops fighting them, and
+                        // hand back the floor it was presenting so that view persists
+                        // instead of snapping to the whole house.
+                        latestOnUserInteract(latestFloorMode)
                     }
                     // A single floor reads as a floorplan: the camera angle is locked
                     // and a one-finger drag scrolls across the plan. The whole house
-                    // ("Koko talo") orbits with one finger, pans with two.
+                    // ("Koko talo") orbits with one finger, pans with two. A two-finger
+                    // twist rotates the heading in any view.
                     val floorplan = latestFloorMode != FloorMode.All
-                    if (pressed >= 2) radius = (radius / zoom).coerceIn(2.5f, 90f)
+                    if (pressed >= 2) {
+                        radius = (radius / zoom).coerceIn(2.5f, 90f)
+                        // calculateRotation is degrees, counter-clockwise positive;
+                        // subtract so a clockwise finger twist turns the house clockwise.
+                        if (twist != 0f) theta -= twist * (PI.toFloat() / 180f)
+                    }
                     if (floorplan || pressed >= 2) {
                         // Slide the target in the horizontal plane, oriented by the
                         // camera so a swipe moves the plan the way the fingers go.
@@ -436,6 +457,10 @@ fun HouseView3d(
             }
                 .map { Vec3(it.pos.x, it.pos.y + groupTier(anchorGroup(it.name)) * explodeAnim, it.pos.z) }
         }
+        // Subtle per-room glows from live illuminance, added on top of the fixture lights.
+        val roomGlows = remember(roomIlluminance, presets, renderedFloorMode, explodeAnim) {
+            illuminanceGlows(roomIlluminance, presets, renderedFloorMode, explodeAnim)
+        }
         // The 3D geometry (software on iOS, Filament GPU on Android)…
         HouseGeometrySurface(
             model = model,
@@ -449,6 +474,7 @@ fun HouseView3d(
             heatByCircuit = heatByCircuit,
             explode = explodeAnim,
             litLights = litLights,
+            roomGlows = roomGlows,
             modifier = Modifier.fillMaxSize(),
         )
         // …then the shared room tint + selection highlight on top, projected with
@@ -755,6 +781,7 @@ private fun MarkerLabel(marker: HouseMarker, accent: Color, modifier: Modifier =
         MarkerKind.Announcement -> c.warm
         MarkerKind.Door -> c.warm
         MarkerKind.Sauna -> c.warm
+        MarkerKind.Notice -> c.warm
         MarkerKind.Info -> accent
     }
     // A gentle pulse radiates from the dot itself (a live reading only — stale

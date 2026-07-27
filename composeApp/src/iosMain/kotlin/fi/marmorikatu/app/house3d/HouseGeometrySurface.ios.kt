@@ -42,8 +42,13 @@ actual fun HouseGeometrySurface(
     heatByCircuit: Map<String, Float>,
     explode: Float,
     litLights: List<Vec3>,
+    roomGlows: List<LitLight>,
     modifier: Modifier,
 ) {
+    // Fixtures glow full; illuminance adds a subtle per-room glow on top of them.
+    val lights = remember(litLights, roomGlows) {
+        litLights.map { LitLight(it, 1f) } + roomGlows
+    }
     var asset by remember {
         mutableStateOf<HouseAssetState>(
             if (USE_SCENEKIT) HouseAssetState.Loading else HouseAssetState.Unavailable,
@@ -75,7 +80,7 @@ actual fun HouseGeometrySurface(
                 showHeating,
                 heatByCircuit,
                 explode,
-                litLights,
+                lights,
                 modifier,
             )
         HouseAssetState.Unavailable -> {

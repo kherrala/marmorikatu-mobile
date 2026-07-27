@@ -6,6 +6,7 @@ import fi.marmorikatu.app.components.TimeRangeOption
 import fi.marmorikatu.core.model.AirQuality
 import fi.marmorikatu.core.model.Cooling
 import fi.marmorikatu.core.model.HeatPumpStatus
+import fi.marmorikatu.core.model.PresenceReading
 import fi.marmorikatu.core.model.RuuviReading
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.HvacSummary
@@ -50,6 +51,9 @@ class IlmastoViewModel(
     val cooling: StateFlow<Cooling> = climate.cooling
     val heatPump: StateFlow<HeatPumpStatus> = climate.heatPump
     val ruuvi: StateFlow<Map<String, RuuviReading>> = climate.ruuvi
+
+    /** Per-room presence + illuminance (`presence/<room>`); drives the 3D dark-mode glow. */
+    val presence: StateFlow<Map<String, PresenceReading>> = climate.presence
 
     private val _snapshot = MutableStateFlow(IlmastoSnapshot())
     val snapshot: StateFlow<IlmastoSnapshot> = _snapshot.asStateFlow()

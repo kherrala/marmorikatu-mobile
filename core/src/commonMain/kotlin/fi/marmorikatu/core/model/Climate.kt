@@ -119,3 +119,16 @@ data class PlcStatus(
     val commandsApplied: Long = 0,
     val commandsRejected: Long = 0,
 )
+
+/**
+ * One room's presence + ambient light level from `presence/<room>` (Zigbee PIR/mmWave
+ * sensor, ~every 10 s). [illuminance] is the measured room brightness in lux — the 3D
+ * dark view glows each room by it. Unmapped fields (source, battery, ts) are ignored.
+ */
+@Serializable
+data class PresenceReading(
+    val room: String = "",
+    val occupied: Boolean = false,
+    val illuminance: Int = 0,
+    val confidence: Double = 0.0,
+)

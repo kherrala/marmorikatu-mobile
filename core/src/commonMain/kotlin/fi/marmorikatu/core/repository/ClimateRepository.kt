@@ -6,6 +6,7 @@ import fi.marmorikatu.core.model.HeatPumpStatus
 import fi.marmorikatu.core.model.HvacSummary
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.PlcStatus
+import fi.marmorikatu.core.model.PresenceReading
 import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Rooms
 import fi.marmorikatu.core.model.RuuviReading
@@ -54,6 +55,20 @@ interface ClimateRepository {
     val ventilation: StateFlow<Ventilation>
     val cooling: StateFlow<Cooling>
     val plcStatus: StateFlow<PlcStatus>
+
+    /**
+     * Outdoor mains-socket on/off state from `marmorikatu/outlets`, keyed by name
+     * (`ulkopistorasia`, `autokatos_pistorasia`). Empty until the first (retained)
+     * message lands.
+     */
+    val outlets: StateFlow<Map<String, Boolean>>
+
+    /**
+     * Per-room presence + ambient light level from `presence/<room>`, keyed by room
+     * name (`living_room`, `bath_up`, …). The 3D dark view glows each room by its live
+     * illuminance. Empty until the first message lands.
+     */
+    val presence: StateFlow<Map<String, PresenceReading>>
 
     /**
      * Live Ruuvi tag readings keyed by sensor name (Keittiö, Sauna, Pakastin, …),
@@ -164,6 +179,12 @@ class DefaultClimateRepository(
     private val _plcStatus = MutableStateFlow(PlcStatus())
     override val plcStatus: StateFlow<PlcStatus> = _plcStatus.asStateFlow()
 
+    private val _outlets = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    override val outlets: StateFlow<Map<String, Boolean>> = _outlets.asStateFlow()
+
+    private val _presence = MutableStateFlow<Map<String, PresenceReading>>(emptyMap())
+    override val presence: StateFlow<Map<String, PresenceReading>> = _presence.asStateFlow()
+
     private val _heatPump = MutableStateFlow(loadPersistedHeatPump())
     override val heatPump: StateFlow<HeatPumpStatus> = _heatPump.asStateFlow()
 
@@ -176,6 +197,12 @@ class DefaultClimateRepository(
                 // Ruuvi topics are per-tag (ruuvi/<gw>/<mac>), so match by prefix
                 // before the exact-topic dispatch below. A message that isn't a
                 // decoded, mapped tag parses to null and is ignored.
+                if (msg.topic.startsWith(MqttTopics.PRESENCE_PREFIX)) {
+                    PlcPayloads.parsePresence(msg.text())?.let { reading ->
+                        _presence.update { it + (reading.room to reading) }
+                    }
+                    return@collect
+                }
                 if (msg.topic.startsWith(MqttTopics.RUUVI_PREFIX)) {
                     RuuviPayloads.parse(msg.text())?.let { reading ->
                         _ruuvi.update { it + (reading.sensorName to reading) }
@@ -219,6 +246,8 @@ class DefaultClimateRepository(
                     }
                     MqttTopics.STATUS ->
                         _plcStatus.value = PlcPayloads.parseStatus(msg.text())
+                    MqttTopics.OUTLETS ->
+                        _outlets.value = PlcPayloads.parseOutlets(msg.text())
                     MqttTopics.THERMIQ ->
                         PlcPayloads.parseThermiq(msg.text())?.let {
                             _heatPump.value = it

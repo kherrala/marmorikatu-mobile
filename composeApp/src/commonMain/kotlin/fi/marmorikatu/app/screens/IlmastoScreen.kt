@@ -260,7 +260,7 @@ fun IlmastoScreen(
                     // Section order mirrors the redesign: ventilation first (with the
                     // system diagram), then air quality, temperatures, heat pump,
                     // cooling, and the sensor list last.
-                    item(key = "iv") { VentilationCard(snapshot, ventilation, cooling, updatedAt) }
+                    item(key = "iv") { VentilationCard(snapshot, ventilation, cooling, updatedAt, openFocus) }
                 item(key = "ilma") { AirQualityCard(snapshot, ruuvi[AIR_SENSOR], openFocus) }
                 item(key = "lampo") {
                     Column(verticalArrangement = Arrangement.spacedBy(MkSpacing.stackGap)) {
@@ -553,6 +553,7 @@ private fun VentilationCard(
     ventilation: Ventilation,
     cooling: Cooling,
     updatedAt: Long?,
+    onFocus: (FocusMetric) -> Unit,
 ) {
     val c = MkTheme.colors
     fun vraw(vararg keys: String): Double? = keys.firstNotNullOfOrNull { ventilation.raw[it.lowercase()] }
@@ -667,7 +668,16 @@ private fun VentilationCard(
             modifier = Modifier.fillMaxWidth().padding(top = MkSpacing.x3),
             horizontalArrangement = Arrangement.spacedBy(MkSpacing.x3),
         ) {
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            // Tap the recovery-efficiency gauge to open its 24 h trend (the
+            // computed `hvac_lto` series in the focus chart).
+            val ltoFocus = Modifier.weight(1f).let { base ->
+                lto?.let { v ->
+                    base.clip(RoundedCornerShape(MkRadius.md)).clickable {
+                        onFocus(FocusMetric(MkIcons.Wind, "LTO hyötysuhde", Fmt.int(v), "%", "hvac_lto", "efficiency"))
+                    }
+                } ?: base
+            }
+            Box(modifier = ltoFocus, contentAlignment = Alignment.Center) {
                 MkGauge(value = lto?.toFloat(), max = 100f, label = "LTO hyötysuhde", unit = "%", status = lto?.let { ltoStatus(it) } ?: "accent")
             }
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {

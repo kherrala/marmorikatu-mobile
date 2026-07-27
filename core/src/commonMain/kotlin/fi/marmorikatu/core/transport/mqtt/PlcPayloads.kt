@@ -5,10 +5,12 @@ import fi.marmorikatu.core.model.EnergyReading
 import fi.marmorikatu.core.model.Floor
 import fi.marmorikatu.core.model.HeatingDemand
 import fi.marmorikatu.core.model.PlcStatus
+import fi.marmorikatu.core.model.PresenceReading
 import fi.marmorikatu.core.model.RoomTemperature
 import fi.marmorikatu.core.model.Rooms
 import fi.marmorikatu.core.model.VentAlarm
 import fi.marmorikatu.core.model.Ventilation
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -69,6 +71,11 @@ object PlcPayloads {
     fun parseOutlets(payload: String): Map<String, Boolean> = buildMap {
         forEachEntry(payload) { key, value -> put(key, toBool(value)) }
     }
+
+    /** `presence/<room>` — a full JSON object per room; null on garbage/empty room. */
+    fun parsePresence(payload: String): PresenceReading? =
+        runCatching { json.decodeFromString<PresenceReading>(payload) }
+            .getOrNull()?.takeIf { it.room.isNotBlank() }
 
     fun parseTemperatures(payload: String): List<RoomTemperature> = buildList {
         forEachEntry(payload) { key, value ->

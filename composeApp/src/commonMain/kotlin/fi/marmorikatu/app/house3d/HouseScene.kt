@@ -17,17 +17,90 @@ class LightAnchor(val name: String, val pos: Vec3)
  */
 data class OrbitPreset(val target: Vec3, val radius: Float, val phi: Float, val theta: Float? = null)
 
-/** Keeps small-room presets from cropping away all surrounding floor context. */
+/**
+ * Frames a selected room so it sits in the visible top band of the stage — the room
+ * detail card covers the lower half. Pulls back a little (so the room isn't jammed
+ * against the lens), tilts to a 3/4 look, and drops the look-point below the room so
+ * the room rides high on screen, clear of the card.
+ */
 fun comfortableRoomFocus(preset: OrbitPreset): OrbitPreset =
     preset.copy(
         radius = preset.radius.coerceAtLeast(MIN_ROOM_FOCUS_RADIUS),
-        // Steeper than the floorplan (0.32) so the walls don't hide the room —
-        // a near-overhead look straight into the selected room.
         phi = ROOM_FOCUS_PHI,
+        target = Vec3(preset.target.x, preset.target.y - ROOM_FOCUS_LIFT, preset.target.z),
     )
 
-private const val MIN_ROOM_FOCUS_RADIUS = 8.5f
-private const val ROOM_FOCUS_PHI = 0.22f
+private const val MIN_ROOM_FOCUS_RADIUS = 12f
+// A 3/4 look (tilted off top-down) so a world-Y target drop reads as a screen-up shift.
+private const val ROOM_FOCUS_PHI = 0.42f
+// Metres to drop the look-point below the room, lifting the room clear of the card.
+private const val ROOM_FOCUS_LIFT = 2.6f
+
+/**
+ * A dark-mode point light. [level] 1.0 is a full room lamp; smaller values are a subtle
+ * glow (e.g. driven by a room's live illuminance).
+ */
+data class LitLight(val pos: Vec3, val level: Float)
+
+/** 3D room patch → the `presence/<room>` sensor whose illuminance lights it. */
+private val ROOM_TO_PRESENCE = mapOf(
+    "Room_1krs_OH" to "living_room",
+    "Room_kellari_VAR1" to "theater",
+    "Room_1krs_ET" to "hall_down",
+    "Room_2krs_AULA" to "hall_up",
+    "Room_1krs_WC" to "wc_down",
+    "Room_kellari_WC" to "wc_basement",
+    "Room_1krs_KHH" to "khh",
+    "Room_2krs_KPH" to "bath_up",
+    "Room_2krs_MH2" to "bedroom_seela",
+    "Room_2krs_MH3" to "bedroom_aarni",
+    "Room_2krs_MH" to "bedroom_adults",
+)
+
+// The measured lux only reaches ~60 in a well-lit room, and a dark room floors around a
+// few lux; GLOW_MAX_LEVEL keeps the effect a subtle hint on top of the fixture lights.
+private const val GLOW_MAX_LEVEL = 0.22f
+private const val GLOW_LUX_FLOOR = 4
+private const val GLOW_LUX_FULL = 60
+
+private fun luxToGlowLevel(lux: Int): Float {
+    val t = (lux - GLOW_LUX_FLOOR).coerceAtLeast(0).toFloat() /
+        (GLOW_LUX_FULL - GLOW_LUX_FLOOR).toFloat()
+    return t.coerceIn(0f, 1f) * GLOW_MAX_LEVEL
+}
+
+/**
+ * Subtle per-room glows for the dark 3D view driven by real room illuminance. A room with
+ * its own presence sensor uses that lux; every other room borrows the nearest sensor
+ * room's lux (its open-space neighbour). Only rooms on the shown floor are returned.
+ */
+fun illuminanceGlows(
+    illuminance: Map<String, Int>,
+    presets: CameraPresets,
+    mode: FloorMode,
+    explode: Float,
+): List<LitLight> {
+    if (illuminance.isEmpty()) return emptyList()
+    // Sensor rooms that both exist in the model and have a live reading: (centre, lux).
+    val sensors = ROOM_TO_PRESENCE.mapNotNull { (room, key) ->
+        val center = presets.rooms[room]?.target ?: return@mapNotNull null
+        val lux = illuminance[key] ?: return@mapNotNull null
+        center to lux
+    }
+    if (sensors.isEmpty()) return emptyList()
+    return presets.rooms.mapNotNull { (room, preset) ->
+        val group = anchorGroup(room)
+        if (group !in mode.groups) return@mapNotNull null
+        val center = preset.target
+        val lux = ROOM_TO_PRESENCE[room]?.let { illuminance[it] }
+            ?: sensors.minByOrNull { (it.first - center).length() }?.second
+            ?: return@mapNotNull null
+        val level = luxToGlowLevel(lux)
+        if (level <= 0f) return@mapNotNull null
+        // Follow the exploded floor tier so the glow stays inside its room.
+        LitLight(Vec3(center.x, center.y + groupTier(group) * explode, center.z), level)
+    }
+}
 
 /** Per-room orbit presets + all light anchors, parsed from `house-cameras.json`. */
 class CameraPresets(
@@ -222,7 +295,10 @@ fun frameVisible(
         else -> 1.0f                   // phone single floor — tighter
     }
     val pad = when {
-        !embedded && mode != FloorMode.All -> 1.4f // phone floor: room for the walls
+        // Phone floor: the radius is sized from the XZ footprint only, but the tilted
+        // view (phi=0.32) projects the outer walls' ~2.6 m height upward on screen, so
+        // the far wall's top clipped. Extra margin lifts the whole plan clear of the edge.
+        !embedded && mode != FloorMode.All -> 2.6f
         embedded -> 1f
         else -> 2f
     }

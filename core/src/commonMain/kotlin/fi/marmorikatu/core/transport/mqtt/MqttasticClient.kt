@@ -2,6 +2,7 @@ package fi.marmorikatu.core.transport.mqtt
 
 import fi.marmorikatu.core.log.logger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -57,11 +58,16 @@ class MqttasticClient(
         }
         try {
             mqtt.connect(org.meshtastic.mqtt.MqttEndpoint.Tcp(host = host, port = port))
-            subscriptions.forEach { topic ->
-                mqtt.subscribe(topic, org.meshtastic.mqtt.QoS.AT_MOST_ONCE)
-            }
             client = mqtt
-            collectJob = scope.launch {
+            // Attach the message collector BEFORE subscribing. The broker fires every
+            // retained message the instant we subscribe, so a collector attached after
+            // `subscribe()` races that burst — a high-frequency topic hides the loss by
+            // republishing seconds later, but a rarely-changing retained topic (e.g.
+            // `marmorikatu/outlets`, only re-sent when a socket toggles) is delivered
+            // exactly once and would be dropped for good. UNDISPATCHED runs the collect
+            // up to its first suspension synchronously, so the subscription is registered
+            // on `mqtt.messages` before the subscribe call below can trigger any replay.
+            collectJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 mqtt.messages.collect { msg ->
                     _messages.emit(
                         MqttMessage(
@@ -71,6 +77,9 @@ class MqttasticClient(
                         )
                     )
                 }
+            }
+            subscriptions.forEach { topic ->
+                mqtt.subscribe(topic, org.meshtastic.mqtt.QoS.AT_MOST_ONCE)
             }
             _connectionState.value = MqttConnectionState.Connected
             log.i { "connected to $host:$port as $clientId (${subscriptions.size} subscriptions)" }

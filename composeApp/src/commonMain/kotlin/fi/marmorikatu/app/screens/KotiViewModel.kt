@@ -96,6 +96,15 @@ data class OutdoorTemp(
     val alternatives: List<OutdoorReading>,
 )
 
+/** One outdoor socket tile for the home screen (from `marmorikatu/outlets`). */
+data class OutletUi(val key: String, val label: String, val on: Boolean)
+
+/** The outdoor sockets we surface, in display order, mapped to their payload key. */
+private val OUTLET_LABELS = listOf(
+    "autokatos_pistorasia" to "Autokatos",
+    "ulkopistorasia" to "Ulkopistorasia",
+)
+
 /** One "restore this fixture to `on`" step of a scene's undo snapshot. */
 @Serializable
 data class SceneCmd(val id: Int, val on: Boolean)
@@ -179,6 +188,10 @@ private object SceneLights {
     fun scopeFloor(scene: KotiScene): Floor? = when (scene) {
         KotiScene.Elokuva -> Floor.KELLARI
         KotiScene.Terassi, KotiScene.Autokatos -> Floor.ULKO
+        // Morning/evening are living-area scenes: they set the main-floor look and
+        // must never reach the basement or upstairs (their own path/stair lights are
+        // still switched on via the ON-set union in [sceneScopeLights]).
+        KotiScene.Aamuvalot, KotiScene.Iltavalot -> Floor.ALAKERTA
         else -> null
     }
 }
@@ -196,12 +209,18 @@ internal fun sceneOnLightIds(scene: KotiScene, lights: List<Light>): Set<Int> {
 /**
  * The lights a [scene] is allowed to switch. Most scenes own the whole common
  * (non-bedroom) set — applying one turns its members on and every other common
- * light off. Floor-scoped scenes (Elokuva, Terassi, Autokatos) touch only their
- * floor, so triggering them never disturbs lights elsewhere in the house.
+ * light off. Floor-scoped scenes (Elokuva, Terassi, Autokatos, Aamuvalot,
+ * Iltavalot) only turn *off* lights on their own floor, so triggering them never
+ * darkens lights elsewhere in the house. A scene's own ON fixtures are always in
+ * scope even if one sits on another floor (e.g. an upstairs stair light), so it is
+ * still switched on — floor-scoping only ever narrows what gets turned off.
  */
 internal fun sceneScopeLights(scene: KotiScene, lights: List<Light>): List<Light> {
     val floor = SceneLights.scopeFloor(scene)
-    return lights.filter { it.id !in SceneLights.BEDROOMS && (floor == null || it.floor == floor) }
+    val on = SceneLights.ON[scene] ?: emptySet()
+    return lights.filter {
+        it.id !in SceneLights.BEDROOMS && (floor == null || it.floor == floor || it.id in on)
+    }
 }
 
 /** "At the door" banner content, surfaced only for a person announcement. */
@@ -327,6 +346,16 @@ class KotiViewModel(
                 sceneOnLightIds(scene, list) == onInScope
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Outdoor mains sockets (`marmorikatu/outlets`) as ready-to-render tiles, in a
+     * fixed order. Only the known outlets the payload actually carries are shown;
+     * empty until the first message lands, so the home-screen section stays hidden.
+     */
+    val outlets: StateFlow<List<OutletUi>> =
+        climateRepo.outlets.map { state ->
+            OUTLET_LABELS.mapNotNull { (key, label) -> state[key]?.let { OutletUi(key, label, it) } }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /**
      * Apply a lighting preset: its named lights come on and every other light in

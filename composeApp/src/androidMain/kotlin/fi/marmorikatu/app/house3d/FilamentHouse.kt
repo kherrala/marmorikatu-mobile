@@ -4,6 +4,7 @@ import android.view.Choreographer
 import android.view.Surface
 import android.view.TextureView
 import com.google.android.filament.Camera
+import com.google.android.filament.ColorGrading
 import com.google.android.filament.Engine
 import com.google.android.filament.EntityManager
 import com.google.android.filament.IndirectLight
@@ -35,6 +36,14 @@ class FilamentHouse {
         // Circuit number from a Heat_ node name (Heat_1krs_41[.pipe] → 41; JT boxes none).
         private val HEAT_CIRCUIT_RE = Regex("Heat_\\w+?_(\\d\\d)")
 
+        // Daylight rig (§ model author's light-rig spec). Key calibrated for this
+        // renderer's ~EV15 exposure so the sunlit west facade sits just below clipping;
+        // fill + ambient are derived from it by the fixed ratio.
+        private const val KEY_LUX = 80_000f
+        private const val FILL_RATIO = 0.31f     // east counter-key
+        private const val AMBIENT_RATIO = 0.16f  // sky/IBL; interior brightness control
+        private const val FIXTURE_LUX = 400_000f // a full dark-mode room lamp (level 1.0)
+
         // Loop colours: cold #3b82f6 → hot #ef4444, neutral #8E9AA8 for "no data".
         private val HEAT_COLD = floatArrayOf(0.05f, 0.36f, 1.0f)
         private val HEAT_HOT = floatArrayOf(0.92f, 0.04f, 0.03f)
@@ -62,10 +71,18 @@ class FilamentHouse {
     private val camera: Camera = engine.createCamera(cameraEntity).apply {
         setExposure(16f, 1f / 125f, 100f)
     }
+    // Filament defaults to an ACES tone mapper, which rolls saturation out of bright
+    // areas — on this model the pale timber + white joinery went flat grey no matter the
+    // lighting (the same failure Blender's AgX default produced). FILMIC keeps the colour
+    // while still giving a soft highlight roll-off. Set this BEFORE chasing intensities.
+    private val colorGrading: ColorGrading = ColorGrading.Builder()
+        .toneMapping(ColorGrading.ToneMapping.FILMIC)
+        .build(engine)
     private val view: View = engine.createView().apply {
         scene = this@FilamentHouse.scene
         camera = this@FilamentHouse.camera
         blendMode = View.BlendMode.TRANSLUCENT
+        colorGrading = this@FilamentHouse.colorGrading
     }
     private val uiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK).apply { isOpaque = false }
     private var swapChain: SwapChain? = null
@@ -106,6 +123,8 @@ class FilamentHouse {
     @Volatile private var sceneStateDirty = true
 
     private val sunEntity = EntityManager.get().create()
+    // Cool NE counter-key that lifts the east facade the sun can't reach (see init).
+    private val fillEntity = EntityManager.get().create()
     private var indirect: IndirectLight? = null
 
     // --- Floor-heating "Lämmitys" colouring ---
@@ -126,24 +145,42 @@ class FilamentHouse {
     // --- Dark-mode room lighting ---
     private val pointLightPool = ArrayList<Int>()
     @Volatile private var darkLighting = false
-    @Volatile private var litPositions: List<Vec3> = emptyList()
+    @Volatile private var litLights: List<LitLight> = emptyList()
     @Volatile private var lightingDirty = true
     private var appliedDarkLighting: Boolean? = null
 
     init {
-        // Exposure (setExposure below) is ~EV15 daylight, so a ~70k-lux key gives
-        // mid-bright diffuse; the indirect fill must stay small or light surfaces
-        // blow out to white. (Earlier 0.55×45k ambient was ~10× too strong.)
-        LightManager.Builder(LightManager.Type.DIRECTIONAL)
-            .color(1f, 0.97f, 0.92f)
-            .intensity(70_000f)
-            .direction(-0.4f, -1f, -0.55f)
-            .castShadows(false)
+        // Daylight rig from the model author's spec (mirrors viewer_template.html). The
+        // model frame is +x SOUTH, +y UP, +z WEST (so an east wall's normal is (0,0,-1)).
+        // A single SW sun leaves the east facade with a negative Lambert term — lit only
+        // by ambient, which reads as black. Brightness can't fix that (it just clips the
+        // faces already lit); the fix is a cool NE counter-key FILL that casts no shadow.
+        // Ratio key:fill:ambient = 1 : 0.31 : 0.16 keeps all four facades legible; ambient
+        // is the interior control (a directional is stopped by walls, sky/IBL is not).
+        // Key — warm SW sun, 55° elevation, the ONLY shadow caster.
+        LightManager.Builder(LightManager.Type.SUN)
+            .color(1f, 0.945f, 0.839f)                  // #FFF1D6
+            .intensity(KEY_LUX)
+            .direction(-0.374f, -0.820f, -0.434f)
+            .castShadows(true)
+            // Filament's cascade defaults are tuned for large scenes; the model is ~18 m
+            // across, so cap the shadow far to keep the depth precision on the building.
+            .shadowOptions(LightManager.ShadowOptions().apply { shadowFar = 60f })
+            .sunAngularRadius(0.95f)
             .build(engine, sunEntity)
         scene.addEntity(sunEntity)
+        // Fill — cool NE counter-key, 30° elevation, lifts the east facade, NO shadow.
+        LightManager.Builder(LightManager.Type.DIRECTIONAL)
+            .color(0.875f, 0.914f, 1f)                  // #DFE9FF
+            .intensity(KEY_LUX * FILL_RATIO)
+            .direction(0.586f, -0.506f, 0.633f)
+            .castShadows(false)
+            .build(engine, fillEntity)
+        scene.addEntity(fillEntity)
+        // Ambient (sky) — interior brightness lives here; lower it if rooms wash out.
         indirect = IndirectLight.Builder()
             .irradiance(1, floatArrayOf(0.35f, 0.37f, 0.40f))
-            .intensity(6_000f)
+            .intensity(KEY_LUX * AMBIENT_RATIO)
             .build(engine)
         scene.indirectLight = indirect
     }
@@ -369,10 +406,10 @@ class FilamentHouse {
         dirty = true
     }
 
-    fun updateLighting(dark: Boolean, positions: List<Vec3>) {
-        if (dark == darkLighting && positions == litPositions) return
+    fun updateLighting(dark: Boolean, lights: List<LitLight>) {
+        if (dark == darkLighting && lights == litLights) return
         darkLighting = dark
-        litPositions = positions
+        litLights = lights
         lightingDirty = true
         dirty = true
     }
@@ -396,7 +433,10 @@ class FilamentHouse {
             // No sun in dark mode — rooms are lit only by their own lamps + a faint
             // ambient fill. Light mode keeps the full daylight key.
             val sunInst = lm.getInstance(sunEntity)
-            if (sunInst != 0) lm.setIntensity(sunInst, if (darkLighting) 0f else 70_000f)
+            if (sunInst != 0) lm.setIntensity(sunInst, if (darkLighting) 0f else KEY_LUX)
+            // The daylight fill is off at night too — the point lamps carry dark mode.
+            val fillInst = lm.getInstance(fillEntity)
+            if (fillInst != 0) lm.setIntensity(fillInst, if (darkLighting) 0f else KEY_LUX * FILL_RATIO)
             if (darkLighting) {
                 // Night look (~EV13): only a whisper of ambient so the exterior reads
                 // dark at night; lit lamps/windows glow above it. (With 0 lights on
@@ -406,34 +446,35 @@ class FilamentHouse {
                 rebuildIndirect(1_500f)
             } else {
                 camera.setExposure(16f, 1f / 125f, 100f)
-                rebuildIndirect(6_000f)
+                rebuildIndirect(KEY_LUX * AMBIENT_RATIO)
             }
         }
         if (!darkLighting) {
             for (e in pointLightPool) if (scene.hasEntity(e)) scene.removeEntity(e)
             return
         }
-        val positions = litPositions
-        while (pointLightPool.size < positions.size) {
+        val lights = litLights
+        while (pointLightPool.size < lights.size) {
             val e = EntityManager.get().create()
             LightManager.Builder(LightManager.Type.POINT)
                 .color(1f, 0.86f, 0.62f)
-                .intensity(400_000f)
+                .intensity(FIXTURE_LUX)
                 .falloff(7f)
                 .position(0f, 0f, 0f)
                 .build(engine, e)
             pointLightPool.add(e)
         }
-        positions.forEachIndexed { i, p ->
+        lights.forEachIndexed { i, light ->
             val e = pointLightPool[i]
             val inst = lm.getInstance(e)
             if (inst != 0) {
-                lm.setPosition(inst, p.x, p.y, p.z)
-                lm.setIntensity(inst, 400_000f)
+                lm.setPosition(inst, light.pos.x, light.pos.y, light.pos.z)
+                // A fixture glows full; an illuminance-only glow rides at its level.
+                lm.setIntensity(inst, FIXTURE_LUX * light.level)
             }
             if (!scene.hasEntity(e)) scene.addEntity(e)
         }
-        for (i in positions.size until pointLightPool.size) {
+        for (i in lights.size until pointLightPool.size) {
             if (scene.hasEntity(pointLightPool[i])) scene.removeEntity(pointLightPool[i])
         }
     }
@@ -483,9 +524,12 @@ class FilamentHouse {
         for (e in pointLightPool) { engine.destroyEntity(e); EntityManager.get().destroy(e) }
         pointLightPool.clear()
         indirect?.let { engine.destroyIndirectLight(it) }
+        engine.destroyColorGrading(colorGrading)
         engine.destroyEntity(sunEntity)
+        engine.destroyEntity(fillEntity)
         engine.destroyCameraComponent(cameraEntity)
         EntityManager.get().destroy(sunEntity)
+        EntityManager.get().destroy(fillEntity)
         EntityManager.get().destroy(cameraEntity)
         engine.destroyRenderer(renderer)
         engine.destroyView(view)

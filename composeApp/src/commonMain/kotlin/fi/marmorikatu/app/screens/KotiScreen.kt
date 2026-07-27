@@ -89,6 +89,7 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
     val kpiDetailLoading by viewModel.kpiDetailLoading.collectAsState()
     val weather by viewModel.weather.collectAsState()
     val outdoorTemp by viewModel.outdoorTemp.collectAsState()
+    val outlets by viewModel.outlets.collectAsState()
     val nextGarbage by viewModel.nextGarbage.collectAsState()
     val nextCalendarEvent by viewModel.nextCalendarEvent.collectAsState()
     val newsReading by viewModel.newsReading.collectAsState()
@@ -304,6 +305,12 @@ fun KotiScreen(viewModel: KotiViewModel = koinViewModel()) {
                 }
             }
 
+            // Outdoor mains sockets sit right under the weather widget (design): a
+            // two-up row of on/off tiles, hidden until the outlets feed reports.
+            if (outlets.isNotEmpty()) {
+                OutletsRow(outlets)
+            }
+
             // The calendar/waste slot sits right under the weather widget (design):
             // the next family-calendar event plus the next pickup, in one tappable
             // row that opens the calendar detail view.
@@ -437,6 +444,64 @@ private fun NewsCard(news: NewsHeadline, onOpen: () -> Unit, onRead: () -> Unit,
                 modifier = Modifier.size(18.dp),
             )
             Text(if (reading) "Lopeta" else "Lue", style = MkTheme.type.readout(10).copy(letterSpacing = 0.06.em), color = tint)
+        }
+    }
+}
+
+/**
+ * Outdoor mains sockets as a two-up row of read-only on/off tiles (design). Each tile:
+ * a power icon, the socket name, and a status dot + word — accent-tinted when live,
+ * muted when off.
+ */
+@Composable
+private fun OutletsRow(outlets: List<OutletUi>) {
+    Row(horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+        outlets.forEach { OutletTile(it, Modifier.weight(1f)) }
+    }
+}
+
+@Composable
+private fun OutletTile(outlet: OutletUi, modifier: Modifier) {
+    val c = MkTheme.colors
+    val on = outlet.on
+    val fg = if (on) c.accent else c.inkLo
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(fi.marmorikatu.app.theme.MkRadius.lg)
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .background(if (on) c.accentDim else c.surfaceCard)
+            .border(1.dp, if (on) c.accentBorder else c.borderSubtle, shape)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+        androidx.compose.material3.Icon(
+            MkIcons.Power,
+            contentDescription = null,
+            tint = fg,
+            modifier = Modifier.size(22.dp),
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                outlet.label,
+                style = MkTheme.type.label.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                color = c.inkHi,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Box(Modifier.size(6.dp).background(fg, androidx.compose.foundation.shape.CircleShape))
+                Text(
+                    if (on) "Päällä" else "Pois",
+                    style = MkTheme.type.readout(10),
+                    color = fg,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

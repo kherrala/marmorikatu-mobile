@@ -23,6 +23,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -37,8 +43,15 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import androidx.compose.ui.backhandler.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -143,6 +156,9 @@ fun House3dOverlay(
     // Live sensor readings for the fact reel — real values only (no fabrication).
     val ilmastoVm: fi.marmorikatu.app.screens.IlmastoViewModel = koinViewModel()
     val ruuvi by ilmastoVm.ruuvi.collectAsState()
+    // Per-room illuminance (lux) for the dark-mode room glow (keyed by presence room).
+    val presence by ilmastoVm.presence.collectAsState()
+    val roomIlluminance = remember(presence) { presence.mapValues { it.value.illuminance } }
     // Upstairs has no Ruuvi sensors; its infographic pins come from the PLC room
     // temperatures instead (anchored to the model's real room centres below).
     val roomTemps by ilmastoVm.roomTemperatures.collectAsState()
@@ -328,6 +344,15 @@ fun House3dOverlay(
         ready?.let { focus = frameVisible(it.model, mode, showRoof, showWalls, embedded); focusToken++ }
     }
 
+    // Lock the floor to the room's level and fly the camera to it. Shared by a room
+    // tap and the swipe-through navigation so both keep the map in sync with the card.
+    fun focusRoom(name: String) {
+        ready?.model?.rooms?.firstOrNull { it.name == name }?.group?.let {
+            floorMode = floorModeForGroup(it)
+        }
+        ready?.presets?.rooms?.get(name)?.let { focus = comfortableRoomFocus(it); focusToken++ }
+    }
+
     // Apply an external fly-to-floor request once the model is ready.
     LaunchedEffect(floorNonce, ready) {
         if (floorNonce > 0 && floorTarget != null && ready != null) applyFloor(floorTarget)
@@ -466,6 +491,7 @@ fun House3dOverlay(
                             focusTier = cameraExplodeTier(floorMode, showRoof, selectedGroup),
                             focusToken = focusToken,
                             lightOnAreas = onAreas,
+                            roomIlluminance = roomIlluminance,
                             roomTint = ::roomTintFor,
                             // Alerts never enter the rotating reel: their source
                             // pin stays present until the live condition clears.
@@ -485,19 +511,26 @@ fun House3dOverlay(
                                     touch(); presenting = false
                                     spin = false
                                     selectedRoom = name
-                                    // Lock the floor filter to the room's floor so it
+                                    // Lock the floor filter to the room's floor (so it
                                     // doesn't fall back to the whole house when the
-                                    // room selection later clears (e.g. picked from a
-                                    // showcase floor tour).
-                                    s.model.rooms.firstOrNull { it.name == name }?.group?.let {
-                                        floorMode = floorModeForGroup(it)
-                                    }
-                                    s.presets.rooms[name]?.let { focus = comfortableRoomFocus(it); focusToken++ }
+                                    // selection later clears) and fly to the room.
+                                    focusRoom(name)
                                 }
                             },
                             // Any manual orbit/pan/zoom ends the auto-showcase; in the
                             // screensaver the same gesture wakes the kiosk instead.
-                            onUserInteract = { if (idle) onExitIdle() else { touch(); presenting = false; spin = false } },
+                            onUserInteract = { grabbedFloor ->
+                                if (idle) {
+                                    onExitIdle()
+                                } else {
+                                    touch(); presenting = false; spin = false
+                                    // Keep the floor the showcase was presenting (the tour
+                                    // toured it internally while our floorMode stayed Koko
+                                    // talo) so grabbing control doesn't snap to the whole
+                                    // house — and the carport roof stays hidden on a floor.
+                                    floorMode = grabbedFloor
+                                }
+                            },
                         )
                     }
                     is HouseLoad.Failed -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -555,23 +588,38 @@ fun House3dOverlay(
                         cl.ruuvi?.let { showcaseRuuvi[it]?.temperature }
                             ?: cl.tempKey?.let { key -> roomTemps.firstOrNull { it.key == key }?.celsius }
                     }
-                    val roomHeatingPct = climate?.heatingKey?.let { key ->
-                        heatingDemand.firstOrNull { it.key == key }?.percent
+                    val roomHeatingPct = if (room in HouseLightMap.manualHeatRooms) {
+                        100 // manual, no thermostat — always-on loop
+                    } else {
+                        climate?.heatingKey?.let { key ->
+                            heatingDemand.firstOrNull { it.key == key }?.percent
+                        }
                     }
-                    RoomPanel(
-                        room = room,
-                        dataLayer = dataLayer,
-                        nowSec = nowSec,
-                        valotVm = valotVm,
-                        tempC = roomTempC,
-                        targetC = heatPump.indoorTargetC,
-                        heatingPct = roomHeatingPct,
-                        onClose = {
-                            clearRoomSelection()
-                        },
-                        onInteract = { roomInteractionNonce++ },
+                    // Rooms on this floor, in model order, for swipe-through navigation.
+                    val navRooms = remember(room, ready) {
+                        val g = ready?.model?.rooms?.firstOrNull { it.name == room }?.group
+                        ready?.model?.rooms?.filter { it.group == g }?.map { it.name }?.distinct()
+                            ?.takeIf { it.isNotEmpty() } ?: listOf(room)
+                    }
+                    val navIdx = navRooms.indexOf(room).coerceAtLeast(0)
+                    SwipeableRoomCard(
+                        onNext = { navRooms[(navIdx + 1) % navRooms.size].let { selectedRoom = it; focusRoom(it) }; roomInteractionNonce++ },
+                        onPrev = { navRooms[(navIdx - 1 + navRooms.size) % navRooms.size].let { selectedRoom = it; focusRoom(it) }; roomInteractionNonce++ },
+                        onDismiss = { clearRoomSelection() },
                         modifier = Modifier.align(Alignment.BottomEnd).padding(MkSpacing.x3),
-                    )
+                    ) {
+                        RoomPanel(
+                            room = room,
+                            dataLayer = dataLayer,
+                            nowSec = nowSec,
+                            valotVm = valotVm,
+                            tempC = roomTempC,
+                            targetC = heatPump.indoorTargetC,
+                            heatingPct = roomHeatingPct,
+                            onClose = { clearRoomSelection() },
+                            onInteract = { roomInteractionNonce++ },
+                        )
+                    }
                 }
             }
 
@@ -751,6 +799,64 @@ internal fun houseControlLayout(widthDp: Float, embedded: Boolean): HouseControl
     // gate so the tablet uses the single control row the design intends.
     if (embedded && widthDp >= 700f) HouseControlLayout.WideSingleRow
     else HouseControlLayout.CompactStacked
+
+/**
+ * Wraps the room detail card so it follows the finger: a horizontal fling swaps to the
+ * next/previous room on the floor (the card slides out and the new one slides in), a
+ * downward fling dismisses it, and anything short springs back. Callbacks are read fresh
+ * each frame so the gesture always acts on the current room.
+ */
+@Composable
+private fun SwipeableRoomCard(
+    onNext: () -> Unit,
+    onPrev: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+    val latestNext by rememberUpdatedState(onNext)
+    val latestPrev by rememberUpdatedState(onPrev)
+    val latestDismiss by rememberUpdatedState(onDismiss)
+    Box(
+        modifier
+            .offset { IntOffset(offset.value.x.roundToInt(), offset.value.y.roundToInt()) }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        scope.launch { offset.snapTo(offset.value + dragAmount) }
+                    },
+                    onDragEnd = {
+                        val end = offset.value
+                        scope.launch {
+                            when {
+                                // Downward fling → dismiss (slide off the bottom first).
+                                end.y > SWIPE_DISMISS_PX && end.y > abs(end.x) -> {
+                                    offset.animateTo(Offset(end.x, 900f), tween(200)); latestDismiss()
+                                }
+                                // Left fling → next room (out left, in from the right).
+                                end.x < -SWIPE_NAV_PX -> {
+                                    offset.animateTo(Offset(-700f, end.y), tween(160)); latestNext()
+                                    offset.snapTo(Offset(700f, 0f)); offset.animateTo(Offset.Zero, tween(220))
+                                }
+                                // Right fling → previous room (out right, in from the left).
+                                end.x > SWIPE_NAV_PX -> {
+                                    offset.animateTo(Offset(700f, end.y), tween(160)); latestPrev()
+                                    offset.snapTo(Offset(-700f, 0f)); offset.animateTo(Offset.Zero, tween(220))
+                                }
+                                else -> offset.animateTo(Offset.Zero, spring())
+                            }
+                        }
+                    },
+                )
+            },
+    ) { content() }
+}
+
+private const val SWIPE_NAV_PX = 90f
+private const val SWIPE_DISMISS_PX = 130f
 
 @Composable
 private fun RoomPanel(
