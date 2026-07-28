@@ -70,23 +70,24 @@ class FluxClient(
     }
 
     /**
-     * Heat-recovery (LTO) efficiency history, computed in Flux exactly as the
-     * Grafana dashboard / backend `get_heat_recovery_efficiency` do — the
-     * `LTO_hyotysuhde` sensor is unconnected, so efficiency is derived:
-     *   η = (supply_after_HRU − outdoor) / (setpoint − outdoor) × 100,
-     * kept only when it lands in (0, 100]. Returns a percentage series.
+     * Heat-recovery (LTO) efficiency history. The `LTO_hyotysuhde` sensor is
+     * unconnected (pins to 0), so efficiency is derived the same way as the live
+     * ventilation reading — the standard temperature-ratio across the exchanger:
+     *   η = (supply_after_HRU − outdoor) / (extract − outdoor) × 100,
+     * i.e. `Tuloilma_ennen_lammitysta`, `Ulkolampotila`, `Poistoilma`. Kept only
+     * when it lands in (0, 100]. Returns a percentage series.
      */
     suspend fun recoveryEfficiencyHistory(range: String = "-24h", every: String = "30m"): List<FluxPoint> {
         val flux = """
             from(bucket: "$bucket")
               |> range(start: $range)
               |> filter(fn: (r) => r._measurement == "hvac")
-              |> filter(fn: (r) => r._field == "Ulkolampotila" or r._field == "Tuloilma_ennen_lammitysta" or r._field == "Tuloilma_asetusarvo")
+              |> filter(fn: (r) => r._field == "Ulkolampotila" or r._field == "Tuloilma_ennen_lammitysta" or r._field == "Poistoilma")
               |> aggregateWindow(every: $every, fn: mean, createEmpty: false)
               |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-              |> filter(fn: (r) => exists r.Ulkolampotila and exists r.Tuloilma_ennen_lammitysta and exists r.Tuloilma_asetusarvo)
-              |> filter(fn: (r) => r.Tuloilma_asetusarvo != r.Ulkolampotila)
-              |> map(fn: (r) => ({ _time: r._time, _value: (r.Tuloilma_ennen_lammitysta - r.Ulkolampotila) / (r.Tuloilma_asetusarvo - r.Ulkolampotila) * 100.0, _field: "lto" }))
+              |> filter(fn: (r) => exists r.Ulkolampotila and exists r.Tuloilma_ennen_lammitysta and exists r.Poistoilma)
+              |> filter(fn: (r) => r.Poistoilma != r.Ulkolampotila)
+              |> map(fn: (r) => ({ _time: r._time, _value: (r.Tuloilma_ennen_lammitysta - r.Ulkolampotila) / (r.Poistoilma - r.Ulkolampotila) * 100.0, _field: "lto" }))
               |> filter(fn: (r) => r._value > 0.0 and r._value <= 100.0)
               |> keep(columns: ["_time", "_value", "_field"])
         """.trimIndent()

@@ -3,8 +3,10 @@ package fi.marmorikatu.app.house3d
 import fi.marmorikatu.app.components.AttentionItem
 import fi.marmorikatu.app.screens.LIGHT_AREAS
 import fi.marmorikatu.core.model.Announcement
+import fi.marmorikatu.core.model.HeatPumpStatus
 import fi.marmorikatu.core.model.RuuviReading
 import fi.marmorikatu.core.model.RuuviSensors
+import fi.marmorikatu.core.model.Ventilation
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -148,25 +150,56 @@ private fun roomTempLabel(key: String): String = when (key) {
  * model's real room centres via [roomCenter]. Only emits a marker when its live
  * value is present.
  */
+/** Casa MVHR operating-mode labels, indexed by the PLC `operatingmode` register. */
+private val IV_MODE_LABELS = listOf("Hiljainen", "Normaali", "Teho", "Takka")
+
+/** The MVHR's current operating mode ("Normaali" / "Teho" / …), or null if unknown. */
+fun ventOperatingModeLabel(vent: Ventilation): String? =
+    vent.raw["operatingmode"]?.toInt()?.let { IV_MODE_LABELS.getOrNull(it) }
+
+/**
+ * What the ground-source heat pump is doing right now, most-notable first: the
+ * electric backup, then hot-water priority, then space heating, else idle. Null
+ * when the pump is unreachable.
+ */
+fun heatPumpModeLabel(hp: HeatPumpStatus): String? = when {
+    !hp.available -> null
+    hp.auxHeaterKw > 0 -> "Lisävastus ${hp.auxHeaterKw} kW"
+    hp.hotWaterActive -> "Käyttövesi"
+    hp.running -> "Lämmitys"
+    else -> "Lepotila"
+}
+
 fun techFacts(
     heatPumpAvailable: Boolean,
+    heatPumpMode: String?,
     heatPumpPowerKw: Double?,
     heatPumpSupplyC: Double?,
+    hotWaterC: Double?,
+    ventMode: String?,
     ventSupplyC: Double?,
     electricityLabel: String?,
     roomCenter: (String) -> Vec3?,
 ): List<HouseMarker> = buildList {
     roomCenter("Room_1krs_TEKN")?.let { tekn ->
         if (heatPumpAvailable) {
-            val v = heatPumpPowerKw?.let { "${oneDecimal(it)} kW" }
+            // Lead with what the pump is doing (heating / hot water / aux / idle),
+            // then the live power draw — so the showcase features the operating mode.
+            val power = heatPumpPowerKw?.let { "${oneDecimal(it)} kW" }
                 ?: heatPumpSupplyC?.let { "${oneDecimal(it)}° meno" }
-            if (v != null) {
-                add(HouseMarker("Maalämpö", v, Vec3(tekn.x + 0.4f, tekn.y + 1.1f, tekn.z), HouseGroup.Krs1, MarkerKind.Info))
+            listOfNotNull(heatPumpMode, power).joinToString(" · ").takeIf { it.isNotEmpty() }?.let { sub ->
+                add(HouseMarker("Maalämpö", sub, Vec3(tekn.x + 0.4f, tekn.y + 1.1f, tekn.z), HouseGroup.Krs1, MarkerKind.Info))
+            }
+            if (hotWaterC != null) {
+                add(HouseMarker("Käyttövesi", "${oneDecimal(hotWaterC)}°", Vec3(tekn.x + 0.4f, tekn.y + 1.1f, tekn.z - 0.9f), HouseGroup.Krs1, MarkerKind.Info))
             }
         }
-        if (ventSupplyC != null) {
-            add(HouseMarker("Ilmanvaihto", "${oneDecimal(ventSupplyC)}° tulo", Vec3(tekn.x - 0.4f, tekn.y + 1.1f, tekn.z), HouseGroup.Krs1, MarkerKind.Info))
-        }
+        // The ventilation fact leads with the Casa operating mode (Normaali /
+        // Teho / …) ahead of the supply-air temperature.
+        listOfNotNull(ventMode, ventSupplyC?.let { "${oneDecimal(it)}° tulo" })
+            .joinToString(" · ").takeIf { it.isNotEmpty() }?.let { sub ->
+                add(HouseMarker("Ilmanvaihto", sub, Vec3(tekn.x - 0.4f, tekn.y + 1.1f, tekn.z), HouseGroup.Krs1, MarkerKind.Info))
+            }
     }
     if (electricityLabel != null) {
         // The electricity main/price sits on the house (technical room), not the

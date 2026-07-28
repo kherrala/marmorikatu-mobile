@@ -470,8 +470,11 @@ fun House3dOverlay(
                         val tech = remember(heatPump, ventilation, elecLabel, s.model) {
                             techFacts(
                                 heatPumpAvailable = heatPump.available,
+                                heatPumpMode = heatPumpModeLabel(heatPump),
                                 heatPumpPowerKw = heatPump.powerKw,
                                 heatPumpSupplyC = heatPump.supplyC,
+                                hotWaterC = heatPump.hotWaterC,
+                                ventMode = ventOperatingModeLabel(ventilation),
                                 ventSupplyC = ventilation.supplyC,
                                 electricityLabel = elecLabel,
                             ) { name -> s.model.rooms.firstOrNull { it.name == name }?.center }
