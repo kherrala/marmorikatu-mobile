@@ -19,6 +19,13 @@ data class AppConfig(
     // --- UI preferences, persisted across launches -------------------------
     /** Light is the default; the kiosk's dark theme is a deliberate choice. */
     val darkTheme: Boolean = false,
+    /**
+     * Follow the sun: switch to dark at sunset and back to light at sunrise
+     * (home coordinates). Off by default — a per-device opt-in, meant for the
+     * always-on kiosk. Enabling it drives [darkTheme]; a manual theme tap turns
+     * it back off.
+     */
+    val autoTheme: Boolean = false,
     /** Kid mode survives a reboot: a child's phone should stay a child's phone. */
     val kidMode: Boolean = false,
     val useNativeStt: Boolean = true,

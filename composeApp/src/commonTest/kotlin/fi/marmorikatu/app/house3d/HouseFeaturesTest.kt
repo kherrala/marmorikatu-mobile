@@ -99,8 +99,10 @@ class HouseFeaturesTest {
             HouseMarker("Sauna", null, Vec3.ZERO, HouseGroup.Krs1, MarkerKind.Info),
         ), null))
 
-        assertEquals(8.5f, comfortableRoomFocus(OrbitPreset(Vec3.ZERO, 4.58f, 0.55f)).radius)
-        assertEquals(12f, comfortableRoomFocus(OrbitPreset(Vec3.ZERO, 12f, 0.55f)).radius)
+        // A tight preset radius is lifted to the comfortable minimum (12); an
+        // already-comfortable one is kept.
+        assertEquals(12f, comfortableRoomFocus(OrbitPreset(Vec3.ZERO, 4.58f, 0.55f)).radius)
+        assertEquals(14f, comfortableRoomFocus(OrbitPreset(Vec3.ZERO, 14f, 0.55f)).radius)
         assertEquals(10f, markerFocus(listOf(upstairsAlert))?.radius)
     }
 
@@ -120,17 +122,17 @@ class HouseFeaturesTest {
             selected = FloorMode.All,
         )
 
+        // SHOWCASE_FACTS_PER_PAGE is 4, so the four Alakerta facts fill a single page.
         assertEquals(
             listOf(
                 FloorMode.All,
                 FloorMode.Kellari,
                 FloorMode.Alakerta,
-                FloorMode.Alakerta,
                 FloorMode.Ylakerta,
             ),
             pages.map { it.floorMode },
         )
-        assertEquals(listOf(0, 0, 3, 1, 1), pages.map { it.facts.size })
+        assertEquals(listOf(0, 0, 4, 1), pages.map { it.facts.size })
         assertEquals(
             listOf(FloorMode.Ylakerta),
             buildShowcasePages(listOf(fact("E", HouseGroup.Krs2)), FloorMode.Ylakerta)
@@ -139,10 +141,13 @@ class HouseFeaturesTest {
     }
 
     @Test
-    fun houseControlsStackOnLandscapePhonesAndNarrowTablets() {
-        assertEquals(HouseControlLayout.CompactStacked, houseControlLayout(780f, embedded = true))
-        assertEquals(HouseControlLayout.CompactStacked, houseControlLayout(980f, embedded = true))
-        assertEquals(HouseControlLayout.WideSingleRow, houseControlLayout(1_180f, embedded = true))
+    fun houseControlsUseSingleRowOnEmbeddedTabletWidths() {
+        // The embedded (kiosk/landscape) shell switches to the single control row at
+        // 700dp so the iPad's ~880–900dp content column uses it; below that it stacks.
+        assertEquals(HouseControlLayout.CompactStacked, houseControlLayout(680f, embedded = true))
+        assertEquals(HouseControlLayout.WideSingleRow, houseControlLayout(700f, embedded = true))
+        assertEquals(HouseControlLayout.WideSingleRow, houseControlLayout(900f, embedded = true))
+        // The non-embedded phone shell always stacks, however wide the window.
         assertEquals(HouseControlLayout.CompactStacked, houseControlLayout(1_180f, embedded = false))
     }
 

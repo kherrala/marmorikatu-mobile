@@ -18,6 +18,7 @@ import fi.marmorikatu.core.repository.AssistantRepository
 import fi.marmorikatu.core.speech.SpeechOutput
 import fi.marmorikatu.core.speech.SpeechToText
 import fi.marmorikatu.core.speech.SttEvent
+import fi.marmorikatu.core.util.SunClock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
@@ -27,6 +28,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
 
 /**
  * One item in the conversation stream — a user request or a single response
@@ -69,6 +72,13 @@ class ShellViewModel(
     // often than the dim hallway the kiosk lives in.
     private val _dark = MutableStateFlow(configStore.config.value.darkTheme)
     val dark: StateFlow<Boolean> = _dark.asStateFlow()
+
+    // Follow-the-sun theme (opt-in, for the kiosk): a driver flips [_dark] at
+    // sunrise/sunset while this is on. A manual theme tap switches it back off.
+    private val _autoTheme = MutableStateFlow(configStore.config.value.autoTheme)
+    val autoTheme: StateFlow<Boolean> = _autoTheme.asStateFlow()
+    val autoThemeEnabled: Boolean get() = _autoTheme.value
+    private var themeJob: Job? = null
 
     private val _voice = MutableStateFlow(VoiceState.Idle)
     val voice: StateFlow<VoiceState> = _voice.asStateFlow()
@@ -163,9 +173,41 @@ class ShellViewModel(
     }
 
     fun toggleTheme() {
+        // A manual tap takes control of the theme, so stop following the sun.
+        _autoTheme.value = false
+        themeJob?.cancel()
         val dark = !_dark.value
         _dark.value = dark
-        configStore.update { it.copy(darkTheme = dark) }
+        configStore.update { it.copy(darkTheme = dark, autoTheme = false) }
+    }
+
+    /** Enable/disable following the sun (dark at sunset, light at sunrise). */
+    fun setAutoTheme(enabled: Boolean) {
+        _autoTheme.value = enabled
+        configStore.update { it.copy(autoTheme = enabled) }
+        if (enabled) startSunTheme() else themeJob?.cancel()
+    }
+
+    /**
+     * Drive [_dark] from the sun: apply the current phase, then sleep until the
+     * next sunrise/sunset and repeat. The wait is capped so a re-check still
+     * happens within a few hours even across a long winter night, which keeps the
+     * loop self-correcting if the device clock jumps.
+     */
+    @OptIn(ExperimentalTime::class)
+    private fun startSunTheme() {
+        themeJob?.cancel()
+        themeJob = viewModelScope.launch {
+            while (true) {
+                val nowMs = Clock.System.now().toEpochMilliseconds()
+                val phase = SunClock.phase(nowMs)
+                if (_dark.value != phase.dark) {
+                    _dark.value = phase.dark
+                    configStore.update { it.copy(darkTheme = phase.dark) }
+                }
+                delay((phase.nextFlipMs - nowMs).coerceIn(60_000L, 6 * 3_600_000L))
+            }
+        }
     }
 
     fun markAnnouncementsRead() {
@@ -198,6 +240,8 @@ class ShellViewModel(
         platformStt.useLanguage(_speechLanguage.value)
         platformTts.useLanguage(_speechLanguage.value)
         platformTts.useVoice(_assistantGender.value)
+        // Follow the sun from launch if the device opted in (the kiosk).
+        if (_autoTheme.value) startSunTheme()
         viewModelScope.launch {
             announcementsRepo.announcements.collect { event ->
                 if (_tab.value != Tab.Tapahtumat) _unreadCount.value += 1

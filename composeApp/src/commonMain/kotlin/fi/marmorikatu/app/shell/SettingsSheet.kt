@@ -55,6 +55,7 @@ fun SettingsSheet(
     // These are plain preference reads, not flows; mirror them into local state
     // so the switches animate immediately.
     var haptics by remember { mutableStateOf(viewModel.hapticsEnabled) }
+    var autoTheme by remember { mutableStateOf(viewModel.autoThemeEnabled) }
     var background by remember { mutableStateOf(viewModel.backgroundEnabled) }
     var gender by remember { mutableStateOf(viewModel.assistantGender.value) }
     var language by remember { mutableStateOf(viewModel.speechLanguage.value) }
@@ -73,6 +74,16 @@ fun SettingsSheet(
             verticalArrangement = Arrangement.spacedBy(MkSpacing.x4),
         ) {
             Text("Asetukset", style = type.title, color = colors.inkHi)
+
+            SettingRow(
+                title = "Teema auringon mukaan",
+                subtitle = "Vaihtaa tummaan auringonlaskussa ja vaaleaan auringonnousussa.",
+                checked = autoTheme,
+                onChange = {
+                    autoTheme = it
+                    viewModel.setAutoTheme(it)
+                },
+            )
 
             SettingRow(
                 title = "Värinä tapahtumista",

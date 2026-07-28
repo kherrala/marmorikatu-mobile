@@ -21,6 +21,7 @@ class ConfigStore(private val settings: Settings = Settings()) {
         settings.putString(KEY_MQTT_HOST, new.mqttHost)
         settings.putInt(KEY_MQTT_PORT, new.mqttPort)
         settings.putBoolean(KEY_DARK_THEME, new.darkTheme)
+        settings.putBoolean(KEY_AUTO_THEME, new.autoTheme)
         settings.putBoolean(KEY_KID_MODE, new.kidMode)
         settings.putBoolean(KEY_NATIVE_STT, new.useNativeStt)
         settings.putBoolean(KEY_NATIVE_TTS, new.useNativeTts)
@@ -36,6 +37,7 @@ class ConfigStore(private val settings: Settings = Settings()) {
         mqttHost = settings.getString(KEY_MQTT_HOST, AppConfig.DEFAULT_MQTT_HOST),
         mqttPort = settings.getInt(KEY_MQTT_PORT, AppConfig.DEFAULT_MQTT_PORT),
         darkTheme = settings.getBoolean(KEY_DARK_THEME, false),
+        autoTheme = settings.getBoolean(KEY_AUTO_THEME, false),
         kidMode = settings.getBoolean(KEY_KID_MODE, false),
         useNativeStt = settings.getBoolean(KEY_NATIVE_STT, true),
         useNativeTts = settings.getBoolean(KEY_NATIVE_TTS, true),
@@ -50,6 +52,7 @@ class ConfigStore(private val settings: Settings = Settings()) {
         const val KEY_MQTT_HOST = "config.mqttHost"
         const val KEY_MQTT_PORT = "config.mqttPort"
         const val KEY_DARK_THEME = "ui.darkTheme"
+        const val KEY_AUTO_THEME = "ui.autoTheme"
         const val KEY_KID_MODE = "ui.kidMode"
         const val KEY_NATIVE_STT = "ui.nativeStt"
         const val KEY_NATIVE_TTS = "ui.nativeTts"

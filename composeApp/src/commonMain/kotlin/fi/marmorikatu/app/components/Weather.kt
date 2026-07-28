@@ -43,13 +43,8 @@ import fi.marmorikatu.app.theme.MkTheme
 import fi.marmorikatu.core.model.WeatherDay
 import fi.marmorikatu.core.model.WeatherForecast
 import fi.marmorikatu.core.model.WeatherHour
+import fi.marmorikatu.core.util.SunClock
 import fi.marmorikatu.core.model.WeatherWarning
-import kotlin.math.PI
-import kotlin.math.acos
-import kotlin.math.asin
-import kotlin.math.ceil
-import kotlin.math.cos
-import kotlin.math.sin
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
@@ -304,38 +299,22 @@ fun MkWeatherChip(
 }
 
 private const val HOME_CITY = "Tampere"
-private const val HOME_LAT = 61.4978
-private const val HOME_LON = 23.7610
 
 /**
- * Local sunrise/sunset ("HH:mm") for the fixed home location, from the standard
- * sunrise equation. The backend computes the same thing with `astral` at these
- * coordinates; doing it on-device avoids depending on a field the weather API
- * proxy drops. Verified against the backend's astral output. Null on polar
- * day/night (never happens at Tampere's latitude in practice).
+ * Local sunrise/sunset ("HH:mm") for the fixed home location. The solar maths
+ * lives in [SunClock] (shared with the auto-theme driver); here it is only
+ * formatted to the wall clock. Null on polar day/night (never happens at
+ * Tampere's latitude in practice).
  */
 @OptIn(ExperimentalTime::class)
 private fun homeSunTimes(): Pair<String, String>? {
-    fun rad(d: Double) = d * PI / 180.0
-    val jNow = Clock.System.now().toEpochMilliseconds() / 86_400_000.0 + 2440587.5
-    val n = ceil(jNow - 2451545.0 + 0.0008)
-    val jStar = n - HOME_LON / 360.0
-    val m = (357.5291 + 0.98560028 * jStar) % 360.0
-    val cCenter = 1.9148 * sin(rad(m)) + 0.0200 * sin(rad(2 * m)) + 0.0003 * sin(rad(3 * m))
-    val lambda = (m + cCenter + 180.0 + 102.9372) % 360.0
-    val jTransit = 2451545.0 + jStar + 0.0053 * sin(rad(m)) - 0.0069 * sin(rad(2 * lambda))
-    val sinDec = sin(rad(lambda)) * sin(rad(23.4397))
-    val cosDec = cos(asin(sinDec))
-    val cosOmega = (sin(rad(-0.833)) - sin(rad(HOME_LAT)) * sinDec) / (cos(rad(HOME_LAT)) * cosDec)
-    if (cosOmega < -1.0 || cosOmega > 1.0) return null
-    val omegaDeg = acos(cosOmega) * 180.0 / PI
+    val (riseMs, setMs) = SunClock.sunTimes(Clock.System.now().toEpochMilliseconds()) ?: return null
     val zone = TimeZone.of("Europe/Helsinki")
-    fun clock(jd: Double): String {
-        val ms = ((jd - 2440587.5) * 86_400_000.0).toLong()
+    fun clock(ms: Long): String {
         val ldt = Instant.fromEpochMilliseconds(ms).toLocalDateTime(zone)
         return "${ldt.hour.toString().padStart(2, '0')}:${ldt.minute.toString().padStart(2, '0')}"
     }
-    return clock(jTransit - omegaDeg / 360.0) to clock(jTransit + omegaDeg / 360.0)
+    return clock(riseMs) to clock(setMs)
 }
 
 /** Small accent pill naming which sensor the headline temperature came from. */
