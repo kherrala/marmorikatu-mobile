@@ -285,6 +285,15 @@ fun activeAlertMarkers(items: List<AttentionItem>, model: HouseModel): List<Hous
     }
 
 /**
+ * A light on/off or lighting-optimizer event (kinds `light_*`, `lights_opt_*`,
+ * `daylight_*`). These fire constantly as lights toggle and the live 3D glow
+ * already shows them, so the kiosk neither speaks nor pins them — otherwise the
+ * spoken queue piles up and delays real announcements (a person at the door).
+ */
+fun isLightAnnouncement(announcement: Announcement): Boolean =
+    announcement.kind.contains("light", ignoreCase = true)
+
+/**
  * Turns a live SSE announcement into a short-lived world-space source pin.
  * Events without a meaningful physical source (news and electricity-price
  * changes, for example) are still spoken, but deliberately do not move the

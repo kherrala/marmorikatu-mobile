@@ -318,6 +318,10 @@ fun House3dOverlay(
         announcements.announcements.collect { announcement ->
             val text = announcement.text.trim()
             if (text.isEmpty()) return@collect
+            // Light toggles fire constantly and the live glow already shows them —
+            // never speak or pin them, or the spoken queue piles up and delays real
+            // announcements behind it.
+            if (isLightAnnouncement(announcement)) return@collect
             val shownAt = TimeSource.Monotonic.markNow()
             liveAnnouncementId = announcement.id
             liveAnnouncementMarker = latestReady?.let { announcementMarker(announcement, it.model) }

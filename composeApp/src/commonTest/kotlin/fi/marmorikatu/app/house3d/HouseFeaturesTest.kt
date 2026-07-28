@@ -171,6 +171,23 @@ class HouseFeaturesTest {
     }
 
     @Test
+    fun lightAnnouncementsAreSilencedButRealEventsAreNot() {
+        fun ann(kind: String) = Announcement(id = 1, text = "x", kind = kind, priority = 1, key = kind, ts = 1.0)
+        // Light toggles + lighting-optimizer + daylight events are never spoken/pinned.
+        assertTrue(isLightAnnouncement(ann("light_on")))
+        assertTrue(isLightAnnouncement(ann("light_off")))
+        assertTrue(isLightAnnouncement(ann("lights_opt_sauna_on")))
+        assertTrue(isLightAnnouncement(ann("lights_opt_porch_off")))
+        assertTrue(isLightAnnouncement(ann("daylight_off")))
+        // Real announcements the user wants to hear are untouched.
+        assertFalse(isLightAnnouncement(ann("unifi_person_front")))
+        assertFalse(isLightAnnouncement(ann("news_headlines")))
+        assertFalse(isLightAnnouncement(ann("weather_helle")))
+        assertFalse(isLightAnnouncement(ann("room_temp_low")))
+        assertFalse(isLightAnnouncement(ann("aux_heater_on")))
+    }
+
+    @Test
     fun liveAnnouncementsUseBackendKeysToFindTheirPhysicalSource() {
         fun event(kind: String, key: String, text: String = "Ilmoitus") = Announcement(
             id = 1,
