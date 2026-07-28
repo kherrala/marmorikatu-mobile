@@ -10,6 +10,7 @@ import fi.marmorikatu.core.config.AssistantGender
 import fi.marmorikatu.core.config.ConfigStore
 import fi.marmorikatu.core.config.SpeechLanguage
 import fi.marmorikatu.core.lifecycle.ConnectionManager
+import fi.marmorikatu.core.lifecycle.PowerStatus
 import fi.marmorikatu.core.model.Announcement
 import fi.marmorikatu.core.model.ChatEvent
 import fi.marmorikatu.core.model.ChatMessage
@@ -23,6 +24,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -56,7 +58,15 @@ class ShellViewModel(
     private val platformStt: SpeechToText,
     private val platformTts: SpeechOutput,
     private val uiSignals: UiSignals,
+    private val powerStatus: PowerStatus,
 ) : ViewModel() {
+
+    /**
+     * Whether the device is plugged in. The kiosk's battery-costing behaviours —
+     * keeping connections alive in the background, the idle 3D screensaver — only
+     * run while powered, so a phone (or unplugged tablet) doesn't drain.
+     */
+    val pluggedIn: StateFlow<Boolean> = powerStatus.isPluggedIn
 
     // Kid mode and the theme survive a restart: a child's phone should stay a
     // child's phone, and the theme is a preference, not a session detail.
@@ -159,9 +169,9 @@ class ShellViewModel(
     fun setSurface(surface: Surface) {
         _surface.value = surface
         configStore.update { it.copy(kidMode = surface == Surface.Kid) }
-        // The kiosk (tablet surface) keeps its connections live in the background
-        // so light state is always current; phones disconnect to save battery.
-        connections.keepAlive.value = surface == Surface.Tablet
+        // keepAlive is driven reactively from surface + power (see init) — a Tablet
+        // surface on battery (e.g. a phone in landscape) must NOT hold connections
+        // open in the background, or it drains hard.
     }
 
     /** Leaves kid mode; the shell then picks phone or tablet by window width. */
@@ -242,6 +252,14 @@ class ShellViewModel(
         platformTts.useVoice(_assistantGender.value)
         // Follow the sun from launch if the device opted in (the kiosk).
         if (_autoTheme.value) startSunTheme()
+        // Keep connections alive in the background ONLY for a powered kiosk: the
+        // Tablet surface AND plugged in. A phone in landscape is a Tablet surface
+        // too, but on battery it must drop connections when backgrounded.
+        viewModelScope.launch {
+            combine(_surface, powerStatus.isPluggedIn) { s, plugged ->
+                s == Surface.Tablet && plugged
+            }.collect { connections.keepAlive.value = it }
+        }
         viewModelScope.launch {
             announcementsRepo.announcements.collect { event ->
                 if (_tab.value != Tab.Tapahtumat) _unreadCount.value += 1

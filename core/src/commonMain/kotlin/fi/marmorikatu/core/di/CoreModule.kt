@@ -8,6 +8,7 @@ import fi.marmorikatu.core.haptics.Haptics
 import fi.marmorikatu.core.config.ConfigStore
 import fi.marmorikatu.core.lifecycle.AppForeground
 import fi.marmorikatu.core.lifecycle.ConnectionManager
+import fi.marmorikatu.core.lifecycle.PowerStatus
 import fi.marmorikatu.core.repository.AnnouncementsRepository
 import fi.marmorikatu.core.repository.AssistantRepository
 import fi.marmorikatu.core.repository.ClimateRepository
@@ -71,6 +72,7 @@ val coreModule: Module = module {
     single<InfoRepository> { DefaultInfoRepository(get(), get()) }
 
     single { AppForeground() }
+    single { PowerStatus() }
     single {
         ConnectionManager(
             mqtt = get(), bridge = get(), announcements = get(), lights = get(),

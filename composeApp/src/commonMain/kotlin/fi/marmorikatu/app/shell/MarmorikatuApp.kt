@@ -1152,8 +1152,13 @@ private fun TabletSurface(
     var interaction by remember { mutableIntStateOf(0) }
     var houseFloorTarget by remember { mutableStateOf<fi.marmorikatu.app.house3d.FloorMode?>(null) }
     var houseFloorNonce by remember { mutableIntStateOf(0) }
-    LaunchedEffect(interaction) {
+    // The idle screensaver is a plugged-in-kiosk feature: a continuously rotating,
+    // rendering 3D house would drain a battery device. On battery we never enter it
+    // (and drop out of it immediately if the charger is unplugged while idle).
+    val pluggedIn by viewModel.pluggedIn.collectAsState()
+    LaunchedEffect(interaction, pluggedIn) {
         houseIdle = false
+        if (!pluggedIn) return@LaunchedEffect
         delay(90_000)
         // Entering the screensaver only asserts presentation+idle; the overlay's reset
         // effect frames the whole house and starts the spin. Bumping a floor nonce here

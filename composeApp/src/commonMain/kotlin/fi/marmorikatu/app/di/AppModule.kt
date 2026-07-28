@@ -28,6 +28,7 @@ val appModule: Module = module {
             platformStt = get<SpeechToText>(named("platformStt")),
             platformTts = get<SpeechOutput>(named("platformTts")),
             uiSignals = get(),
+            powerStatus = get(),
         )
     }
 
