@@ -65,17 +65,21 @@ class DefaultAnnouncementsRepository(
     override fun start() {
         if (job?.isActive == true) return
         job = scope.launch {
-            // Without a Last-Event-ID the bridge replays its whole ring buffer
-            // (~200 events). Anchor on the newest known id so the stream only
-            // delivers what happened after the app opened — otherwise every
-            // historical event looks like breaking news.
+            // Anchor on the newest known id so the stream only delivers what
+            // happened after this (re)connect. Without a Last-Event-ID the bridge
+            // replays its whole ring buffer (~200 events); resuming from a STALE id
+            // after a long background gap replays the entire gap — the reason a
+            // reopened phone spoke back hours of old notifications. [stop] clears
+            // the anchor, so every foreground re-anchors to "newest" here; a
+            // mid-stream network blip keeps its id and resumes (see the retry loop).
             if (lastEventId == null) {
                 runCatching { bridge.announcementHistory(limit = 1) }
                     .getOrNull()
                     ?.maxByOrNull { it.id }
                     ?.let { newest ->
                         lastEventId = newest.id
-                        _recent.value = listOf(newest)
+                        // Seed the feed on a cold start; keep it on a warm restart.
+                        if (_recent.value.isEmpty()) _recent.value = listOf(newest)
                     }
             }
 
@@ -110,6 +114,11 @@ class DefaultAnnouncementsRepository(
         job?.cancel()
         job = null
         _streaming.value = false
+        // Drop the resume anchor: the next start() re-anchors to the newest event
+        // instead of replaying everything that happened while backgrounded. A
+        // mid-stream reconnect (the internal retry loop) never calls stop(), so it
+        // still resumes from its id and doesn't miss events during a brief blip.
+        lastEventId = null
     }
 
     override suspend fun history(limit: Int): List<Announcement> = bridge.announcementHistory(limit)

@@ -36,6 +36,10 @@ private const val ROOM_FOCUS_PHI = 0.42f
 // Metres to drop the look-point below the room, lifting the room clear of the card.
 private const val ROOM_FOCUS_LIFT = 2.6f
 
+// Metres above a floor's room-slab level to aim the floor-view camera (≈ mid-room),
+// matching the model author's per-room camera heights.
+private const val FLOOR_TARGET_LIFT = 1.1f
+
 /**
  * A dark-mode point light. [level] 1.0 is a full room lamp; smaller values are a subtle
  * glow (e.g. driven by a room's live illuminance).
@@ -308,7 +312,19 @@ fun frameVisible(
     // look-point toward +X so the plan lifts and the far walls come fully into frame.
     val phoneFloor = !embedded && mode != FloorMode.All
     val cx = (minX + maxX) / 2f + if (phoneFloor) (maxX - minX) * 0.14f else 0f
-    val center = Vec3(cx, (minY + maxY) / 2f, (minZ + maxZ) / 2f)
+    // Some floor groups' wall geometry spans multiple storeys (tall exterior walls,
+    // the stairwell void), so the raw bbox Y centre drifts toward mid-building — the
+    // reason the basement and upstairs framed at the wrong height while only the
+    // ground floor looked right. For a single floor, take the vertical centre from
+    // its room slabs (cleanly per-storey) lifted to mid-room; the whole-house view
+    // keeps the bbox centre. Falls back to the bbox if the floor has no room patch.
+    val slabYs = if (mode != FloorMode.All) {
+        model.rooms.asSequence().filter { it.group in mode.groups }.map { it.center.y }.toList()
+    } else {
+        emptyList()
+    }
+    val cy = if (slabYs.isNotEmpty()) slabYs.average().toFloat() + FLOOR_TARGET_LIFT else (minY + maxY) / 2f
+    val center = Vec3(cx, cy, (minZ + maxZ) / 2f)
     val radius = max(maxX - minX, maxZ - minZ) * factor + pad
     return OrbitPreset(center, radius, phi, theta)
 }

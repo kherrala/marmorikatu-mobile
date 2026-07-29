@@ -322,6 +322,11 @@ fun House3dOverlay(
             // never speak or pin them, or the spoken queue piles up and delays real
             // announcements behind it.
             if (isLightAnnouncement(announcement)) return@collect
+            // Never speak a stale event. The stream re-anchors on reconnect so a
+            // backlog shouldn't arrive, but this guarantees a reopened device never
+            // reads back old notifications even if a replay slips through.
+            val ageSec = Clock.System.now().epochSeconds - announcement.ts.toLong()
+            if (ageSec > MAX_SPOKEN_AGE_SEC) return@collect
             val shownAt = TimeSource.Monotonic.markNow()
             liveAnnouncementId = announcement.id
             liveAnnouncementMarker = latestReady?.let { announcementMarker(announcement, it.model) }
@@ -735,6 +740,9 @@ private const val ROOM_SELECTION_TIMEOUT_MS = 15_000L
 
 /** Phone: resume the auto-showcase this long after the last manual interaction. */
 private const val SHOWCASE_IDLE_RESTART_MS = 20_000L
+
+/** Don't read an announcement aloud once it's older than this — it's a backlog replay. */
+private const val MAX_SPOKEN_AGE_SEC = 300L
 
 private fun Int.pad2(): String = if (this < 10) "0$this" else "$this"
 
