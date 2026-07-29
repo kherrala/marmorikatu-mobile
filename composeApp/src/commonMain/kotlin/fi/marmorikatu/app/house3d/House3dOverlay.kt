@@ -327,6 +327,13 @@ fun House3dOverlay(
             // reads back old notifications even if a replay slips through.
             val ageSec = Clock.System.now().epochSeconds - announcement.ts.toLong()
             if (ageSec > MAX_SPOKEN_AGE_SEC) return@collect
+            // Quiet hours (22:00–07:00 local): stay silent overnight — no speech, no
+            // source pin — except a real alarm (priority 0). Restores the old kiosk's
+            // overnight quiet. (The morning-digest replay isn't ported yet.)
+            if (announcement.priority != 0) {
+                val hour = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).hour
+                if (isQuietHour(hour)) return@collect
+            }
             val shownAt = TimeSource.Monotonic.markNow()
             liveAnnouncementId = announcement.id
             liveAnnouncementMarker = latestReady?.let { announcementMarker(announcement, it.model) }

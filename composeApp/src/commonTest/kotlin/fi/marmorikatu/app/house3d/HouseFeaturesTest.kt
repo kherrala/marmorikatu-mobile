@@ -188,6 +188,13 @@ class HouseFeaturesTest {
     }
 
     @Test
+    fun quietHoursCoverTheOvernightWindow() {
+        // Silent 22:00–06:59, audible 07:00–21:59 (wraps midnight).
+        for (h in listOf(22, 23, 0, 3, 6)) assertTrue(isQuietHour(h), "hour $h should be quiet")
+        for (h in listOf(7, 12, 18, 21)) assertFalse(isQuietHour(h), "hour $h should be audible")
+    }
+
+    @Test
     fun liveAnnouncementsUseBackendKeysToFindTheirPhysicalSource() {
         fun event(kind: String, key: String, text: String = "Ilmoitus") = Announcement(
             id = 1,

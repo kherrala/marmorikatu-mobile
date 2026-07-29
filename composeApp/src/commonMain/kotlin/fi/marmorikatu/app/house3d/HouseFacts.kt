@@ -293,6 +293,13 @@ fun activeAlertMarkers(items: List<AttentionItem>, model: HouseModel): List<Hous
 fun isLightAnnouncement(announcement: Announcement): Boolean =
     announcement.kind.contains("light", ignoreCase = true)
 
+/** Quiet-hours window (local), [start, end) wrapping midnight — matches the old kiosk. */
+const val QUIET_START_HOUR = 22
+const val QUIET_END_HOUR = 7
+
+/** True during the overnight quiet-hours window (22:00–07:00 local by [hour]). */
+fun isQuietHour(hour: Int): Boolean = hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR
+
 /**
  * Turns a live SSE announcement into a short-lived world-space source pin.
  * Events without a meaningful physical source (news and electricity-price
