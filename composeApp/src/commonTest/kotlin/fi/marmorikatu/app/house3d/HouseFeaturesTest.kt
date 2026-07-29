@@ -204,6 +204,10 @@ class HouseFeaturesTest {
         assertEquals("Room_2krs_AULA", announcementRoomName(event("floor_heat_hot", "floor_heat:ylakerta")))
         assertEquals("Room_1krs_TEKN", announcementRoomName(event("alarm_on:Alarm_filter_guard", "alarm:Alarm_filter_guard")))
         assertEquals(null, announcementRoomName(event("news_headlines", "news:morning")))
+        // A news headline that merely MENTIONS a room must not be pinned to it —
+        // the fallback matches the structured key, never the free-form text.
+        assertEquals(null, announcementRoomName(event("news_headlines", "news:evening", "Sauna paloi Lapissa – asukas pelastui")))
+        assertEquals(null, announcementRoomName(event("electricity_price", "price:spike", "Sähkön hinta nousee – lämmitä sauna edullisesti")))
     }
 
     @Test

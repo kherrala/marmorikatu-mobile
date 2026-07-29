@@ -352,7 +352,11 @@ internal fun announcementRoomName(announcement: Announcement): String? {
         kind.startsWith("lto_") || key == "lto_efficiency"
     ) return "Room_1krs_TEKN"
 
-    return alertRoomName("${announcement.key} ${announcement.text}")
+    // Last resort: keyword-match the structured key ONLY — never the free-form
+    // text. Matching the text pinned a news headline that merely mentioned a room
+    // ("…sauna…") to that room's marker; news/price events have no physical source
+    // and should get no pin (they return null here and don't move the camera).
+    return alertRoomName(announcement.key)
 }
 
 private fun announcementLightId(announcement: Announcement): Int? {
