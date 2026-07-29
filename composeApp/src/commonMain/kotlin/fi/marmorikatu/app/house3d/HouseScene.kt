@@ -40,6 +40,12 @@ private const val ROOM_FOCUS_LIFT = 2.6f
 // matching the model author's per-room camera heights.
 private const val FLOOR_TARGET_LIFT = 1.1f
 
+// Phone floor view: fraction of the plan's X-extent to bias the look-point along X
+// (the screen-vertical axis). The framing is very sensitive to this — 0.14 sat the
+// plan too high (top wall clipped behind the header), 0.0 dropped it far too low;
+// lowering it slides the whole plan down, clearing the header at the top.
+private const val FLOOR_NEAR_FAR_BIAS = 0.05f
+
 /**
  * A dark-mode point light. [level] 1.0 is a full room lamp; smaller values are a subtle
  * glow (e.g. driven by a room's live illuminance).
@@ -299,19 +305,23 @@ fun frameVisible(
         else -> 1.0f                   // phone single floor — tighter
     }
     val pad = when {
-        // Phone floor: the radius is sized from the XZ footprint only, but the tilted
-        // view (phi=0.32) projects the outer walls' ~2.6 m height upward on screen, so
-        // the far wall's top clipped. Extra margin lifts the whole plan clear of the edge.
-        !embedded && mode != FloorMode.All -> 2.6f
+        // Phone floor: the radius is sized from the XZ footprint only; a little margin
+        // leaves headroom for the outer walls' height (the tilted view projects it up
+        // on screen). The vertical position is handled by FLOOR_NEAR_FAR_BIAS below, so
+        // this only needs enough slack to keep the walls off the edge — too much left
+        // an empty band at the bottom.
+        !embedded && mode != FloorMode.All -> 2.4f
         embedded -> 1f
         else -> 2f
     }
     if (!any) return OrbitPreset(model.center, max(model.size.x, model.size.z) * factor + pad, phi, theta)
     // The phone floor view is tilted (theta=0, phi=0.32): the near (+X) side looms
-    // large in perspective and drags the plan low, clipping its walls. Bias the
-    // look-point toward +X so the plan lifts and the far walls come fully into frame.
+    // large in perspective. Biasing the look-point along X slides the plan up/down
+    // the screen (X is the screen-vertical axis here). Now that the vertical target
+    // sits at the real floor height (see cy below), no artificial lift is needed —
+    // the plan centres on its own; the constant is kept as a fine-tune knob.
     val phoneFloor = !embedded && mode != FloorMode.All
-    val cx = (minX + maxX) / 2f + if (phoneFloor) (maxX - minX) * 0.14f else 0f
+    val cx = (minX + maxX) / 2f + if (phoneFloor) (maxX - minX) * FLOOR_NEAR_FAR_BIAS else 0f
     // Some floor groups' wall geometry spans multiple storeys (tall exterior walls,
     // the stairwell void), so the raw bbox Y centre drifts toward mid-building — the
     // reason the basement and upstairs framed at the wrong height while only the
