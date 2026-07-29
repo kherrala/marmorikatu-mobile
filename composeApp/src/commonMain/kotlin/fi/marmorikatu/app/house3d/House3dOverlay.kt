@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -78,6 +79,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import fi.marmorikatu.core.model.Announcement
 import fi.marmorikatu.core.model.RuuviSensors
 import fi.marmorikatu.core.model.RuuviReading
 import fi.marmorikatu.core.repository.AnnouncementsRepository
@@ -314,6 +316,10 @@ fun House3dOverlay(
     val latestReady by rememberUpdatedState(ready)
     var liveAnnouncementMarker by remember { mutableStateOf<HouseMarker?>(null) }
     var liveAnnouncementId by remember { mutableLongStateOf(Long.MIN_VALUE) }
+    // Overnight digest: events silenced by quiet hours accumulate here and play once
+    // in the morning when the first person appears downstairs (see the effect below).
+    val overnightDigest = remember { mutableStateListOf<Announcement>() }
+    var digestPlayedDay by remember { mutableIntStateOf(-1) }
     LaunchedEffect(announcements, platformTts) {
         announcements.announcements.collect { announcement ->
             val text = announcement.text.trim()
@@ -328,11 +334,14 @@ fun House3dOverlay(
             val ageSec = Clock.System.now().epochSeconds - announcement.ts.toLong()
             if (ageSec > MAX_SPOKEN_AGE_SEC) return@collect
             // Quiet hours (22:00–07:00 local): stay silent overnight — no speech, no
-            // source pin — except a real alarm (priority 0). Restores the old kiosk's
-            // overnight quiet. (The morning-digest replay isn't ported yet.)
+            // source pin — except a real alarm (priority 0). The silenced event is
+            // kept for the morning digest instead.
             if (announcement.priority != 0) {
                 val hour = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).hour
-                if (isQuietHour(hour)) return@collect
+                if (isQuietHour(hour)) {
+                    accumulateDigest(overnightDigest, announcement)
+                    return@collect
+                }
             }
             val shownAt = TimeSource.Monotonic.markNow()
             liveAnnouncementId = announcement.id
@@ -349,6 +358,25 @@ fun House3dOverlay(
                 if (remainingMs > 0L) delay(remainingMs)
                 if (liveAnnouncementId == announcement.id) liveAnnouncementMarker = null
             }
+        }
+    }
+
+    // Morning digest: replay a summary of the night's silenced events the first time
+    // someone is detected downstairs (living room or downstairs hall) after 06:00 —
+    // once per day. Fires even inside quiet hours: a person is up, so it's welcome.
+    LaunchedEffect(presence) {
+        if (overnightDigest.isEmpty()) return@LaunchedEffect
+        val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+        val today = now.monthNumber * 100 + now.dayOfMonth
+        if (now.hour < DIGEST_TRIGGER_HOUR || digestPlayedDay == today) return@LaunchedEffect
+        if (DIGEST_PRESENCE_ROOMS.none { presence[it]?.occupied == true }) return@LaunchedEffect
+        val text = buildMorningDigest(overnightDigest.toList()) ?: return@LaunchedEffect
+        digestPlayedDay = today
+        overnightDigest.clear()
+        try {
+            if (platformTts.isAvailable()) platformTts.speak(text)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
         }
     }
 

@@ -188,6 +188,24 @@ class HouseFeaturesTest {
     }
 
     @Test
+    fun morningDigestDedupesByKeyAndLeadsWithTopPriority() {
+        fun ev(text: String, key: String, priority: Int, ts: Double) =
+            Announcement(id = 1, text = text, kind = "x", priority = priority, key = key, ts = ts)
+        val digest = mutableListOf<Announcement>()
+        accumulateDigest(digest, ev("Sauna on päällä", "sauna", 2, 1.0))
+        accumulateDigest(digest, ev("Maalämpö · korkeapainevahti", "hp", 0, 2.0))
+        // Same key twice → the newer wins, not two entries.
+        accumulateDigest(digest, ev("Sauna edelleen päällä", "sauna", 2, 3.0))
+        assertEquals(2, digest.size)
+
+        val text = buildMorningDigest(digest)!!
+        // Two events → "Yön aikana 2 tapahtumaa:"; the priority-0 alarm leads.
+        assertTrue(text.startsWith("Yön aikana 2 tapahtumaa:"), text)
+        assertTrue(text.indexOf("korkeapainevahti") < text.indexOf("edelleen"), text)
+        assertEquals(null, buildMorningDigest(emptyList()))
+    }
+
+    @Test
     fun quietHoursCoverTheOvernightWindow() {
         // Silent 22:00–06:59, audible 07:00–21:59 (wraps midnight).
         for (h in listOf(22, 23, 0, 3, 6)) assertTrue(isQuietHour(h), "hour $h should be quiet")

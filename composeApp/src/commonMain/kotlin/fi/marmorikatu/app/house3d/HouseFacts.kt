@@ -300,6 +300,44 @@ const val QUIET_END_HOUR = 7
 /** True during the overnight quiet-hours window (22:00–07:00 local by [hour]). */
 fun isQuietHour(hour: Int): Boolean = hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR
 
+/** From this local hour on, the morning digest may play (once someone comes downstairs). */
+const val DIGEST_TRIGGER_HOUR = 6
+
+/** Presence rooms whose first morning occupancy triggers the digest: living room + downstairs hall. */
+val DIGEST_PRESENCE_ROOMS = listOf("living_room", "hall_down")
+
+private const val DIGEST_MAX_EVENTS = 20
+private const val DIGEST_SPOKEN_COUNT = 3
+
+/**
+ * Add an event to the overnight digest: the newest wins per source [key], and the
+ * list is capped to the most important (lowest priority number) events.
+ */
+fun accumulateDigest(digest: MutableList<Announcement>, event: Announcement) {
+    if (event.key.isNotEmpty()) digest.removeAll { it.key == event.key }
+    digest.add(event)
+    while (digest.size > DIGEST_MAX_EVENTS) {
+        // Drop the least important: highest priority number, oldest as tie-break.
+        val victim = digest.indices.maxByOrNull { digest[it].priority * 1e9 - digest[it].ts } ?: break
+        digest.removeAt(victim)
+    }
+}
+
+/**
+ * The spoken morning summary of the night's events (top few by priority), or null
+ * when nothing accumulated. Mirrors the old kiosk's "Yön aikana…" phrasing.
+ */
+fun buildMorningDigest(events: List<Announcement>): String? {
+    if (events.isEmpty()) return null
+    val top = events.sortedWith(compareBy({ it.priority }, { it.ts })).take(DIGEST_SPOKEN_COUNT)
+    val lead = when {
+        events.size == 1 -> "Yön aikana tapahtui:"
+        events.size <= top.size -> "Yön aikana ${events.size} tapahtumaa:"
+        else -> "Yön aikana ${events.size} tapahtumaa, joista tärkeimmät:"
+    }
+    return top.joinToString(" ", prefix = "$lead ") { it.text.trim().removeSuffix(".") + "." }
+}
+
 /**
  * Turns a live SSE announcement into a short-lived world-space source pin.
  * Events without a meaningful physical source (news and electricity-price
