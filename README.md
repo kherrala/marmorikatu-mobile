@@ -39,6 +39,7 @@ the bell.
 | **Bussit** | Nysse bus departures. |
 | **Kalenteri** | Family calendar and waste pickup. |
 | **Tapahtumat** | Live announcement feed with camera stills. |
+| **Talo** | Native 3D house: whole-building, per-floor and per-room views, live lights/climate, a dark night mode, and a floor-heating-circuit overlay. |
 
 <table>
   <tr>
@@ -64,6 +65,20 @@ the bell.
     <td align="center"><img src="docs/screenshots/02-koti-presets-temps.png" width="210"><br><sub>Koti — room climate &amp; temperatures</sub></td>
     <td align="center"><img src="docs/screenshots/16-lights-sheet.png" width="210"><br><sub>Valot — quick-actions sheet (scenes + all-off)</sub></td>
     <td align="center"><img src="docs/screenshots/15-voice-assistant.png" width="210"><br><sub>Voice — animated avatar + quick commands</sub></td>
+  </tr>
+</table>
+
+<p align="center"><b>Talo — native 3D house</b></p>
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/17-talo-3d-exterior.png" width="210"><br><sub>Talo — whole 3D house</sub></td>
+    <td align="center"><img src="docs/screenshots/18-talo-3d-floor.png" width="210"><br><sub>Talo — floor view (basement)</sub></td>
+    <td align="center"><img src="docs/screenshots/19-talo-3d-room.png" width="210"><br><sub>Talo — room detail (lights + climate)</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/20-talo-3d-dark.png" width="210"><br><sub>Talo — dark mode, lit at night</sub></td>
+    <td align="center"><img src="docs/screenshots/21-talo-3d-heating.png" width="210"><br><sub>Talo — floor-heating circuits (furniture off)</sub></td>
   </tr>
 </table>
 
